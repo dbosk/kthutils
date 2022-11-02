@@ -1,0 +1,30 @@
+We want to create an interface to KTH's UG groups editor.
+We particularly want to be able to automate adding students to the UG groups 
+for courses.
+
+We provide one class, [[UGsession]], through which we interact with the UG 
+system.
+<<init.py>>=
+import requests
+
+class UGsession:
+  """
+  Maintains a session to the UG system.
+  """
+
+  def __init__(self):
+    """Never used directly, instantiated through childclasses."""
+    self.__session = None
+    self.__login_time = None
+
+  @property
+  def session(self):
+    return self.__session
+@
+
+We also test this class.
+<<test init.py>>=
+import ug.kth
+
+ug = ug.kth.UGsession(os.environ["KTH_USER"], os.environ["KTH_PASSWD"])
+@
