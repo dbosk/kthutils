@@ -1,14 +1,14 @@
 [tool.poetry]
-name = "ug"
+name = "kthutils"
 version = "0.1"
-description = "Manage UG groups"
+description = "Various tools for automation at KTH"
 authors = ["Daniel Bosk <dbosk@kth.se>"]
 license = "MIT"
 include = ["*/**/*.py"]
 
 [tool.poetry.dependencies]
 python = "^3.8"
-requests = "^2.28.1"
+weblogin = "^1.0"
 
 [tool.poetry.dev-dependencies]
 
