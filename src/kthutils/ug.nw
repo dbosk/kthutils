@@ -36,8 +36,9 @@ class UGsession:
 We also test this class.
 <<test ug.py>>=
 import kthutils.ug
+import os
 
-ug = kthutils.ug.UGsession(os.environ["KTH_USER"], os.environ["KTH_PASSWD"])
+ug = kthutils.ug.UGsession(os.environ["KTH_LOGIN"], os.environ["KTH_PASSWD"])
 
 <<test functions>>
 @
@@ -192,7 +193,7 @@ def find_user_by_username(self, username):
   Finds a user by username.
   Returns a list of matching user objects.
   """
-  response = self.__session.get(f"{self.BASE_URL}/ug-gruppeditor/api/ug/users"
+  response = self.__session.get(f"{self.BASE_URL}/api/ug/users"
     f"?$filter=username eq '{username}' or emailAliases eq '{username}'")
   return response.json()
 @
