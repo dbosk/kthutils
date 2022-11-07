@@ -1,30 +1,127 @@
+\chapter{The UG editor}
+
+This is the documentation for the [[kthutils.ug]] module.
+
 We want to create an interface to KTH's UG groups editor.
 We particularly want to be able to automate adding students to the UG groups 
 for courses.
 
 We provide one class, [[UGsession]], through which we interact with the UG 
 system.
-<<init.py>>=
-import requests
+<<ug.py>>=
+import cachetools as ct
+import functools as ft
+import operator
+import re
+import weblogin
+import weblogin.kth
 
 class UGsession:
   """
-  Maintains a session to the UG system.
+  Maintains a session to the UG Editor APIs.
   """
+  BASE_URL = "https://app.kth.se/ug-gruppeditor"
 
-  def __init__(self):
+  def __init__(self, username, password):
     """Never used directly, instantiated through childclasses."""
-    self.__session = None
-    self.__login_time = None
+    self.__session = weblogin.AutologinSession([
+          weblogin.kth.UGlogin(username, password,
+                               self.BASE_URL)
+      ])
+    self.cache = {}
 
-  @property
-  def session(self):
-    return self.__session
+  <<UG methods>>
 @
 
 We also test this class.
-<<test init.py>>=
-import ug.kth
+<<test ug.py>>=
+import kthutils.ug
 
-ug = ug.kth.UGsession(os.environ["KTH_USER"], os.environ["KTH_PASSWD"])
+ug = kthutils.ug.UGsession(os.environ["KTH_USER"], os.environ["KTH_PASSWD"])
+
+<<test functions>>
 @
+
+
+\section{Listing editable groups}
+
+The first thing we want to do is to be able to list all groups.
+This will be reused a lot, so we want to cache it.
+<<UG methods>>=
+@ct.cachedmethod(operator.attrgetter("cache"),
+  key=ft.partial(ct.keys.hashkey, "list_editable_groups"))
+def list_editable_groups(self):
+  """
+  Lists all groups that are editable by the logged in user.
+  Returns list of JSON objects.
+  """
+  response = self.__session.get(
+      f"{self.BASE_URL}/api/ug/groups?editableBySelf=true")
+  return response.json()
+@
+
+We can test the function as follows.
+<<test functions>>=
+def test_list_editable_groups():
+  groups = ug.list_editable_groups()
+  assert groups
+@
+
+Each JSON object has the following format.
+\begin{pycode}
+import json
+import kthutils.ug
+
+ug = kthutils.ug.UGsession(os.environ["KTH_LOGIN"], os.environ["KTH_PASSWD"])
+groups = ug.find_group_by_name("edu.courses.DD.DD1317.20222.1.courseresponsible")
+
+print(r"\begin{minted}{json}")
+print(json.dumps(list(groups)[0], indent=2))
+print(r"\end{minted}")
+\end{pycode}
+
+\section{Find group by name}
+
+Most of the time we want to find a group by name.
+<<UG methods>>=
+def find_group_by_name(self, name_regex):
+  """
+  Searches for a group from `list_editable_groups()` whose name matches the 
+  regex `name_regex`.
+  Returns a list of matching groups.
+  """
+  return filter(lambda group: re.search(name_regex, group["name"]),
+                self.list_editable_groups())
+@
+
+\section{List members of a group}
+
+The purpose of the groups is the members.
+We want to be able to list them.
+<<UG methods>>=
+def list_group_members(self, kthid):
+  """
+  Returns a list of the members of a group.
+  The list contains JSON objects.
+  """
+  response = self.__session.get(
+    f"{self.BASE_URL}/api/ug/users?$filter=memberOf eq '{kthid}'")
+  return response.json()
+@
+
+Each JSON object has the following format.
+\begin{pycode}
+import json
+import kthutils.ug
+
+ug = kthutils.ug.UGsession(os.environ["KTH_LOGIN"], os.environ["KTH_PASSWD"])
+group = list(
+    ug.find_group_by_name("edu.courses.DD.DD1317.20222.1.courseresponsible")
+  )[0]
+members = ug.list_group_members(group["kthid"])
+
+print(r"\begin{minted}{json}")
+print(json.dumps(list(members), indent=2))
+print(r"\end{minted}")
+\end{pycode}
+
