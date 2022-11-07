@@ -1,14 +1,15 @@
+MODULES+=	__init__.py
+
 .PHONY: all
-all: __init__.py
+all: ${MODULES}
 
 .INTERMEDIATE: init.py
-
 __init__.py: init.py
 	ln $< $@
 
 .PHONY: clean
 clean:
-	${RM} __init__.py
+	${RM} ${MODULES}
 
 INCLUDE_MAKEFILES=../../makefiles
 include ${INCLUDE_MAKEFILES}/noweb.mk
