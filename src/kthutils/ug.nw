@@ -11,8 +11,10 @@ system.
 <<ug.py>>=
 import cachetools as ct
 import functools as ft
+import json
 import operator
 import re
+import requests
 import weblogin
 import weblogin.kth
 
@@ -138,13 +140,22 @@ def set_group_members(self, members, group_kthid):
 
   Returns the updated group data, JSON format.
   """
+  headers = self.__session.headers
+  headers["content-type"] = "application/merge-patch+json"
+  data = {
+    "kthid": group_kthid,
+    "members": members if isinstance(members, list) \
+                       else list(members)
+  }
+
   response = self.__session.patch(
     f"{self.BASE_URL}/api/ug/groups/{group_kthid}",
-    data={
-      "kthid": group_kthid,
-      "members": members if isinstance(members, list) \
-                         else list(members)
-    })
+    data=json.dumps(data), headers=headers)
+
+  if response.status_code != requests.codes.ok:
+    raise Exception(f"failed to set members: {response.status_code}: "
+                    f"{response.text}")
+
   return response.json()
 @
 
@@ -160,7 +171,7 @@ def add_group_members(self, new_members, group_kthid):
 
   Returns the updated group data, JSON format.
   """
-  current_members = self.list_group_members(group_kthid)
+  current_members = [x["kthid"] for x in self.list_group_members(group_kthid)]
   return self.set_group_members(
             set(current_members + new_members),
             group_kthid)
@@ -177,10 +188,23 @@ def remove_group_members(self, members, group_kthid):
 
   Returns the updated group data, JSON format.
   """
-  current_members = self.list_group_members(group_kthid)
+  current_members = [x["kthid"] for x in self.list_group_members(group_kthid)]
   return self.set_group_members(
-            set(current_members - new_members),
+            set(current_members) - set(members),
             group_kthid)
+@
+
+\subsection{Tests}
+
+We can test this by adding and removing a user from a group.
+<<test functions>>=
+def test_add_group_members():
+  group = ug.add_group_members(["u13aecix"], "u2i9xt3r")
+  assert "u13aecix" in group["members"]
+
+def test_remove_group_members():
+  group = ug.remove_group_members(["u13aecix"], "u2i9xt3r")
+  assert "u13aecix" not in group["members"]
 @
 
 
