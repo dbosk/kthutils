@@ -1,0 +1,34 @@
+\chapter{A command-line interface}
+
+We want to provide a CLI so that we can use this tools in general shell 
+scripting and testing by hand without having to write a program in Python.
+The CLI will be command based, similar to Git.
+
+We will use Typer to provide the CLI.
+This way, we can let the CLI be very similar to the Python API.
+We will use [[typerconf]] to manage the configuration and the [[config]] 
+subcommand.
+<<cli.py>>=
+"""The CLI of kthutils"""
+
+import typer
+import typerconf as config
+<<import subcommand modules>>
+
+cli = typer.Typer(name="kthutils",
+                  help="A collection of tools useful at KTH")
+config.add_config_cmd(cli)
+
+<<add subcommand typer to cli>>
+
+if __name__ == "__main__":
+    cli()
+@
+
+Now we can start to add the modules.
+We start with the UG module.
+<<import subcommand modules>>=
+import kthutils.ug
+<<add subcommand typer to cli>>=
+cli.add_typer(kthutils.ug.cli)
+

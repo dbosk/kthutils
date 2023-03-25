@@ -1,22 +1,26 @@
 \chapter{The UG editor}
 
 This is the documentation for the [[kthutils.ug]] module.
-
 We want to create an interface to KTH's UG groups editor.
-We particularly want to be able to automate adding students to the UG groups 
-for courses.
+We particularly want to be able to automate adding TAs to the UG groups for 
+courses.
 
-We provide one class, [[UGsession]], through which we interact with the UG 
-system.
+We provide two interfaces:
+First, a class, [[UGsession]], through which we interact with the UG system 
+through Python.
+Second, a CLI, [[cli]], using Typer.
 <<ug.py>>=
 import cachetools as ct
 import functools as ft
 import json
+import logging
 import operator
 import re
 import requests
 import weblogin
 import weblogin.kth
+
+<<additional imports>>
 
 class UGsession:
   """
@@ -25,17 +29,28 @@ class UGsession:
   BASE_URL = "https://app.kth.se/ug-gruppeditor"
 
   def __init__(self, username, password):
-    """Never used directly, instantiated through childclasses."""
-    self.__session = weblogin.AutologinSession([
-          weblogin.kth.UGlogin(username, password,
-                               self.BASE_URL)
-      ])
-    self.cache = {}
+    """
+    Requires `username` and `password` which are the normal credentials for 
+    logging in through https://login.ug.kth.se.
+
+    All API requests are performed as this user.
+    """
+    <<UG constructor>>
 
   <<UG methods>>
+
+<<set up typer cli>>
+
+if __name__ == "__main__":
+  <<run typer cli>>
 @
 
-We also test this class.
+
+\section{Tests}
+
+We provide tests for the class.
+We create a [[ug]] object and will add test functions to [[<<test functions>>]] 
+as we add methods to [[<<UG methods>>]].
 <<test ug.py>>=
 import kthutils.ug
 import os
@@ -46,17 +61,83 @@ ug = kthutils.ug.UGsession(os.environ["KTH_LOGIN"], os.environ["KTH_PASSWD"])
 @
 
 
+\section{The CLI}
+
+We will use Typer to construct the CLI.
+We also want to use the pretty-printing of the [[rich]] package.
+<<additional imports>>=
+from rich import print
+import typer
+<<set up typer cli>>=
+cli = typer.Typer(name="ug", help="Interacts with the KTH UG Editor")
+
+<<add commands to cli>>
+<<run typer cli>>=
+cli()
+@
+
+Typer requires that we use static functions or class methods as commands.
+We can't use the methods of an object instance as CLI commands.
+Hence, to create the CLI, we can create a function for each command.
+This means that we must create an instance of [[UGsession]] and perform the 
+method calls on that in normal functions, one function (command) per method.
+Each command matches a method call on the [[ug]] object.
+
+However, to create that we need the user's credentials.
+We'll use [[typerconf]] for this.
+<<additional imports>>=
+import sys
+import typerconf as config
+<<create UGsession instance ug or exit>>=
+try:
+  username = config.get("credentials.username")
+  password = config.get("credentials.password")
+except KeyError as err:
+  logging.error(f"run `kthutils config` to set "
+                f"`credentials.username` and `credentials.password`"
+                f": {err}")
+  sys.exit(1)
+
+ug = UGsession(username, password)
+@
+
+
+\section{Constructing a UG session}
+
+All we need for the UG session object is a [[requests]] session to the UG web 
+interface.
+However, it requires logging in to use it, so we use
+[[weblogin.AutologinSession]]
+together with the KTH UG login handler
+[[weblogin.kth.UGlogin]]
+for that.
+<<UG constructor>>=
+self.__session = weblogin.AutologinSession([
+      weblogin.kth.UGlogin(username, password,
+                          self.BASE_URL)
+  ])
+@
+
+
 \section{Listing editable groups}
 
 The first thing we want to do is to be able to list all groups.
-This will be reused a lot, so we want to cache it.
+<<list doc>>=
+Lists all groups that are editable by the logged in user.
+Returns list of JSON objects.
+@
+
+This will be reused a lot in the other methods, so we want to cache it.
+It makes sense to cache it as well, since the data can't change.
+(Well, we can't change it, and it doesn't change that often.)
+<<UG constructor>>=
+self.cache = {}
 <<UG methods>>=
 @ct.cachedmethod(operator.attrgetter("cache"),
   key=ft.partial(ct.keys.hashkey, "list_editable_groups"))
 def list_editable_groups(self):
   """
-  Lists all groups that are editable by the logged in user.
-  Returns list of JSON objects.
+  <<list doc>>
   """
   response = self.__session.get(
       f"{self.BASE_URL}/api/ug/groups?editableBySelf=true")
@@ -82,6 +163,18 @@ print(r"\begin{minted}{json}")
 print(json.dumps(list(groups)[0], indent=2))
 print(r"\end{minted}")
 \end{pycode}
+
+Now, let's add the CLI command function.
+<<add commands to cli>>=
+@cli.command()
+def ls():
+  """
+  <<list doc>>
+  """
+  <<create UGsession instance ug or exit>>
+  print(ug.list_editable_groups())
+@
+
 
 \section{Find group by name}
 

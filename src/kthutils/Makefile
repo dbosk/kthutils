@@ -1,3 +1,4 @@
+MODULES+=	cli.py
 MODULES+=	ug.py
 
 .PHONY: all
