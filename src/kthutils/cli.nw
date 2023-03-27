@@ -11,9 +11,6 @@ This way, we can let the CLI be very similar to the Python API.
 
 import typer
 <<imports>>
-
-<<helper functions>>
-
 <<import subcommand modules>>
 
 cli = typer.Typer(name="kthutils",
@@ -60,7 +57,9 @@ config.add_config_cmd(cli)
 Now each subcommand can check for the username and password in the config or in 
 the environment.
 For simplicity, they can use the following function.
-<<helper functions>>=
+<<credentials.py>>=
+<<credential imports>>
+
 def get_credentials():
   """
   Returns tuple (username, password).
@@ -68,15 +67,13 @@ def get_credentials():
   <<try get credentials from environment>>
   <<try get credentials from config>>
   <<instruct user how to supply credentials>>
-<<imports>>=
-import sys
 @
 
 It can be used along the following lines.
 \begin{minted}{python}
-import kthutils.cli
+import kthutils.credentials
 
-username, password = kthutils.cli.get_credentials()
+username, password = kthutils.credentials.get_credentials()
 \end{minted}
 
 \subsection{Credentials from environment}
@@ -90,7 +87,7 @@ try:
   return username, password
 except:
   pass
-<<imports>>=
+<<credential imports>>=
 import os
 @
 
@@ -119,6 +116,6 @@ logging.error("Couldn't load credentials: "
               "kthutils config credentials.username --set <the username>; "
               "kthutils config credentials.password --set <the password>")
 sys.exit(1)
-<<imports>>=
+<<credential imports>>=
 import logging
 import sys

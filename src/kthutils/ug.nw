@@ -86,12 +86,14 @@ method calls on that in normal functions, one function (command) per method.
 Each command matches a method call on the [[ug]] object.
 
 However, to create that we need the user's credentials.
-We'll use [[typerconf]] for this.
+We'll use the [[credentials]] module and its [[get_credentials]] function for 
+this.
+We simply unpack the (username, password) tuple we get and pass it directly to 
+[[UGsession]].
 <<additional imports>>=
-import kthutils.cli
+import kthutils.credentials
 <<create UGsession instance ug or exit>>=
-username, password = kthutils.cli.get_credentials()
-ug = UGsession(username, password)
+ug = UGsession(*kthutils.credentials.get_credentials())
 @
 
 
