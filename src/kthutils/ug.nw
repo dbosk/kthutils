@@ -405,5 +405,25 @@ We test this method as follows.
 def test_find_user_by_username():
   data = ug.find_user_by_username("dbosk")
   assert data[0]["username"] == "dbosk"
+  assert data[0]["givenName"] == "Daniel"
+  data = ug.find_user_by_username("alba")
+  assert data[0]["username"] == "alba"
+  assert data[0]["givenName"] == "Alexander"
 @
+
+This makes a simple CLI command.
+We simply execute the method with the supplied argument and print the result.
+Due to the [[eq]] in the request above, we get a list with only one element.
+We also want to remove the [[memberOf]] value, since that clutters the output 
+and is not that useful anyway.
+<<add commands to cli>>=
+@cli.command()
+def user(username: str):
+  """
+  Prints info about user with username `username`.
+  """
+  <<create UGsession instance ug or exit>>
+  user_data = ug.find_user_by_username(username)[0]
+  del user_data["memberOf"]
+  print(user_data)
 
