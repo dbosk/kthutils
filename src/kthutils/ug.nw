@@ -88,18 +88,9 @@ Each command matches a method call on the [[ug]] object.
 However, to create that we need the user's credentials.
 We'll use [[typerconf]] for this.
 <<additional imports>>=
-import sys
-import typerconf as config
+import kthutils.cli
 <<create UGsession instance ug or exit>>=
-try:
-  username = config.get("credentials.username")
-  password = config.get("credentials.password")
-except KeyError as err:
-  logging.error(f"run `kthutils config` to set "
-                f"`credentials.username` and `credentials.password`"
-                f": {err}")
-  sys.exit(1)
-
+username, password = kthutils.cli.get_credentials()
 ug = UGsession(username, password)
 @
 
