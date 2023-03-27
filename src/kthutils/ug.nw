@@ -22,6 +22,8 @@ import weblogin.kth
 
 <<additional imports>>
 
+<<helper functions>>
+
 class UGsession:
   """
   Maintains a session to the UG Editor APIs.
@@ -165,6 +167,8 @@ print(r"\end{minted}")
 \end{pycode}
 
 Now, let's add the CLI command function.
+We want to print the name and, if it exists, the description for the group; we 
+don't want to print everything that we actually get from the function.
 <<add commands to cli>>=
 @cli.command()
 def ls():
@@ -172,40 +176,97 @@ def ls():
   <<list doc>>
   """
   <<create UGsession instance ug or exit>>
-  print(ug.list_editable_groups())
+  for group in ug.list_editable_groups():
+    name, desc = get_name_desc(group)
+    print(f"{name}\t{desc}")
+<<helper functions>>=
+def get_name_desc(group):
+  """
+  Returns a tuple (name, desc) containing the name and description, if it 
+  exists, for the group `group`. If the group doesn't have a description, the 
+  second value is None.
+  """
+  name = group["name"]
+
+  try:
+    desc = group["description"]["en"]
+  except KeyError:
+    desc = None
+
+  return name, desc
 @
 
 
 \section{Find group by name}
 
 Most of the time we want to find a group by name.
+<<find group doc>>=
+Searches for a group from `list_editable_groups()` whose name matches the regex 
+`name_regex`.
+Returns a list of matching groups.
+@
 <<UG methods>>=
 def find_group_by_name(self, name_regex):
   """
-  Searches for a group from `list_editable_groups()` whose name matches the 
-  regex `name_regex`.
-  Returns a list of matching groups.
+  <<find group doc>>
   """
   return filter(lambda group: re.search(name_regex, group["name"]),
                 self.list_editable_groups())
 @
 
+Now, let's add the CLI command function.
+We want the argument [[name_regex]] as argument, but we'd also like to have tab 
+completion for it.
+We use the function [[complete_group_regex]] for the tab completion.
+<<add commands to cli>>=
+def complete_group_regex(incomplete: str) -> [str]:
+  <<create UGsession instance ug or exit>>
+  <<return list of filtered group names>>
+
+@cli.command()
+def group(name_regex: str = typer.Argument(..., help="Regex for group name",
+                                           autocompletion=complete_group_regex)):
+  """
+  <<find group doc>>
+  """
+  <<create UGsession instance ug or exit>>
+  print(list(ug.find_group_by_name(name_regex)))
+@
+
+For the autocompletion, we want to return a list of only the names, not the 
+full JSON for them, as the function returns.
+We would also like to return a help text for each name, namely the human 
+readable name that is available from the JSON.
+This means that we want to return a list of tuples: the name (which the regex 
+match) and the description (human readable).
+<<return list of filtered group names>>=
+names = []
+
+for group in ug.find_group_by_name(incomplete):
+  names.append(get_name_desc(group))
+
+return names
+@
+
+
 \section{List members of a group}
 
 The purpose of the groups is the members.
 We want to be able to list them.
+<<members doc>>=
+Returns a list of the members of a group.
+The list contains JSON objects.
 <<UG methods>>=
 def list_group_members(self, group_kthid):
   """
-  Returns a list of the members of a group.
-  The list contains JSON objects.
+  <<members doc>>
   """
   response = self.__session.get(
     f"{self.BASE_URL}/api/ug/users?$filter=memberOf eq '{group_kthid}'")
   return response.json()
 @
 
-Each JSON object has the following format.
+Each JSON object in the resulting list has the following format.
 \begin{pycode}
 import json
 import kthutils.ug
@@ -220,6 +281,37 @@ print(r"\begin{minted}{json}")
 print(json.dumps(list(members), indent=2))
 print(r"\end{minted}")
 \end{pycode}
+
+Now, let's add the CLI command function.
+We want the argument [[group_kthid]] as argument with tab completion for it.
+We use the function [[complete_group_id]] for the tab completion.
+<<add commands to cli>>=
+def complete_group_id(incomplete: str) -> [str]:
+  <<create UGsession instance ug or exit>>
+  <<return list of filtered group IDs>>
+
+@cli.command()
+def members(group_kthid: str = typer.Argument(..., help="Group's kthid",
+                                              autocompletion=complete_group_id)):
+  """
+  <<members doc>>
+  """
+  <<create UGsession instance ug or exit>>
+  print(list(ug.list_group_members(group_kthid)))
+@
+
+For the autocompletion, we want to return a list the kthid's and the names as 
+help.
+<<return list of filtered group IDs>>=
+kthids = []
+
+for group in ug.list_editable_groups():
+  if group["kthid"].startswith(incomplete):
+    kthids.append((group["kthid"], group["name"]))
+
+return kthids
+@
+
 
 \section{Set members of a group}
 
