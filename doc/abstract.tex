@@ -3,6 +3,37 @@ It provides the following modules:
 \begin{description}
   \item[kthutils.ug] Access the UG editor through Python.
 \end{description}
-We also provide a command-line interface for the modules, e.g.~\texttt{kthutils 
-ug} to access \texttt{kthutils.ug}.
-See \texttt{kthutils --help} for details.
+
+We also provide a command-line interface for the modules.
+This means that the functionality can be accessed through both Python and the 
+shell.
+
+An example:
+We want to add the user \texttt{dbosk} as teacher in the 
+group
+\begin{center}
+  \texttt{edu.courses.DD.DD1317.20232.1.teachers}.
+\end{center}
+
+In Python, we would do
+\begin{minted}{python}
+import kthutils.credentials
+import kthutils.ug
+
+ug = kthutils.ug.UGsession(*kthutils.credentials.get_credentials())
+
+group = ug.find_group_by_name("edu.courses.DD.DD1317.20232.1.teachers")
+user = ug.find_user_by_username("dbosk")
+
+ug.add_group_members([user["kthid"]], group["kthid"])
+\end{minted}
+
+In the shell, we would do
+\begin{minted}{bash}
+kthutils ug members add edu.courses.DD.DD1317.20232.1.teachers dbosk
+\end{minted}
+
+Install the tools using \texttt{pip}:
+\begin{minted}{bash}
+python3 -m pip install -U kthutils
+\end{minted}

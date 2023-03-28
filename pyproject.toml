@@ -4,7 +4,13 @@ version = "1.0"
 description = "Various tools for automation at KTH"
 authors = ["Daniel Bosk <dbosk@kth.se>"]
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/dbosk/kthutils"
 include = ["*/**/*.py"]
+
+[tool.poetry.urls]
+"Bug Tracker" = "https://github.com/dbosk/kthutils/issues"
+"Releases" = "https://github.com/dbosk/kthutils/releases"
 
 [tool.poetry.scripts]
 kthutils = "kthutils.cli:cli"

@@ -8,7 +8,11 @@ version=$(shell sed -n 's/^ *version *= *\"\([^\"]\+\)\"/\1/p' pyproject.toml)
 
 .PHONY: all publish
 
-all:
+all: README.md
+
+README.md: doc/abstract.tex
+	pandoc -o $@ $<
+	${EDITOR} $@
 
 publish: all
 	poetry build
