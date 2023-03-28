@@ -165,7 +165,7 @@ We want to print the name and, if it exists, the description for the group; we
 don't want to print everything that we actually get from the function.
 <<add commands to cli>>=
 @cli.command(name="ls")
-def list_groups():
+def cli_list_groups():
   """
   <<list doc>>
   """
@@ -216,12 +216,16 @@ completion for it.
 We use the function [[complete_group_regex]] for the tab completion.
 <<add commands to cli>>=
 def complete_group(incomplete: str) -> [str]:
+  """
+  Returns list of strings (group names) that can complete `incomplete`.
+  """
   <<create UGsession instance ug or exit>>
   <<return list of filtered group names>>
 
-@cli.command()
-def group(name_regex: str = typer.Argument(..., help="Regex for group name",
-                                           autocompletion=complete_group)):
+@cli.command(name="group")
+def cli_group(name_regex: str = typer.Argument(...,
+                                               help="Regex for group name",
+                                               autocompletion=complete_group)):
   """
   <<find group doc>>
   """
@@ -287,8 +291,8 @@ Due to the [[eq]] in the request above, we get a list with only one element.
 We also want to remove the [[memberOf]] value, since that clutters the output 
 and is not that useful anyway.
 <<add commands to cli>>=
-@cli.command()
-def user(username: str):
+@cli.command(name="user")
+def cli_user(username: str):
   """
   Prints info about user with username `username`.
   """
@@ -411,7 +415,7 @@ We use the function [[complete_group]] from above for the tab completion for
 the name.
 <<add commands to cli>>=
 @members.command(name="ls")
-def list_members(group_name: str = group_name_arg):
+def cli_list_members(group_name: str = group_name_arg):
   """
   <<members doc>>
   """
@@ -469,8 +473,8 @@ def set_group_members(self, members, group_kthid):
 Now let's add its CLI command function.
 <<add commands to cli>>=
 @members.command(name="set")
-def set_members(group_name: str = group_name_arg,
-                users: typing.List[str] = user_list_arg):
+def cli_set_members(group_name: str = group_name_arg,
+                    users: typing.List[str] = user_list_arg):
   """
   Sets the members of a group. Any existing members not in the list will be 
   removed.
@@ -501,8 +505,8 @@ def add_group_members(self, new_members, group_kthid):
 Now let's add its CLI command function.
 <<add commands to cli>>=
 @members.command(name="add")
-def add_members(group_name: str = group_name_arg,
-                users: typing.List[str] = user_list_arg):
+def cli_add_members(group_name: str = group_name_arg,
+                    users: typing.List[str] = user_list_arg):
   """
   Adds the members of a group. Any existing members will remain. Any members 
   already a member, will remain a member.
@@ -532,8 +536,8 @@ def remove_group_members(self, members, group_kthid):
 Now let's add its CLI command function.
 <<add commands to cli>>=
 @members.command(name="rm")
-def remove_members(group_name: str = group_name_arg,
-                   users: typing.List[str] = user_list_arg):
+def cli_remove_members(group_name: str = group_name_arg,
+                       users: typing.List[str] = user_list_arg):
   """
   Remove the members of a group. Any existing members not named will remain.
   """
