@@ -420,17 +420,18 @@ def list_members(group_name: str = group_name_arg):
   <<clean and print members>>
 @
 
-When printing the members, we don't want to print each member's [[memberOf]] 
-attribute as that yields too much uninteresting output.
-So we remove those attributes before printing the list of members.
+When printing the members, we don't want to print each member's JSON 
+object.
+We want something more useful for the terminal.
+We print tab-separated fields of data, so that we can use grep(1), cut(1) and 
+join(1).
 <<clean and print members>>=
-members = []
-
 for member in ug.list_group_members(group_kthid):
-  member.pop("memberOf", None)
-  members.append(member)
-
-print(list(members))
+  print(f"{member['username']}"
+        f"\t{member['kthid']}"
+        f"\t{member['givenName']}"
+        f"\t{member['surname']}"
+        f"\t{member['title']['en'][0]}")
 @
 
 
