@@ -1,0 +1,121 @@
+\chapter{A command-line interface}
+
+We want to provide a CLI so that we can use this tools in general shell 
+scripting and testing by hand without having to write a program in Python.
+The CLI will be command based, similar to Git.
+
+We will use Typer to provide the CLI.
+This way, we can let the CLI be very similar to the Python API.
+<<cli.py>>=
+"""The CLI of kthutils"""
+
+import typer
+<<imports>>
+<<import subcommand modules>>
+
+cli = typer.Typer(name="kthutils",
+                  help="A collection of tools useful at KTH")
+
+<<get username and password>>
+<<add subcommand typers to cli>>
+
+if __name__ == "__main__":
+    cli()
+@
+
+Now we can start to add the modules.
+We start with the UG module.
+<<import subcommand modules>>=
+import kthutils.ug
+<<add subcommand typers to cli>>=
+cli.add_typer(kthutils.ug.cli)
+@
+
+
+\section{Credentials: username and password}
+
+We need credentials to log into the different KTH systems to use them.
+
+One alternative is to use [[typerconf]] and add credentials to a configuration 
+file.
+Another option is to pass the credentials as an option to the program.
+Yet another is to use environment variables, [[KTH_LOGIN]] and [[KTH_PASSWD]].
+
+We'll go for a combination of the first and last: if there are no environment 
+variables set ([[KTH_LOGIN]] and [[KTH_PASSWD]]), then we check the config 
+file.
+
+We will have to read the username and password in the modules containing the 
+commands.
+But we want to add the [[config]] subcommand from [[typerconf]] here.
+<<imports>>=
+import typerconf as config
+<<get username and password>>=
+config.add_config_cmd(cli)
+@
+
+Now each subcommand can check for the username and password in the config or in 
+the environment.
+For simplicity, they can use the following function.
+<<credentials.py>>=
+<<credential imports>>
+
+def get_credentials():
+  """
+  Returns tuple (username, password).
+  """
+  <<try get credentials from environment>>
+  <<try get credentials from config>>
+  <<instruct user how to supply credentials>>
+@
+
+It can be used along the following lines.
+\begin{minted}{python}
+import kthutils.credentials
+
+username, password = kthutils.credentials.get_credentials()
+\end{minted}
+
+\subsection{Credentials from environment}
+
+We try to read the credentials from the environment variables, if we succeed, 
+we return them.
+<<try get credentials from environment>>=
+try:
+  username = os.environ["KTH_LOGIN"]
+  password = os.environ["KTH_PASSWD"]
+  return username, password
+except:
+  pass
+<<credential imports>>=
+import os
+@
+
+\subsection{Credentials from config}
+
+If we couldn't find any credentials in the environment variables, then we 
+should try the config.
+<<try get credentials from config>>=
+try:
+  username = config.get("credentials.username")
+  password = config.get("credentials.password")
+  return username, password
+except:
+  pass
+@
+
+\subsection{Instruct user about credentials}
+
+If we couldn't find any credentials, it's a fatal error.
+We should inform the user how to fix it and then we quit the program.
+<<instruct user how to supply credentials>>=
+logging.error("Couldn't load credentials: "
+              "Supply credentials by environment variables "
+              "KTH_LOGIN and KTH_PASSWD. "
+              "Or set them in the config: "
+              "kthutils config credentials.username --set <the username>; "
+              "kthutils config credentials.password --set <the password>")
+sys.exit(1)
+<<credential imports>>=
+import logging
+import sys
