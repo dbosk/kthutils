@@ -20,7 +20,7 @@ python = "^3.8"
 weblogin = "^1.5"
 cachetools = "^5.2.0"
 typer = "^0.7.0"
-typerconf = "^1.1"
+typerconf = "^1.10"
 rich = "^13.3.2"
 
 [tool.poetry.dev-dependencies]
