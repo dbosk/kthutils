@@ -429,13 +429,22 @@ object.
 We want something more useful for the terminal.
 We print tab-separated fields of data, so that we can use grep(1), cut(1) and 
 join(1).
+
+We also note that we must treat the title attribute differently.
+The title attribute can sometimes contain empty lists.
+(Also interesting about the title attribute is that despite being a list, it 
+always seem to contain only one element.)
 <<clean and print members>>=
 for member in ug.list_group_members(group_kthid):
+  try:
+    title = member['title']['en'][0]
+  except IndexError:
+    title = None
   print(f"{member['username']}"
         f"\t{member['kthid']}"
         f"\t{member['givenName']}"
         f"\t{member['surname']}"
-        f"\t{member['title']['en'][0]}")
+        f"\t{title}")
 @
 
 
