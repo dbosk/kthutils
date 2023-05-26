@@ -120,7 +120,7 @@ self.__session = weblogin.AutologinSession([
 The first thing we want to do is to be able to list all groups.
 <<list doc>>=
 Lists all groups that are editable by the logged in user.
-Returns list of JSON objects.
+Returns list of JSON objects (from `list_editable_groups()`).
 @
 
 This will be reused a lot in the other methods, so we want to cache it.
@@ -303,7 +303,7 @@ def cli_user(username: str):
 @
 
 
-\section{Members of a group}
+\section{Members of groups}
 
 We can do two things with the members of a group:
 \begin{enumerate}
@@ -334,15 +334,23 @@ cli.add_typer(members)
 
 All of these commands will take similar arguments.
 We see two types: the group name and a list of users.
+For the group name we would like to have a regular expression that matches the 
+users name so that we can match several courses at the same time.
 <<common variables for members>>=
-group_name_arg = typer.Argument(..., help="Group's name",
+group_regex_arg = typer.Argument(..., help="Regex for the group's name",
                                 autocompletion=complete_group)
 user_list_arg = typer.Argument(..., help="List of usernames")
 @
 
+This means that we can get the list of matching group names by using the 
+[[find_group_by_name]].
+<<generate a list [[groups]] from [[group_regex]]>>=
+groups = ug.find_group_by_name(group_regex)
+@
+
 Now, all of the [[UGsession]] methods take the KTH ID as argument.
 But for the CLI, we want to use the more human readable name.
-We add a method for translating the [[group_name]] argument to [[group_kthid]].
+We add a method for translating the [[group_regex]] argument to [[group_kthid]].
 We simply go through all groups to find the matching name and its KTH ID.
 <<UG methods>>=
 def group_name_to_kthid(self, name):
@@ -357,8 +365,19 @@ def group_name_to_kthid(self, name):
       return group["kthid"]
   
   raise KeyError(f"{name} could not be found.")
-<<translate group name to kthid>>=
+<<translate [[group_name]] to [[group_kthid]]>>=
 group_kthid = ug.group_name_to_kthid(group_name)
+@
+
+Now, since most of these methods require KTH ID, we would like to turn a list 
+of groups into a list of the corresponding KTH IDs.
+<<generate a list of [[group_kthids]] from [[group_regex]]>>=
+<<generate a list [[groups]] from [[group_regex]]>>
+group_kthids = []
+for group in groups:
+  group_name = group["name"]
+  <<translate [[group_name]] to [[group_kthid]]>>
+  group_kthids.append(group_kthid)
 @
 
 In the same way, all member methods takes KTH IDs for users as arguments.
@@ -415,13 +434,14 @@ We use the function [[complete_group]] from above for the tab completion for
 the name.
 <<add commands to cli>>=
 @members.command(name="ls")
-def cli_list_members(group_name: str = group_name_arg):
+def cli_list_members(group_regex: str = group_regex_arg):
   """
   <<members doc>>
   """
   <<create UGsession instance ug or exit>>
-  <<translate group name to kthid>>
-  <<clean and print members>>
+  <<generate a list of [[group_kthids]] from [[group_regex]]>>
+  for group_kthid in group_kthids:
+    <<clean and print members>>
 @
 
 When printing the members, we don't want to print each member's JSON 
@@ -482,15 +502,16 @@ def set_group_members(self, members, group_kthid):
 Now let's add its CLI command function.
 <<add commands to cli>>=
 @members.command(name="set")
-def cli_set_members(group_name: str = group_name_arg,
+def cli_set_members(group_regex: str = group_regex_arg,
                     users: typing.List[str] = user_list_arg):
   """
   Sets the members of a group. Any existing members not in the list will be 
   removed.
   """
   <<create UGsession instance ug or exit>>
-  ug.set_group_members(ug.usernames_to_kthids(users),
-                       ug.group_name_to_kthid(group_name))
+  <<generate a list of [[group_kthids]] from [[group_regex]]>>
+  for group_kthid in group_kthids:
+    ug.set_group_members(ug.usernames_to_kthids(users), group_kthid)
 @
 
 \subsubsection{Adding users}
@@ -514,15 +535,16 @@ def add_group_members(self, new_members, group_kthid):
 Now let's add its CLI command function.
 <<add commands to cli>>=
 @members.command(name="add")
-def cli_add_members(group_name: str = group_name_arg,
+def cli_add_members(group_regex: str = group_regex_arg,
                     users: typing.List[str] = user_list_arg):
   """
   Adds the members of a group. Any existing members will remain. Any members 
   already a member, will remain a member.
   """
   <<create UGsession instance ug or exit>>
-  ug.add_group_members(ug.usernames_to_kthids(users),
-                       ug.group_name_to_kthid(group_name))
+  <<generate a list of [[group_kthids]] from [[group_regex]]>>
+  for group_kthid in group_kthids:
+    ug.add_group_members(ug.usernames_to_kthids(users), group_kthid)
 @
 
 \subsubsection{Removing users}
@@ -545,14 +567,15 @@ def remove_group_members(self, members, group_kthid):
 Now let's add its CLI command function.
 <<add commands to cli>>=
 @members.command(name="rm")
-def cli_remove_members(group_name: str = group_name_arg,
+def cli_remove_members(group_regex: str = group_regex_arg,
                        users: typing.List[str] = user_list_arg):
   """
   Remove the members of a group. Any existing members not named will remain.
   """
   <<create UGsession instance ug or exit>>
-  ug.remove_group_members(ug.usernames_to_kthids(users),
-                          ug.group_name_to_kthid(group_name))
+  <<generate a list of [[group_kthids]] from [[group_regex]]>>
+  for group_kthid in group_kthids:
+    ug.remove_group_members(ug.usernames_to_kthids(users), group_kthid)
 @
 
 \subsection{Tests}
