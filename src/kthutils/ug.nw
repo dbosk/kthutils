@@ -120,7 +120,7 @@ self.__session = weblogin.AutologinSession([
 The first thing we want to do is to be able to list all groups.
 <<list doc>>=
 Lists all groups that are editable by the logged in user.
-Returns list of JSON objects.
+Returns list of JSON objects (from `list_editable_groups()`).
 @
 
 This will be reused a lot in the other methods, so we want to cache it.
