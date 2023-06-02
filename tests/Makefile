@@ -10,9 +10,11 @@ endef
 
 TESTS=	$(shell ${find_tests})
 
+DEBUG=
+
 .PHONY: all
 all: $(foreach files,${TESTS},$(shell echo ${files} | cut -d: -f1))
-	poetry run pytest
+	poetry run pytest $(if ${DEBUG},--pdb)
 
 $(foreach files,${TESTS},$(eval $(call def_target, ${files})))
 

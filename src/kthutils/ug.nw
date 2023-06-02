@@ -28,7 +28,7 @@ class UGsession:
   """
   Maintains a session to the UG Editor APIs.
   """
-  BASE_URL = "https://app.kth.se/ug-gruppeditor"
+  BASE_URL = <<the UG group editor base URL>>
 
   def __init__(self, username, password):
     """
@@ -45,6 +45,15 @@ class UGsession:
 
 if __name__ == "__main__":
   <<run typer cli>>
+@
+
+The URL to the UG editor changed at some point around the shift from May to 
+June 2023,
+The URL is essentially the same, but after the change it must have the slash 
+(\enquote{/}) at the end.
+Without that slash, we get a 404 instead of what we expect.
+<<the UG group editor base URL>>=
+"https://app.kth.se/ug-gruppeditor/"
 @
 
 
@@ -110,7 +119,7 @@ for that.
 <<UG constructor>>=
 self.__session = weblogin.AutologinSession([
       weblogin.kth.UGlogin(username, password,
-                          self.BASE_URL)
+                           self.BASE_URL)
   ])
 @
 
