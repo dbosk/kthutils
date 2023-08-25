@@ -17,6 +17,7 @@ import logging
 import operator
 import re
 import requests
+import sys
 import weblogin
 import weblogin.kth
 
@@ -306,7 +307,13 @@ def cli_user(username: str):
   Prints info about user with username `username`.
   """
   <<create UGsession instance ug or exit>>
-  user_data = ug.find_user_by_username(username)[0]
+
+  try:
+    user_data = ug.find_user_by_username(username)[0]
+  except IndexError as err:
+    logging.error(f"Can't find user {username}.")
+    sys.exit(1)
+
   del user_data["memberOf"]
   print(user_data)
 @
@@ -400,10 +407,22 @@ def usernames_to_kthids(self, usernames):
   kthids = []
 
   for username in usernames:
-    user = self.find_user_by_username(username)[0]
-    kthids.append(user["kthid"])
+    try:
+      user = self.find_user_by_username(username)[0]
+    except IndexError as err:
+      <<handle unknown [[username]]>>
+    else:
+      kthids.append(user["kthid"])
 
   return kthids
+@
+
+Since the username is wrong, we want to raise a [[ValueError]] and include the 
+username.
+<<handle unknown [[username]]>>=
+err = ValueError(f"Can't find user {username}")
+err.username = username
+raise err
 @
 
 \subsection{List members of a group}
@@ -520,7 +539,10 @@ def cli_set_members(group_regex: str = group_regex_arg,
   <<create UGsession instance ug or exit>>
   <<generate a list of [[group_kthids]] from [[group_regex]]>>
   for group_kthid in group_kthids:
-    ug.set_group_members(ug.usernames_to_kthids(users), group_kthid)
+    try:
+      ug.set_group_members(ug.usernames_to_kthids(users), group_kthid)
+    except ValueError as err:
+      logging.error(f"Couldn't set users for {group_kthid}: {err}")
 @
 
 \subsubsection{Adding users}
@@ -553,7 +575,10 @@ def cli_add_members(group_regex: str = group_regex_arg,
   <<create UGsession instance ug or exit>>
   <<generate a list of [[group_kthids]] from [[group_regex]]>>
   for group_kthid in group_kthids:
-    ug.add_group_members(ug.usernames_to_kthids(users), group_kthid)
+    try:
+      ug.add_group_members(ug.usernames_to_kthids(users), group_kthid)
+    except ValueError as err:
+      logging.error(f"Couldn't add users for {group_kthid}: {err}")
 @
 
 \subsubsection{Removing users}
@@ -584,7 +609,10 @@ def cli_remove_members(group_regex: str = group_regex_arg,
   <<create UGsession instance ug or exit>>
   <<generate a list of [[group_kthids]] from [[group_regex]]>>
   for group_kthid in group_kthids:
-    ug.remove_group_members(ug.usernames_to_kthids(users), group_kthid)
+    try:
+      ug.remove_group_members(ug.usernames_to_kthids(users), group_kthid)
+    except ValueError as err:
+      logging.error(f"Couldn't remove users from {group_kthid}: {err}")
 @
 
 \subsection{Tests}
