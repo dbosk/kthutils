@@ -9,12 +9,15 @@ This way, we can let the CLI be very similar to the Python API.
 <<cli.py>>=
 """The CLI of kthutils"""
 
+import logging
 import typer
 <<imports>>
 <<import subcommand modules>>
 
 cli = typer.Typer(name="kthutils",
                   help="A collection of tools useful at KTH")
+
+logging.basicConfig(format="kthutils: %(levelname)s: %(message)s")
 
 <<get username and password>>
 <<add subcommand typers to cli>>
@@ -117,5 +120,4 @@ logging.error("Couldn't load credentials: "
               "kthutils config credentials.password --set <the password>")
 sys.exit(1)
 <<credential imports>>=
-import logging
 import sys
