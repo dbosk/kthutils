@@ -1,0 +1,764 @@
+\chapter{The course participants listing }
+
+This is the documentation for the [[kthutils.participants]] module.
+We want to be able to read out the course participants and the Funka codes for 
+the different participants.
+
+We provide two interfaces:
+First, a class, [[ParticipantsSession]], through which we interact with the 
+participants part of KTH's web.
+Second, a CLI, [[cli]], using Typer.
+<<participants.py>>=
+import json
+import logging
+import operator
+import re
+import sys
+
+<<additional imports>>
+
+<<helper functions>>
+
+class ParticipantsSession:
+  """
+  Maintains a session to the course participants API.
+  """
+  BASE_URL = <<the Participants service base URL>>
+
+  def __init__(self, username, password):
+    """
+    Requires `username` and `password` which are the normal credentials for 
+    logging in through https://login.ug.kth.se.
+
+    All API requests are performed as this user.
+    """
+    <<PS constructor>>
+
+  <<PS methods>>
+
+<<set up cli>>
+
+if __name__ == "__main__":
+  <<run cli>>
+@
+
+The base URL seems to be the following.
+<<the Participants service base URL>>=
+"https://app.kth.se/studentlistor/kurstillfallen"
+@
+
+
+\section{Tests}
+
+We provide tests for the class.
+We create a [[ps]] object and will add test functions to [[<<test functions>>]] 
+as we add methods to [[<<PS methods>>]].
+<<test participants.py>>=
+from kthutils.participants import *
+import os
+
+ps = ParticipantsSession(os.environ["KTH_LOGIN"],
+                         os.environ["KTH_PASSWD"])
+
+<<test functions>>
+@
+
+\begin{pycode}
+import json
+from kthutils.participants import *
+
+ps = kthutils.participants.ParticipantsSession(os.environ["KTH_LOGIN"],
+                                               os.environ["KTH_PASSWD"])
+\end{pycode}
+
+
+\section{The CLI}
+
+We will use Typer to construct the CLI.
+We also want to use the pretty-printing of the [[rich]] package.
+<<additional imports>>=
+from rich import print
+import typer
+import typing
+<<set up cli>>=
+cli = typer.Typer(name="participants",
+                  help="Interacts with the KTH course participants lists")
+
+<<add commands to cli>>
+<<run cli>>=
+cli()
+@
+
+Typer requires that we use static functions or class methods as commands.
+We can't use the methods of an object instance as CLI commands.
+Hence, to create the CLI, we can create a function for each command.
+This means that we must create an instance of [[ParticipantsSession]] and 
+perform the method calls on that in normal functions, one function (command) 
+per method.
+Each command matches a method call on the [[ps]] object.
+
+However, to create that we need the user's credentials.
+We'll use the [[credentials]] module and its [[get_credentials]] function for 
+this.
+We simply unpack the (username, password) tuple we get and pass it directly to 
+[[ParticipantsSession]].
+<<additional imports>>=
+import kthutils.credentials
+<<create UGsession instance ug or exit>>=
+ps = ParticipantsSession(*kthutils.credentials.get_credentials())
+@
+
+
+\section{Constructing a session}
+
+All we need for the [[ParticipantsSession]] object is a [[requests]] session to 
+the participants web interface.
+However, it requires logging in to use it, so we use
+[[weblogin.AutologinSession]]
+together with the KTH UG login handler
+[[weblogin.kth.UGlogin]]
+for that.
+<<PS constructor>>=
+self.__session = weblogin.AutologinSession([
+      weblogin.kth.UGlogin(username, password,
+                           self.BASE_URL)
+  ])
+<<additional imports>>=
+import weblogin
+import weblogin.kth
+@
+
+
+\section{Getting all the course and participant data}
+
+The service seems to have only one API call.
+That call yields basically all the data that is then filtered and presented by 
+the web interface.
+
+To make things more efficient, we will cache the result of this call.
+This way we can call this method instead of storing the data elsewhere to avoid 
+web requests.
+<<PS methods>>=
+@ct.cachedmethod(operator.attrgetter("cache"),
+  key=ft.partial(ct.keys.hashkey, "get_all_data"))
+def get_all_data(self, course_code, semester):
+  """
+  Returns all the data from the search results.
+  - `course_code` is something like "DD1310" and
+  - `semester` is something like "HT2023" (for Autumn 2023).
+  """
+  data = {
+    "courseCode": course_code,
+    "term": semester
+  }
+  response = self.__session.get(f"{self.BASE_URL}"
+                      f"/api/studentlistor/courseroundparticipants",
+                    params=data)
+  try:
+    return response.json()
+  except Exception as err:
+    err.response = response
+    raise err
+<<PS constructor>>=
+self.cache = {}
+<<additional imports>>=
+import cachetools as ct
+import functools as ft
+@
+
+The data we get looks like this.
+We get a JSON object that has the following keys:
+\begin{pycode}
+try:
+  data = ps.get_all_data("DD1310", "HT2023")
+  print(r"\begin{minted}{json}")
+  print(json.dumps(list(data.keys()), indent=2))
+  print(r"\end{minted}")
+except Exception as err:
+  print(r"\begin{minted}{text}")
+  print(err.response.url)
+  print(err.response)
+  print(r"\end{minted}")
+\end{pycode}
+
+To detect if the format of the returned data changes, we can add a test for it.
+<<test functions>>=
+def test_get_all_data():
+  data = ps.get_all_data("DD1310", "HT2023")
+  assert "totalNumberOfParticipants" in data
+  assert "courseRounds" in data
+  assert "participants" in data
+  assert "funkaCountersCombinations" in data
+  assert "funkaFlag" in data
+  assert "ugdata" in data
+  assert "numberOfCourseRoundChanged" in data
+@
+
+\section{The data format}
+
+Now let's have a look at what's in these.
+We now look at the output of
+\begin{minted}{python}
+ps.get_all_data("DD1310", "HT2023")
+\end{minted}
+
+\begin{pycode}
+def print_json(key, data, depth=1):
+  if depth > 2:
+    return
+
+  section = f"\\{'sub'*depth}section"
+  print(section + r"{\texttt{" + key + r"}}")
+  try:
+    print_keys(data[key], prefix=r"The key \texttt{" + key + r"}")
+  except AttributeError:
+    print_list(key, data, depth=depth)
+  except Exception as err:
+    print(r"The following error occurred:")
+    print(r"\begin{minted}{text}")
+    print(err)
+    print(r"\end{minted}")
+
+def print_keys(data, prefix="Each item in the list"):
+  json_output = json.dumps(list(data.keys()), indent=2)
+  print(prefix + r" contains the following keys:")
+  print(r"\begin{minted}{json}")
+  print(json_output)
+  print(r"\end{minted}")
+
+def print_list(key, data, depth=1):
+  if not isinstance(data[key], list):
+    print_value(data[key], prefix=r"The key \texttt{" + key + r"}")
+    return
+
+  print(r"The key \texttt{" + key + r"} contains a list.")
+  try:
+    print_keys(data[key][0])
+    subdata = data[key][0]
+    for key in subdata.keys():
+      print_json(key, subdata, depth=depth+1)
+  except AttributeError:
+    print_value(data[key][0])
+  except IndexError:
+    print(r"The list is empty.")
+  except Exception as err:
+    print(r"The following error occurred:")
+    print(r"\begin{minted}{text}")
+    print(err)
+    print(r"\end{minted}")
+
+def print_value(data, prefix="Each item in the list"):
+  print(prefix + " has the following type:")
+  print(r"\begin{minted}{text}")
+  print(type(data))
+  print(r"\end{minted}")
+
+for key in data:
+  print_json(key, data)
+\end{pycode}
+
+
+\section{Listing course participants}
+
+The first thing we want to do is to be able to list all students that are 
+expected to participate in a course.
+<<list doc>>=
+Lists all students in the list of expected participants.
+Returns list of JSON objects (from `list_editable_groups()`).
+@
+
+This will be reused a lot in the other methods, so we want to cache it.
+It makes sense to cache it as well, since the data can't change.
+(Well, we can't change it, and it doesn't change that often.)
+<<UG constructor>>=
+self.cache = {}
+<<UG methods>>=
+@ct.cachedmethod(operator.attrgetter("cache"),
+  key=ft.partial(ct.keys.hashkey, "list_editable_groups"))
+def list_editable_groups(self):
+  """
+  <<list doc>>
+  """
+  response = self.__session.get(
+      f"{self.BASE_URL}/api/ug/groups?editableBySelf=true")
+  return response.json()
+@
+
+We can test the function as follows.
+<<test functions>>=
+def test_list_editable_groups():
+  groups = ug.list_editable_groups()
+  assert groups
+@
+
+Each JSON object in the resulting list has the following format.
+\begin{pycode}
+import json
+import kthutils.ug
+
+ug = kthutils.ug.UGsession(os.environ["KTH_LOGIN"], os.environ["KTH_PASSWD"])
+groups = ug.find_group_by_name("edu.courses.DD.DD1317.20222.1.courseresponsible")
+
+print(r"\begin{minted}{json}")
+print(json.dumps(list(groups)[0], indent=2))
+print(r"\end{minted}")
+\end{pycode}
+
+Now, let's add the CLI command function.
+We want to print the name and, if it exists, the description for the group; we 
+don't want to print everything that we actually get from the function.
+<<add commands to cli>>=
+@cli.command(name="ls")
+def cli_list_groups():
+  """
+  <<list doc>>
+  """
+  <<create UGsession instance ug or exit>>
+  for group in ug.list_editable_groups():
+    name, desc = get_name_desc(group)
+    print(f"{name}\t{desc}")
+<<helper functions>>=
+def get_name_desc(group):
+  """
+  Returns a tuple (name, desc) containing the name and description, if it 
+  exists, for the group `group`. If the group doesn't have a description, the 
+  second value is None.
+  """
+  name = group["name"]
+
+  try:
+    desc = group["description"]["en"]
+  except KeyError:
+    desc = None
+
+  return name, desc
+@
+
+
+\section{Find group by name}
+
+Most of the time we want to find a group by name.
+<<find group doc>>=
+Searches for a group from `list_editable_groups()` whose name matches the regex 
+`name_regex`.
+Returns a list of matching groups.
+@
+<<UG methods>>=
+def find_group_by_name(self, name_regex):
+  """
+  <<find group doc>>
+  """
+  return filter(lambda group: re.search(name_regex, group["name"]),
+                self.list_editable_groups())
+@
+
+Each JSON object in the resulting list has the same format as above.
+
+Now, let's add the CLI command function.
+We want the argument [[name_regex]] as argument, but we'd also like to have tab 
+completion for it.
+We use the function [[complete_group_regex]] for the tab completion.
+<<add commands to cli>>=
+def complete_group(incomplete: str) -> [str]:
+  """
+  Returns list of strings (group names) that can complete `incomplete`.
+  """
+  <<create UGsession instance ug or exit>>
+  <<return list of filtered group names>>
+
+@cli.command(name="group")
+def cli_group(name_regex: str = typer.Argument(...,
+                                               help="Regex for group name",
+                                               autocompletion=complete_group)):
+  """
+  <<find group doc>>
+  """
+  <<create UGsession instance ug or exit>>
+  print(list(ug.find_group_by_name(name_regex)))
+@
+
+For the autocompletion, we want to return a list of only the names, not the 
+full JSON for them, as the function returns.
+We would also like to return a help text for each name, namely the human 
+readable name that is available from the JSON.
+This means that we want to return a list of tuples: the name (which the regex 
+match) and the description (human readable).
+<<return list of filtered group names>>=
+names = []
+
+for group in ug.find_group_by_name(incomplete):
+  names.append(get_name_desc(group))
+
+return names
+@
+
+
+\section{Find person by username}
+
+Now we would like to look up user data based on their username.
+For one, we'd like to take a username and turn it into a KTH ID, because the 
+group-member methods use KTH IDs.
+<<UG methods>>=
+def find_user_by_username(self, username):
+  """
+  Finds a user by username.
+  Returns a list of matching user objects.
+  """
+  response = self.__session.get(f"{self.BASE_URL}/api/ug/users"
+    f"?$filter=username eq '{username}' or emailAliases eq '{username}'")
+  return response.json()
+@
+
+The resulting JSON object has the following format.
+\begin{pycode}
+user = ug.find_user_by_username("dbosk")
+
+print(r"\begin{minted}{json}")
+print(json.dumps(user, indent=2))
+print(r"\end{minted}")
+\end{pycode}
+
+We test this method as follows.
+<<test functions>>=
+def test_find_user_by_username():
+  data = ug.find_user_by_username("dbosk")
+  assert data[0]["username"] == "dbosk"
+  assert data[0]["givenName"] == "Daniel"
+  data = ug.find_user_by_username("alba")
+  assert data[0]["username"] == "alba"
+  assert data[0]["givenName"] == "Alexander"
+@
+
+This makes a simple CLI command.
+We simply execute the method with the supplied argument and print the result.
+Due to the [[eq]] in the request above, we get a list with only one element.
+We also want to remove the [[memberOf]] value, since that clutters the output 
+and is not that useful anyway.
+<<add commands to cli>>=
+@cli.command(name="user")
+def cli_user(username: str):
+  """
+  Prints info about user with username `username`.
+  """
+  <<create UGsession instance ug or exit>>
+
+  try:
+    user_data = ug.find_user_by_username(username)[0]
+  except IndexError as err:
+    logging.error(f"Can't find user {username}.")
+    sys.exit(1)
+
+  del user_data["memberOf"]
+  print(user_data)
+@
+
+
+\section{Members of groups}
+
+We can do two things with the members of a group:
+\begin{enumerate}
+\item list them,
+\item change them (set, add or remove).
+\end{enumerate}
+We have separate methods for these in [[UGsession]].
+For the CLI, we'll add each as a subcommand to a [[members]] command.
+We want something like this:
+\begin{minted}[linenos=false]{text}
+kthutils ug members ls group
+kthutils ug members set group user1 user1 ... userN
+kthutils ug members add group userX
+kthutils ug members rm group userX
+\end{minted}
+
+This means that we should add another layer of Typer.
+We'll add a Typer instance [[members]] that we'll add subcommands too, and 
+we'll add this [[members]] to [[cli]].
+Then we get the hierarchy we want.
+<<add commands to cli>>=
+members = typer.Typer(name="members",
+                      help="Operations on the members of a group")
+cli.add_typer(members)
+
+<<common variables for members>>
+@
+
+All of these commands will take similar arguments.
+We see two types: the group name and a list of users.
+For the group name we would like to have a regular expression that matches the 
+users name so that we can match several courses at the same time.
+<<common variables for members>>=
+group_regex_arg = typer.Argument(..., help="Regex for the group's name",
+                                autocompletion=complete_group)
+user_list_arg = typer.Argument(..., help="List of usernames")
+@
+
+This means that we can get the list of matching group names by using the 
+[[find_group_by_name]].
+<<generate a list [[groups]] from [[group_regex]]>>=
+groups = ug.find_group_by_name(group_regex)
+@
+
+Now, all of the [[UGsession]] methods take the KTH ID as argument.
+But for the CLI, we want to use the more human readable name.
+We add a method for translating the [[group_regex]] argument to [[group_kthid]].
+We simply go through all groups to find the matching name and its KTH ID.
+<<UG methods>>=
+def group_name_to_kthid(self, name):
+  """
+  Takes `name` (e.g. edu.courses.DD.DD1317.20222.1.courseresponsible) and
+  returns KTH ID (e.g. u25w6fyq).
+
+  Raises KeyError if no group named `name` is found.
+  """
+  for group in self.list_editable_groups():
+    if group["name"] == name:
+      return group["kthid"]
+  
+  raise KeyError(f"{name} could not be found.")
+<<translate [[group_name]] to [[group_kthid]]>>=
+group_kthid = ug.group_name_to_kthid(group_name)
+@
+
+Now, since most of these methods require KTH ID, we would like to turn a list 
+of groups into a list of the corresponding KTH IDs.
+<<generate a list of [[group_kthids]] from [[group_regex]]>>=
+<<generate a list [[groups]] from [[group_regex]]>>
+group_kthids = []
+for group in groups:
+  group_name = group["name"]
+  <<translate [[group_name]] to [[group_kthid]]>>
+  group_kthids.append(group_kthid)
+@
+
+In the same way, all member methods takes KTH IDs for users as arguments.
+We want to translate usernames to KTH IDs.
+<<UG methods>>=
+def usernames_to_kthids(self, usernames):
+  """
+  Takes a list of usernames,
+  returns a list of KTH IDs for the users.
+  """
+  kthids = []
+
+  for username in usernames:
+    try:
+      user = self.find_user_by_username(username)[0]
+    except IndexError as err:
+      <<handle unknown [[username]]>>
+    else:
+      kthids.append(user["kthid"])
+
+  return kthids
+@
+
+Since the username is wrong, we want to raise a [[ValueError]] and include the 
+username.
+<<handle unknown [[username]]>>=
+err = ValueError(f"Can't find user {username}")
+err.username = username
+raise err
+@
+
+\subsection{List members of a group}
+
+The purpose of the groups is the members.
+We want to be able to list them.
+<<members doc>>=
+Returns a list of the members of a group.
+The list contains JSON objects.
+<<UG methods>>=
+def list_group_members(self, group_kthid):
+  """
+  <<members doc>>
+  """
+  response = self.__session.get(
+    f"{self.BASE_URL}/api/ug/users?$filter=memberOf eq '{group_kthid}'")
+  return response.json()
+@
+
+The resulting list of JSON objects has the following format.
+\begin{pycode}
+group = list(
+    ug.find_group_by_name("edu.courses.DD.DD1317.20222.1.courseresponsible")
+  )[0]
+members = ug.list_group_members(group["kthid"])
+
+print(r"\begin{minted}{json}")
+print(json.dumps(list(members), indent=2))
+print(r"\end{minted}")
+\end{pycode}
+
+Now, let's add the CLI command function.
+The human readable name is better to use here than the KTH ID used by 
+[[.list_group_members]].
+We need to add a translation.
+We use the function [[complete_group]] from above for the tab completion for 
+the name.
+<<add commands to cli>>=
+@members.command(name="ls")
+def cli_list_members(group_regex: str = group_regex_arg):
+  """
+  <<members doc>>
+  """
+  <<create UGsession instance ug or exit>>
+  <<generate a list of [[group_kthids]] from [[group_regex]]>>
+  for group_kthid in group_kthids:
+    <<clean and print members>>
+@
+
+When printing the members, we don't want to print each member's JSON 
+object.
+We want something more useful for the terminal.
+We print tab-separated fields of data, so that we can use grep(1), cut(1) and 
+join(1).
+
+We also note that we must treat the title attribute differently.
+The title attribute can sometimes contain empty lists.
+(Also interesting about the title attribute is that despite being a list, it 
+always seem to contain only one element.)
+<<clean and print members>>=
+for member in ug.list_group_members(group_kthid):
+  try:
+    title = member['title']['en'][0]
+  except IndexError:
+    title = None
+  print(f"{member['username']}"
+        f"\t{member['kthid']}"
+        f"\t{member['givenName']}"
+        f"\t{member['surname']}"
+        f"\t{title}")
+@
+
+
+\subsection{Set members of a group}
+
+The API doesn't allow us to add or remove individual users.
+It only allows us to set a new members list.
+<<UG methods>>=
+def set_group_members(self, members, group_kthid):
+  """
+  Sets the group members of group identified by `group_kthid` to be the list of 
+  users (strings of kthid for users) `members`.
+
+  Returns the updated group data, JSON format.
+  """
+  headers = self.__session.headers
+  headers["content-type"] = "application/merge-patch+json"
+  data = {
+    "kthid": group_kthid,
+    "members": members if isinstance(members, list) \
+                       else list(members)
+  }
+
+  response = self.__session.patch(
+    f"{self.BASE_URL}/api/ug/groups/{group_kthid}",
+    data=json.dumps(data), headers=headers)
+
+  if response.status_code != requests.codes.ok:
+    raise Exception(f"failed to set members: {response.status_code}: "
+                    f"{response.text}")
+
+  return response.json()
+@
+
+Now let's add its CLI command function.
+<<add commands to cli>>=
+@members.command(name="set")
+def cli_set_members(group_regex: str = group_regex_arg,
+                    users: typing.List[str] = user_list_arg):
+  """
+  Sets the members of a group. Any existing members not in the list will be 
+  removed.
+  """
+  <<create UGsession instance ug or exit>>
+  <<generate a list of [[group_kthids]] from [[group_regex]]>>
+  for group_kthid in group_kthids:
+    try:
+      ug.set_group_members(ug.usernames_to_kthids(users), group_kthid)
+    except ValueError as err:
+      logging.error(f"Couldn't set users for {group_kthid}: {err}")
+@
+
+\subsubsection{Adding users}
+
+It will probably be more useful to provide a method for adding a user or set of 
+users.
+<<UG methods>>=
+def add_group_members(self, new_members, group_kthid):
+  """
+  Adds list of members in `new_members` (kthids of users) to group with kthid 
+  `group_kthid`.
+
+  Returns the updated group data, JSON format.
+  """
+  current_members = [x["kthid"] for x in self.list_group_members(group_kthid)]
+  return self.set_group_members(
+            set(current_members + new_members),
+            group_kthid)
+@
+
+Now let's add its CLI command function.
+<<add commands to cli>>=
+@members.command(name="add")
+def cli_add_members(group_regex: str = group_regex_arg,
+                    users: typing.List[str] = user_list_arg):
+  """
+  Adds the members of a group. Any existing members will remain. Any members 
+  already a member, will remain a member.
+  """
+  <<create UGsession instance ug or exit>>
+  <<generate a list of [[group_kthids]] from [[group_regex]]>>
+  for group_kthid in group_kthids:
+    try:
+      ug.add_group_members(ug.usernames_to_kthids(users), group_kthid)
+    except ValueError as err:
+      logging.error(f"Couldn't add users for {group_kthid}: {err}")
+@
+
+\subsubsection{Removing users}
+
+In a similar fashion, we want to remove users too.
+<<UG methods>>=
+def remove_group_members(self, members, group_kthid):
+  """
+  Removes the users in `members` (list of kthids) from the group identified by 
+  kthid `group_kthid`.
+
+  Returns the updated group data, JSON format.
+  """
+  current_members = [x["kthid"] for x in self.list_group_members(group_kthid)]
+  return self.set_group_members(
+            set(current_members) - set(members),
+            group_kthid)
+@
+
+Now let's add its CLI command function.
+<<add commands to cli>>=
+@members.command(name="rm")
+def cli_remove_members(group_regex: str = group_regex_arg,
+                       users: typing.List[str] = user_list_arg):
+  """
+  Remove the members of a group. Any existing members not named will remain.
+  """
+  <<create UGsession instance ug or exit>>
+  <<generate a list of [[group_kthids]] from [[group_regex]]>>
+  for group_kthid in group_kthids:
+    try:
+      ug.remove_group_members(ug.usernames_to_kthids(users), group_kthid)
+    except ValueError as err:
+      logging.error(f"Couldn't remove users from {group_kthid}: {err}")
+@
+
+\subsection{Tests}
+
+We can test this by adding and removing a user from a group.
+<<test functions>>=
+def test_add_group_members():
+  group = ug.add_group_members(["u13aecix"], "u2i9xt3r")
+  assert "u13aecix" in group["members"]
+
+def test_remove_group_members():
+  group = ug.remove_group_members(["u13aecix"], "u2i9xt3r")
+  assert "u13aecix" not in group["members"]
+@
+

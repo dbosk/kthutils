@@ -1,6 +1,7 @@
 MODULES+=	cli.py
 MODULES+=	credentials.py
 MODULES+=	ug.py
+MODULES+=	participants.py
 
 .PHONY: all
 all: ${MODULES}
