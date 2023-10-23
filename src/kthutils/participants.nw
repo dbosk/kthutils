@@ -1,0 +1,486 @@
+\chapter{The course participants listing}
+
+This is the documentation for the [[kthutils.participants]] module\footnote{%
+  This module was written with autocompletion from GitHub Copilot.
+}.
+We want to be able to read out the course participants and the Funka codes for 
+the different participants.
+
+We provide two interfaces:
+First, a class, [[ParticipantsSession]], through which we interact with the 
+participants part of KTH's web.
+Second, a CLI, [[cli]], using Typer.
+<<participants.py>>=
+import json
+import logging
+import operator
+import re
+import sys
+
+<<additional imports>>
+<<CLI argument and option definitions>>
+<<helper functions>>
+
+class ParticipantsSession:
+  """
+  Maintains a session to the course participants API.
+  """
+  BASE_URL = <<the Participants service base URL>>
+
+  def __init__(self, username, password):
+    """
+    Requires `username` and `password` which are the normal credentials for 
+    logging in through https://login.ug.kth.se.
+
+    All API requests are performed as this user.
+    """
+    <<PS constructor>>
+
+  <<PS methods>>
+
+<<set up cli>>
+
+if __name__ == "__main__":
+  <<run cli>>
+@
+
+The base URL seems to be the following.
+<<the Participants service base URL>>=
+"https://app.kth.se/studentlistor/kurstillfallen"
+@
+
+
+\section{Tests}
+
+We provide tests for the class.
+We create a [[ps]] object and will add test functions to [[<<test functions>>]] 
+as we add methods to [[<<PS methods>>]].
+<<test participants.py>>=
+from kthutils.participants import *
+import os
+
+ps = ParticipantsSession(os.environ["KTH_LOGIN"],
+                         os.environ["KTH_PASSWD"])
+
+<<test functions>>
+@
+
+\begin{pycode}
+import json
+from kthutils.participants import *
+
+ps = kthutils.participants.ParticipantsSession(os.environ["KTH_LOGIN"],
+                                               os.environ["KTH_PASSWD"])
+\end{pycode}
+
+
+\section{The CLI}
+
+We will use Typer to construct the CLI.
+We also want to use the pretty-printing of the [[rich]] package.
+<<additional imports>>=
+from rich import print
+import typer
+from typing import Annotated
+<<set up cli>>=
+cli = typer.Typer(name="participants",
+                  help="Interacts with the KTH course participants lists")
+
+<<add commands to cli>>
+<<run cli>>=
+cli()
+@
+
+Typer requires that we use static functions or class methods as commands.
+We can't use the methods of an object instance as CLI commands.
+Hence, to create the CLI, we can create a function for each command.
+This means that we must create an instance of [[ParticipantsSession]] and 
+perform the method calls on that in normal functions, one function (command) 
+per method.
+Each command matches a method call on the [[ps]] object.
+
+However, to create that we need the user's credentials.
+We'll use the [[credentials]] module and its [[get_credentials]] function for 
+this.
+We simply unpack the (username, password) tuple we get and pass it directly to 
+[[ParticipantsSession]].
+<<additional imports>>=
+import kthutils.credentials
+<<create [[ParticipantsSession]] instance [[ps]]>>=
+ps = ParticipantsSession(*kthutils.credentials.get_credentials())
+@
+
+
+\section{Constructing a session}
+
+All we need for the [[ParticipantsSession]] object is a [[requests]] session to 
+the participants web interface.
+However, it requires logging in to use it, so we use
+[[weblogin.AutologinSession]]
+together with the KTH UG login handler
+[[weblogin.kth.UGlogin]]
+for that.
+<<PS constructor>>=
+self.__session = weblogin.AutologinSession([
+      weblogin.kth.UGlogin(username, password,
+                           self.BASE_URL)
+  ])
+<<additional imports>>=
+import weblogin
+import weblogin.kth
+@
+
+
+\section{Getting all the course and participant data}
+
+The service seems to have only one API call.
+That call yields basically all the data that is then filtered and presented by 
+the web interface.
+
+To make things more efficient, we will cache the result of this call.
+This way we can call this method instead of storing the data elsewhere to avoid 
+web requests.
+<<PS methods>>=
+@ct.cachedmethod(operator.attrgetter("cache"),
+  key=ft.partial(ct.keys.hashkey, "get_all_data"))
+def get_all_data(self, course_code, semester):
+  """
+  Returns all the data from the search results.
+  - `course_code` is something like "DD1310" and
+  - `semester` is something like "HT2023" (for Autumn 2023).
+  """
+  data = {
+    "courseCode": course_code,
+    "term": semester
+  }
+  response = self.__session.get(f"{self.BASE_URL}"
+                      f"/api/studentlistor/courseroundparticipants",
+                    params=data)
+  try:
+    return response.json()
+  except Exception as err:
+    err.response = response
+    raise err
+<<PS constructor>>=
+self.cache = {}
+<<additional imports>>=
+import cachetools as ct
+import functools as ft
+@
+
+The data we get looks like this.
+We get a JSON object that has the following keys:
+\begin{pycode}
+try:
+  data = ps.get_all_data("DD1310", "HT2023")
+  print(r"\begin{minted}{json}")
+  print(json.dumps(list(data.keys()), indent=2))
+  print(r"\end{minted}")
+except Exception as err:
+  print(r"\begin{minted}{text}")
+  print(err.response.url)
+  print(err.response)
+  print(r"\end{minted}")
+\end{pycode}
+
+To detect if the format of the returned data changes, we can add a test for it.
+<<test functions>>=
+def test_get_all_data():
+  data = ps.get_all_data("DD1310", "HT2023")
+  assert "totalNumberOfParticipants" in data
+  assert "courseRounds" in data
+  assert "participants" in data
+  assert "funkaCountersCombinations" in data
+  assert "funkaFlag" in data
+  assert "ugdata" in data
+  assert "numberOfCourseRoundChanged" in data
+@
+
+\section{The data format}\label{DataFormat}
+
+Now let's have a look at what's in these.
+We now look at the return value of
+\begin{minted}{python}
+ps.get_all_data("DD1310", "HT2023")
+\end{minted}
+That call returns a JSON object that looks like the following (we've cleaned up 
+the data, otherwise it would yield around 1000 pages of output):
+\begin{pycode}
+def clean_data(data):
+  if isinstance(data, list):
+    try:
+      return [clean_data(data[0])]
+    except IndexError:
+      return []
+  elif isinstance(data, dict):
+    for key, value in data.items():
+      if key == "funkaCountersCombinations":
+        data[key] = {"funka code combinations": {"some uid": str(int)}}
+      else:
+        data[key] = clean_data(value)
+    return data
+
+  return str(type(data))
+
+data = clean_data(data)
+print(r"\begin{minted}{json}")
+print(json.dumps(data, indent=2))
+print(r"\end{minted}")
+\end{pycode}
+
+
+\section{Listing course participants}
+
+The first thing we want to do is to be able to list all students that are 
+expected to participate in a course.
+<<list doc>>=
+Lists all students in the list of expected participants.
+@
+
+We will add a command that simply reads out the list of participants above 
+(\cref{DataFormat}) and prints the relevant parts to stdout.
+We also want to introduce some flags for filtering.
+<<add commands to cli>>=
+@cli.command(name="ls")
+def cli_ls(<<course code argument>>,
+           <<semester argument>>,
+           <<option to print raw JSON data>>,
+           <<option to control CSV output>>):
+  """
+  <<list doc>>
+  """
+  <<create [[ParticipantsSession]] instance [[ps]]>>
+  <<get all data as [[data]]>>
+  <<print [[data]]>>
+<<helper functions>>=
+@
+
+\subsection{Getting all data}
+
+We will use the [[get_all_data]] method to get the data.
+This is the only thing we need
+[[<<course code argument>>]] and
+[[<<semester argument>>]] for.
+<<get all data as [[data]]>>=
+data = ps.get_all_data(course_code, semester)
+<<course code argument>>=
+course_code: Annotated[str, course_code_arg]
+<<semester argument>>=
+semester: Annotated[str, semester_arg]
+<<CLI argument and option definitions>>=
+course_code_arg = typer.Argument(help="The course code, something like DD1310")
+semester_arg = typer.Argument(help="The semester, something like HT2023")
+@
+
+\subsection{Printing the data}
+
+We want to print the data in useful ways.
+In the following sections we will expand on [[<<print [[data]]>>]] and the 
+other necessary code blocks.
+
+\subsection{Printing the raw data}
+
+The first that we'll provide is the [[raw]] option.
+This will simply print all the JSON data that we got.
+<<print [[data]]>>=
+if raw:
+  print(json.dumps(data, indent=2))
+  return
+<<option to print raw JSON data>>=
+raw: Annotated[bool, raw_opt] = False
+<<CLI argument and option definitions>>=
+raw_opt = typer.Option(help="Print the raw JSON data and exit. "
+                            "This ignores all other options.")
+@
+
+\subsection{Printing the course participants in CSV format}
+
+We want to be able to print the course participants in CSV format.
+We want one line per participant.
+We also want to default to tab-separated CSV instead of comma separated, since 
+this is more useful with the other tools of the terminal (\eg [[cut]] and 
+[[join]]).
+<<print [[data]]>>=
+csvout = csv.writer(sys.stdout, delimiter=delimiter)
+<<additional imports>>=
+import csv
+<<option to control CSV output>>=
+delimiter: Annotated[str, delimiter_opt] = "\t",
+<<CLI argument and option definitions>>=
+delimiter_opt = typer.Option(help="The delimiter to use for CSV output. "
+                                  "Defaults to tab to be useful in the "
+                                  "terminal.")
+@
+
+Now that we have CSV set up, we can go ahead and print the data.
+We will print the columns in this order:
+<<list doc>>=
+The columns of the CSV output is the following:
+
+- The course round (optional)
+
+- The Ladok course round code (optional)
+
+- The personnummer (optional)
+
+- The full name (first name and last name, in that order, separated by space)
+
+- The email address
+
+- The programme code (optional)
+
+- The funka codes (comma separated, in one column)
+
+<<print [[data]]>>=
+for participant in data["participants"]:
+  columns = []
+  if course_round:
+    columns.append(participant["courseRound"])
+  if ladok_round:
+    columns.append(participant["courseRoundsCode"])
+  if personnummer:
+    columns.append(participant['personnumer'])
+  columns.append(f"{participant['firstName']} {participant['lastName']}")
+  columns.append(participant["email"])
+  if programme:
+    columns.append(participant["programCode"])
+  columns.append(", ".join(participant["funkaCode"]))
+  csvout.writerow(columns)
+<<option to control CSV output>>=
+course_round: Annotated[bool, course_round_opt] = True,
+ladok_round: Annotated[bool, ladok_round_opt] = False,
+personnummer: Annotated[bool, personnummer_opt] = False,
+programme: Annotated[bool, programme_opt] = True,
+<<CLI argument and option definitions>>=
+course_round_opt = typer.Option(help="Print the course round "
+                                     "in the CSV output.")
+ladok_round_opt = typer.Option(help="Print the Ladok course round UID "
+                                    "in the CSV output.")
+personnummer_opt = typer.Option(help="Print the personnummer "
+                                     "in the CSV output.")
+programme_opt = typer.Option(help="Print the programme code "
+                                  "in the CSV output.")
+@
+
+
+\section{The funka codes}
+
+It might be nice to have a summary of the funka codes too.
+We add this to the help text.
+<<list doc>>=
+The funka codes are divided into two categories, R and P.
+
+R-stöd: Anpassningar som rör rum, tid och fysisk omständighet anses normalt 
+beviljade av examinator.
+
+- R1: 50% längre skrivtid vid skriftlig salsexamination
+
+- R2: Examination i mindre grupp
+
+- R3: Examination i mindre grupp med skärmar som avgränsar sittplatserna
+
+- R4: Examination helt enskilt
+
+- R5: Examination med anpassad placering i skrivrum
+
+- R6: Examination med anpassade lokaler
+
+- R7: Examination med anpassad placering enskilt i skrivrum
+
+- R8: Skriva på dator
+
+- R9: Höj- och sänkbart bord
+
+- R10: Ljudavskärmning, hörselkåpor
+
+- R11: Ljudavskärmning, utdelade öronproppar
+
+- R12: Ljudavskärmning, musik i hörlurar
+
+- R13: Pauser under första timmen
+
+- R14: Kortare pauser under examinationstillfället
+
+- R15: Möjlighet till liggande vila under examinationen
+
+- R17: Tentamen utskriven på A3-format
+
+- R20: Upplästa frågor
+
+- R21: Teckentolk
+
+- R22: Egen teknisk utrustning
+
+- R23: Medicinsk utrustning
+
+- R100: Övriga anpassningar
+
+- RANTSTOD: Anteckningsstöd
+
+P-stöd: Pedagogiska anpassningar ska alltid prövas av examinator i samråd med 
+berörd programansvarig alternativt grundutbildningsansvarig eller studierektor.
+
+- P8: Skriva på dator
+
+- P16: Anpassad tentamenslydelse
+
+- P18: Flexibel inlämnings tid vid hemtentamen/uppgifter
+
+- P19: Delad tentamen
+
+- P20: Upplästa frågor
+
+- P24: Pedagogiskt hjälpmedel: formelsamling
+
+- P25: Pedagogisk hjälpmedel: miniräknare
+
+- P26: Pedagogisk hjälpmedel: lexikon
+
+- P27: Pedagogisk hjälpmedel: övrigt
+
+- P28: Assistans vid examination
+
+- P29: Muntlig examination/muntlig examination som komplettering till skriftlig 
+  examination
+
+- P30: Rörelsehjälpmedel t.ex. rullstol
+
+- P31: Assistans- eller ledarhund
+
+- P100: Övriga anpassningar
+
+A more detailed coverage of the funka codes can be found at
+
+https://intra.kth.se/polopoly_fs/1.907952.1601461801!/Copy%20of%20Matris%20190522%20version10.pdf
+@
+
+
+\section{Useful tools}
+
+This output format would allow us to do the following construction.
+We want to get the names of all students with the R1 funka code.
+(Those students have the right to 50\% extra time on exams.)
+When we administrate the time in Canvas, we must paste their names into Canvas 
+one by one.
+
+This script fetches the students and copies their names to the clipboard one by 
+one.
+This way, we paste them in Canvas and press enter to continue to the next.
+<<funka-extra-time.sh>>=
+#!/bin/bash
+
+course="$1"
+semester="$2"
+programme="$3"
+
+students=$(kthutils participants ls "$course" "$semester" \
+              | egrep "$programme" | egrep R1 | cut -f 2)
+
+IFS=$'\n'
+for s in $students;
+do
+  echo "$s" | xclip
+  echo -n "$s"
+  read
+done
+@

@@ -7,8 +7,9 @@ PYTHONTEXFLAGS=	--interpreter "python:poetry run python3"
 
 kthutils.pdf: preamble.tex abstract.tex ../LICENSE
 
-kthutils.pdf: ../src/kthutils/ug.tex
 kthutils.pdf: ../src/kthutils/cli.tex
+kthutils.pdf: ../src/kthutils/ug.tex
+kthutils.pdf: ../src/kthutils/participants.tex
 kthutils.pdf: ../src/kthutils
 
 ../src/kthutils::
