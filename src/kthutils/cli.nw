@@ -34,6 +34,13 @@ import kthutils.ug
 cli.add_typer(kthutils.ug.cli)
 @
 
+Then we add the participants module.
+<<import subcommand modules>>=
+import kthutils.participants
+<<add subcommand typers to cli>>=
+cli.add_typer(kthutils.participants.cli)
+@
+
 
 \section{Credentials: username and password}
 
