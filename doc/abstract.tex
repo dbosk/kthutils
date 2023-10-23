@@ -2,13 +2,16 @@ This package provides various utilities for automation at KTH.
 It provides the following modules:
 \begin{description}
   \item[kthutils.ug] Access the UG editor through Python.
+  \item[kthutils.participants] Read expected course participants through 
+    Python.
 \end{description}
 
 We also provide a command-line interface for the modules.
 This means that the functionality can be accessed through both Python and the 
 shell.
 
-An example:
+\paragraph{An example}
+
 We want to add the user \texttt{dbosk} as teacher in the 
 group
 \begin{center}
@@ -32,6 +35,8 @@ In the shell, we would do
 \begin{minted}{bash}
 kthutils ug members add edu.courses.DD.DD1317.20232.1.teachers dbosk
 \end{minted}
+
+\paragraph{Installation}
 
 Install the tools using \texttt{pip}:
 \begin{minted}{bash}
