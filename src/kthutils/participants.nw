@@ -362,6 +362,23 @@ programme_opt = typer.Option(help="Print the programme code "
                                   "in the CSV output.")
 @
 
+Now, since we rely on this format of the data, we can add a test for it.
+Same as above, this way we can detect if the format of the data changes.
+<<test functions>>=
+def test_participants_data():
+  data = ps.get_all_data("DD1310", "HT2023")
+  assert "participants" in data
+  participant = data["participants"][0]
+  assert "courseRound" in participant
+  assert "courseRoundsCode" in participant
+  assert "personnumer" in participant
+  assert "firstName" in participant
+  assert "lastName" in participant
+  assert "email" in participant
+  assert "programCode" in participant
+  assert "funkaCode" in participant
+@
+
 
 \section{The funka codes}
 
