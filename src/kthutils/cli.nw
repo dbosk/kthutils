@@ -41,6 +41,13 @@ import kthutils.participants
 cli.add_typer(kthutils.participants.cli)
 @
 
+Then we add the [[iprange]] module.
+<<import subcommand modules>>=
+import kthutils.iprange
+<<add subcommand typers to cli>>=
+cli.add_typer(kthutils.iprange.cli)
+@
+
 
 \section{Credentials: username and password}
 
