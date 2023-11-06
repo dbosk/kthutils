@@ -2,6 +2,7 @@ MODULES+=	cli.py
 MODULES+=	credentials.py
 MODULES+=	ug.py
 MODULES+=	participants.py
+MODULES+=	iprange.py iprange.sh
 
 .PHONY: all
 all: ${MODULES}
@@ -11,6 +12,11 @@ credentials.py: cli.nw
 
 funka-extra-time.sh: participants.nw
 	${NOTANGLE.sh}
+
+iprange.py: iprange.sh
+iprange.sh: iprange.nw
+	${NOTANGLE.sh}
+	chmod +x $@
 
 .PHONY: clean
 clean:

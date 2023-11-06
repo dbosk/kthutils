@@ -41,6 +41,17 @@ import kthutils.participants
 cli.add_typer(kthutils.participants.cli)
 @
 
+Then we add the [[iprange]] module.
+This one, since it only contains one command, we'll have to add it in a 
+particular way.
+This particular way is the same as for the [[config]] command below.
+We'll call a function in the module that adds the command to the CLI.
+<<import subcommand modules>>=
+import kthutils.iprange
+<<add subcommand typers to cli>>=
+kthutils.iprange.add_command(cli)
+@
+
 
 \section{Credentials: username and password}
 
