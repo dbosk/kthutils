@@ -10,22 +10,29 @@ window of the exam, we have these options:
   this. Then I'll just list the IP ranges for the booked lab rooms. Hence, they 
   can't access the quiz from outside of the proctored environment.
 
-  \item\label{CanvasExamRoom} Assign the quiz only to those who signed up. 
-  However, it would still need the IP-blocking, since otherwise they can do it 
-  from home anyway as long as they signed up.
+  \item\label{CanvasExamRoom} Assign the quiz only to those who signed up.
+  We can do this manually in the course's Canvas room, or just get a designated 
+  exam room in Canvas.
+
+  However, it would still need the IP-blocking, since otherwise they can do 
+  it from home anyway as long as they signed up.
 
   \item Just invalidate whoever submitted anything but wasn't recorded present 
-  by the invigilators. This is a lot of manual work. And they can still leave 
-  the room after 30 minutes and finish the quiz outside of the proctored 
-  environment with aids that we don't allow.
-\end{enumerate}
+  by the invigilators.
+  
+  This is a lot of manual work. And they can still leave the room after 30 
+  minutes (or whatever limit is set) and finish the quiz outside of the 
+  proctored environment with aids that we don't allow.
 
-In our setting, the quiz was in the normal Canvas room of the course.
-If we instead have a dedicated exam room in Canvas, that's just equivalent to 
-option \ref{CanvasExamRoom} above.
-To improve on option \ref{CanvasExamRoom} to not have to use an IP block, we 
-need that the proctors note the time every student leaves so that we can 
-compare the time they left to the time they submitted.
+  There are two possible remedies:
+  \begin{enumerate}
+  \item The proctors note the time every student leaves so that we can compare 
+  the time they left to the time they submitted.
+  \item The students can't leave before the exam time is finished, they must 
+  stay in the room the entire time.
+  In this case we only a list of was present.
+  \end{enumerate}
+\end{enumerate}
 
 
 \section{Setting up the CLI}
