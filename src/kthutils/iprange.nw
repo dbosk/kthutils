@@ -28,6 +28,32 @@ need that the proctors note the time every student leaves so that we can
 compare the time they left to the time they submitted.
 
 
+\section{Setting up the CLI}
+
+We want to provide a command that takes arguments and options and passes those 
+to a shell script.
+Since we only provide one command, we must provide a function [[add_command]] 
+that we can use to add the command to any provided [[Typer]] instance [[cli]].
+<<iprange.py>>=
+import typer
+from typing import Annotated, List
+<<imports>>
+
+<<argument and option definitions>>
+
+def add_command(cli):
+  """
+  Adds the [[iprange]] command to the given [[cli]].
+  """
+  <<add the [[iprange]] command to [[cli]]>>
+
+if __name__ == "__main__":
+  cli = typer.Typer()
+  add_command(cli)
+  cli()
+@
+
+
 \section{The [[iprange]] command}
 
 We want to provide a command that takes a list of lab rooms as argument and 
@@ -37,17 +63,7 @@ However, we want to be able to run it from this Python command-line utility
 too.
 The main script is provided below as [[<<iprange.sh>>]].
 We'll simply call it from our Python-implemented subommand.
-<<iprange.py>>=
-import typer
-from typing import Annotated, List
-<<imports>>
-
-cli = typer.Typer(name="iprange", help="Generate IP ranges for lab rooms.")
-
-rooms_arg = typer.Argument(help="The lab rooms to generate IP ranges for. "
-                                "The lab room is the hostname prefix, eg red "
-                                "(for Röd) or toke (for Toker).")
-
+<<add the [[iprange]] command to [[cli]]>>=
 @cli.command()
 def iprange(rooms: Annotated[List[str], rooms_arg]):
   """
@@ -55,9 +71,10 @@ def iprange(rooms: Annotated[List[str], rooms_arg]):
   """
   <<find the path of [[iprange.sh]]>>
   <<run [[iprange.sh]] with the given [[rooms]]>>
-
-if __name__ == "__main__":
-    cli()
+<<argument and option definitions>>=
+rooms_arg = typer.Argument(help="The lab rooms to generate IP ranges for. "
+                                "The lab room is the hostname prefix, eg red "
+                                "(for Röd) or toke (for Toker).")
 @
 
 \subsection{Find the path of [[iprange.sh]]}
