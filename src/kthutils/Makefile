@@ -3,6 +3,7 @@ MODULES+=	credentials.py
 MODULES+=	ug.py
 MODULES+=	participants.py
 MODULES+=	iprange.py iprange.sh
+MODULES+=	forms.py
 
 .PHONY: all
 all: ${MODULES}

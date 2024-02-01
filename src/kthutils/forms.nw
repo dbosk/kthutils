@@ -1,0 +1,104 @@
+\chapter{KTH Forms}
+
+We want to access data from forms in KTH Forms.
+For example, Restlabb records student results in KTH Forms.
+It would be nice to easily extract those data.
+Forms can export data in CSV format, this can easily be printed to stdout in 
+the terminal for further processing.
+
+In the long run we'd like to be able to list all the forms a user has access 
+to, and use the actual names of the forms.
+We also want to add shortcut names to the different forms for easy access.
+For now, we simply add each form manually as such; and then print the contents 
+of the desired form.
+
+
+\section{Code overview}
+
+This is an independent module in the [[kthutils]] package: [[kthutils.forms]].
+It resides in the [[forms.py]] file.
+Since we use [[typer]] we add one function per command as well as option and 
+argument definitions for each command.
+<<forms.py>>=
+import typer
+from typing import Annotated
+
+<<imports>>
+
+cli = typer.Typer(name="forms", help="Access KTH Forms")
+
+<<option and argument definitions>>
+<<command definitions>>
+
+def main():
+  cli()
+
+if __name__ == "__main__":
+  main()
+@
+
+
+\section{Adding forms}
+
+We add forms manually for now.
+So we add a command for adding a form.
+<<add command doc>>=
+Adds a form to the configuration
+<<command definitions>>=
+@cli.command(name="add")
+def cli_add_form(<<args for add command>>):
+  """
+  <<add command doc>>
+  """
+  <<add the form>>
+@
+
+We want to add the each form to a dictionary in the configuration:
+a name and a URL.
+<<args for add command>>=
+name: Annotated[FormName, form_name_arg],
+url: Annotated[str, form_url_arg]
+@
+
+The form name must not contain any periods (dots), due to how the config system 
+of [[typerconf]] works.
+Consequently, we add a custom parser for the form name which rejects any names 
+containing periods by raising a [[typer.BadParameter]] exception.
+<<option and argument definitions>>=
+class FormName(str):
+  def __init__(self, value):
+    if "." in value:
+      raise typer.BadParameter("Name cannot contain '.'")
+    super.__init__(value)
+
+form_name_arg = typer.Argument(help="Name of the form",
+                               parser=FormName)
+form_url_arg = typer.Argument(help="URL to the form. This can be any public "
+                                   "URL that results in a CSV file. But it "
+                                   "automatically logs in for KTH Forms.")
+<<imports>>=
+import typerconf
+<<add the form>>=
+typerconf.set(f"forms.{name}", url)
+@
+
+
+\section{Exporting form data}
+
+We want to export data from a form.
+We add a command for this.
+<<export command doc>>=
+Prints data from a form to stdout in CSV format
+<<command definitions>>=
+@cli.command(name="export")
+def cli_export_form(<<args for export command>>):
+  """
+  <<export command doc>>
+  """
+  <<export the form>>
+@
+
+<<args for export command>>=
+<<export the form>>=
+pass
+@

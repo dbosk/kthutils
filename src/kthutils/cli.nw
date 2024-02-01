@@ -52,8 +52,15 @@ import kthutils.iprange
 kthutils.iprange.add_command(cli)
 @
 
+Finally, we add the [[forms]] module.
+<<import subcommand modules>>=
+import kthutils.forms
+<<add subcommand typers to cli>>=
+cli.add_typer(kthutils.forms.cli)
+@
 
-\section{Credentials: username and password}
+
+\section{Credentials: username and password}\label{Credentials}
 
 We need credentials to log into the different KTH systems to use them.
 
