@@ -11,7 +11,7 @@ version=$(shell sed -n 's/^ *version *= *\"\([^\"]\+\)\"/\1/p' pyproject.toml)
 all: README.md
 
 README.md: doc/abstract.tex
-	pandoc -o $@ $<
+	pandoc -o $@ $< -t gfm
 	${EDITOR} $@
 
 publish: all
