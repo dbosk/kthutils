@@ -21,11 +21,13 @@ Since we use [[typer]] we add one function per command as well as option and
 argument definitions for each command.
 <<forms.py>>=
 import typer
-from typing import Annotated
+from typing import Annotated, Any, List
 
 <<imports>>
 
 cli = typer.Typer(name="forms", help="Access KTH Forms")
+
+<<API for KTH Forms>>
 
 <<option and argument definitions>>
 <<command definitions>>
@@ -35,6 +37,19 @@ def main():
 
 if __name__ == "__main__":
   main()
+@
+
+\subsection{Tests}
+
+We add tests for the module in the [[test_forms.py]] file.
+<<test_forms.py>>=
+import pytest
+import kthutils.forms
+<<test imports>>
+
+<<test setup>>
+
+<<test functions>>
 @
 
 
@@ -64,12 +79,18 @@ The form name must not contain any periods (dots), due to how the config system
 of [[typerconf]] works.
 Consequently, we add a custom parser for the form name which rejects any names 
 containing periods by raising a [[typer.BadParameter]] exception.
+
+Since we inherit from [[str]] we must use the [[__new__]] method to create the 
+instance.
+We can't use [[__init__]] since [[str]] is immutable, and [[__init__]] is 
+called after the instance is created.
+(It follows that [[__new__]] is a class method, not an instance method.)
 <<option and argument definitions>>=
 class FormName(str):
-  def __init__(self, value):
+  def __new__(cls, value):
     if "." in value:
       raise typer.BadParameter("Name cannot contain '.'")
-    super.__init__(value)
+    return super().__new__(cls, value)
 
 form_name_arg = typer.Argument(help="Name of the form",
                                parser=FormName)
@@ -80,6 +101,81 @@ form_url_arg = typer.Argument(help="URL to the form. This can be any public "
 import typerconf
 <<add the form>>=
 typerconf.set(f"forms.{name}", url)
+@
+
+
+\section{An API for KTH Forms}
+
+Since we must be logged in to access KTH Forms, we want to create a class for 
+using.
+This class will in turn use the [[weblogin]] package.
+<<API for KTH Forms>>=
+class FormsSession:
+  """
+  Maintains a session to the KTH Forms service.
+  """
+
+  BASE_URL = <<KTH Forms base URL>>
+
+  def __init__(self, username: str, password: str):
+    """
+    Creates a new session to the KTH Forms service.
+
+    `username` is the KTH username to use for logging in through 
+    https://login.ug.kth.se. `password` is the password to use for logging in.
+    """
+    <<Forms constructor>>
+
+  <<Forms methods>>
+@
+
+Now we can create a session to use for testing.
+<<test setup>>=
+forms = kthutils.forms.FormsSession(os.environ["KTH_USERNAME"],
+                                    os.environ["KTH_PASSWORD"])
+<<test imports>>=
+import os
+@
+
+
+\subsection{Logging in}
+
+To trigger the login we must have the correct URL.
+<<KTH Forms base URL>>=
+"https://www.kth.se/form/admin"
+@
+
+We can then create a session using [[weblogin]].
+<<Forms constructor>>=
+self.__session = weblogin.AutologinSession([
+                      weblogin.kth.UGlogin(username, password,
+                                           self.BASE_URL)
+                    ])
+<<imports>>=
+import weblogin
+import weblogin.kth
+@
+
+
+\subsection{Getting a form}
+
+For now, we'll add a method for getting a form by URL.
+It will return a CSV reader for the form.
+<<imports>>=
+import csv
+<<Forms methods>>=
+def get_form_by_url(self, url: str) -> str:
+  """
+  Gets the form at the given URL and returns it as (content, type) tuple. 
+  Content is the raw data of the form, type is the content type of the form.
+  """
+  response = self.__session.get(url)
+  if response.status_code != requests.codes.ok:
+    raise ValueError(f"Failed to get form at {url}: {response.text}")
+
+  return response.content, response.headers["Content-Type"]
+<<imports>>=
+import requests
 @
 
 
@@ -98,7 +194,58 @@ def cli_export_form(<<args for export command>>):
   <<export the form>>
 @
 
+We need a name for the form to export.
 <<args for export command>>=
+name: Annotated[FormName, form_name_arg],
+@
+
+We can then get the URL for the form from the configuration and use the 
+[[get_form_by_url]] method to get the form.
 <<export the form>>=
-pass
+<<let [[data]] contain the form data, [[content_type]] its type>>
+<<process [[data]] into [[csvdata]]>>
+<<set up [[csvout]] as a CSV writer>>
+
+for row in csvdata:
+  csvout.writerow(row)
+@
+
+To get the data, we first need the URL from the configuration.
+Then we need the credentials to log into KTH Forms.
+<<let [[data]] contain the form data, [[content_type]] its type>>=
+url = typerconf.get(f"forms.{name}")
+forms = kthutils.forms.FormsSession(*kthutils.credentials.get_credentials())
+
+data, content_type = forms.get_form_by_url(url)
+<<imports>>=
+import kthutils.credentials
+@
+
+We'll print the data as CSV data to stdout.
+We'll let the user decide on the delimiter, but we'll default to tab.
+<<set up [[csvout]] as a CSV writer>>=
+csvout = csv.writer(sys.stdout, delimiter=delimiter)
+<<args for export command>>=
+delimiter: Annotated[str, delimiter_arg] = "\t",
+<<option and argument definitions>>=
+delimiter_arg = typer.Option(help="Delimiter to use for the CSV output")
+<<imports>>=
+import sys
+@
+
+\subsection{Processing the data}
+
+The data we get can be in either CSV or XLSX format.
+In the case of KTH Forms, it exports and XLSX file.
+<<process [[data]] into [[csvdata]]>>=
+if content_type == "text/csv":
+  csvdata = csv.reader(data.decode("utf-8").splitlines())
+else:
+  datafile = io.BytesIO(data)
+  wb = openpyxl.load_workbook(datafile)
+  sheet = wb.active
+  csvdata = sheet.iter_rows(values_only=True)
+<<imports>>=
+import io
+import openpyxl
 @
