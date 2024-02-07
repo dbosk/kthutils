@@ -131,9 +131,9 @@ class FormsSession:
 
 Now we can create a session to use for testing.
 <<test setup>>=
-forms = kthutils.forms.FormsSession(os.environ["KTH_USERNAME"],
-                                    os.environ["KTH_PASSWORD"])
+forms = kthutils.forms.FormsSession(*kthutils.credentials.get_credentials())
 <<test imports>>=
+import kthutils.credentials
 import os
 @
 
@@ -178,6 +178,15 @@ def get_data_by_url(self, url: str) -> Tuple[bytes, str]:
 import requests
 @
 
+We can test this with a known form.
+<<test functions>>=
+def test_get_data_by_url():
+  data, content_type = forms.get_data_by_url(
+      "https://www.kth.se/form/admin/api/webform/64ec8baa917ea4c31c33267e/answer/export")
+  assert content_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  assert data.startswith(b"PK")
+@
+
 \subsection{Getting a form in CSV format}
 
 We can add a method for getting a form in CSV format, that is a list of lists 
@@ -192,6 +201,16 @@ def get_csv_by_url(self, url: str) -> List[List[str]]:
   <<process [[data]] into [[csvdata]]>>
 
   return list(csvdata)
+@
+
+We want to test this method as well.
+We'll use the same form as before, this is the form for Restlabb 2023/2024.
+The first column is \enquote{Svarsdatum} and the second is \enquote{Kurs}.
+<<test functions>>=
+def test_get_csv_by_url():
+  csvdata = forms.get_csv_by_url(
+      "https://www.kth.se/form/admin/api/webform/64ec8baa917ea4c31c33267e/answer/export")
+  assert "Svarsdatum" in csvdata[0] and "Kurs" in csvdata[0]
 @
 
 \subsection{Processing the data to CSV}
