@@ -42,7 +42,7 @@ if __name__ == "__main__":
 \subsection{Tests}
 
 We add tests for the module in the [[test_forms.py]] file.
-<<test_forms.py>>=
+<<test forms.py>>=
 import pytest
 import kthutils.forms
 <<test imports>>
