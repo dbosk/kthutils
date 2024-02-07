@@ -21,7 +21,7 @@ Since we use [[typer]] we add one function per command as well as option and
 argument definitions for each command.
 <<forms.py>>=
 import typer
-from typing import Annotated, Any, List
+from typing import Annotated, Any, List, Tuple
 
 <<imports>>
 
@@ -164,7 +164,7 @@ It will return a CSV reader for the form.
 <<imports>>=
 import csv
 <<Forms methods>>=
-def get_form_by_url(self, url: str) -> str:
+def get_data_by_url(self, url: str) -> Tuple[bytes, str]:
   """
   Gets the form at the given URL and returns it as (content, type) tuple. 
   Content is the raw data of the form, type is the content type of the form.
@@ -176,6 +176,41 @@ def get_form_by_url(self, url: str) -> str:
   return response.content, response.headers["Content-Type"]
 <<imports>>=
 import requests
+@
+
+\subsection{Getting a form in CSV format}
+
+We can add a method for getting a form in CSV format, that is a list of lists 
+as would be returned by the [[csv.reader]].
+<<Forms methods>>=
+def get_csv_by_url(self, url: str) -> List[List[str]]:
+  """
+  Gets the form at the given URL and returns it as a list of lists.
+  """
+  data, content_type = self.get_data_by_url(url)
+
+  <<process [[data]] into [[csvdata]]>>
+
+  return list(csvdata)
+@
+
+\subsection{Processing the data to CSV}
+
+The data we get can be in either CSV or XLS(X) format.
+In the case of KTH Forms, it exports and XLSX file.
+<<process [[data]] into [[csvdata]]>>=
+if content_type == "text/csv":
+  csvdata = csv.reader(data.decode("utf-8").splitlines())
+elif "excel" in content_type or "spreadsheet" in content_type:
+  datafile = io.BytesIO(data)
+  wb = openpyxl.load_workbook(datafile)
+  sheet = wb.active
+  csvdata = sheet.iter_rows(values_only=True)
+else:
+  raise ValueError(f"Form at {url} is not in CSV nor XLS(X) format")
+<<imports>>=
+import io
+import openpyxl
 @
 
 
@@ -202,21 +237,17 @@ name: Annotated[FormName, form_name_arg],
 We can then get the URL for the form from the configuration and use the 
 [[get_form_by_url]] method to get the form.
 <<export the form>>=
-<<let [[data]] contain the form data, [[content_type]] its type>>
-<<process [[data]] into [[csvdata]]>>
-<<set up [[csvout]] as a CSV writer>>
-
+<<let [[csvdata]] contain the form data>>
 for row in csvdata:
   csvout.writerow(row)
 @
 
 To get the data, we first need the URL from the configuration.
 Then we need the credentials to log into KTH Forms.
-<<let [[data]] contain the form data, [[content_type]] its type>>=
+<<let [[csvdata]] contain the form data>>
 url = typerconf.get(f"forms.{name}")
 forms = kthutils.forms.FormsSession(*kthutils.credentials.get_credentials())
-
-data, content_type = forms.get_form_by_url(url)
+csvdata = forms.get_csv_by_url(url)
 <<imports>>=
 import kthutils.credentials
 @
@@ -233,19 +264,3 @@ delimiter_arg = typer.Option(help="Delimiter to use for the CSV output")
 import sys
 @
 
-\subsection{Processing the data}
-
-The data we get can be in either CSV or XLSX format.
-In the case of KTH Forms, it exports and XLSX file.
-<<process [[data]] into [[csvdata]]>>=
-if content_type == "text/csv":
-  csvdata = csv.reader(data.decode("utf-8").splitlines())
-else:
-  datafile = io.BytesIO(data)
-  wb = openpyxl.load_workbook(datafile)
-  sheet = wb.active
-  csvdata = sheet.iter_rows(values_only=True)
-<<imports>>=
-import io
-import openpyxl
-@
