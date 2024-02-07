@@ -238,6 +238,7 @@ We can then get the URL for the form from the configuration and use the
 [[get_form_by_url]] method to get the form.
 <<export the form>>=
 <<let [[csvdata]] contain the form data>>
+<<set up [[csvout]] as a CSV writer>>
 for row in csvdata:
   csvout.writerow(row)
 @
