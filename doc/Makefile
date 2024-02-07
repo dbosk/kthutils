@@ -11,6 +11,7 @@ kthutils.pdf: ../src/kthutils/cli.tex
 kthutils.pdf: ../src/kthutils/ug.tex
 kthutils.pdf: ../src/kthutils/participants.tex
 kthutils.pdf: ../src/kthutils/iprange.tex
+kthutils.pdf: ../src/kthutils/forms.tex
 kthutils.pdf: ../src/kthutils
 
 ../src/kthutils::
