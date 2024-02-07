@@ -244,7 +244,7 @@ for row in csvdata:
 
 To get the data, we first need the URL from the configuration.
 Then we need the credentials to log into KTH Forms.
-<<let [[csvdata]] contain the form data>>
+<<let [[csvdata]] contain the form data>>=
 url = typerconf.get(f"forms.{name}")
 forms = kthutils.forms.FormsSession(*kthutils.credentials.get_credentials())
 csvdata = forms.get_csv_by_url(url)
