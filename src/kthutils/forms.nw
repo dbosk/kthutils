@@ -297,19 +297,26 @@ name: Annotated[FormName, form_name_arg],
 We can then get the URL for the form from the configuration and use the 
 [[get_form_by_url]] method to get the form.
 <<export the form>>=
-<<let [[csvdata]] contain the form data>>
 <<set up [[csvout]] as a CSV writer>>
+<<let [[csvdata]] contain the form data>>
 <<print all rows in [[csvdata]]>>
 @
 
 To get the data, we first need the URL from the configuration.
 Then we need the credentials to log into KTH Forms.
-<<let [[csvdata]] contain the form data>>=
-url = typerconf.get(f"forms.{name}")
-forms = kthutils.forms.FormsSession(*kthutils.credentials.get_credentials())
-csvdata = forms.get_csv_by_url(url)
+We'll create a helper function for this.
+<<API for KTH Forms>>=
+def export(name: str) -> List[List[str]]:
+  """
+  Returns data from a form in CSV format (lists of lists)
+  """
+  url = typerconf.get(f"forms.{name}")
+  forms = kthutils.forms.FormsSession(*kthutils.credentials.get_credentials())
+  return forms.get_csv_by_url(url)
 <<imports>>=
 import kthutils.credentials
+<<let [[csvdata]] contain the form data>>=
+csvdata = export(name)
 @
 
 We'll print the data as CSV data to stdout.
@@ -347,7 +354,6 @@ def cli_next_form(<<args for export command>>):
   <<next command doc>>
   """
   <<set up [[csvout]] as a CSV writer>>
-  <<let [[csvdata]] contain the form data>>
   <<filter [[csvdata]] to only contain new data>>
   <<print all rows in [[csvdata]]>>
 @
@@ -357,11 +363,18 @@ we ran the command.
 We can store this in a file in the data directory.
 Once we've computed the new data, we can store the current data in the file 
 instead.
+<<API for KTH Forms>>=
+def next(name: str) -> List[List[str]]:
+  """
+  Returns new data (since last run) from a form in CSV format (lists of lists)
+  """
+  <<let [[prev_csvdata]] contain the previous form data>>
+  new_csvdata = export(name)
+  csvdata = list(filter(lambda x: x not in prev_csvdata, new_csvdata))
+  <<store [[new_csvdata]] as the previous form data>>
+  return csvdata
 <<filter [[csvdata]] to only contain new data>>=
-<<let [[prev_csvdata]] contain the previous form data>>
-new_csvdata = csvdata.copy()
-csvdata = list(filter(lambda x: x not in prev_csvdata, new_csvdata))
-<<store [[new_csvdata]] as the previous form data>>
+csvdata = next(name)
 @
 
 We use the [[dirs.user_data_dir]] function from [[typerconf]] to get the data 
