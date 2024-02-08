@@ -396,3 +396,163 @@ if not data_dir.exists():
   data_dir.mkdir(parents=True)
 with prev_csvfile.open("w") as f:
   csv.writer(f).writerows(new_csvdata)
+@
+
+
+\section{Parsing the form data}
+
+We want to be able to parse the form data into a more structured format.
+We'll add a command for this.
+<<parse command doc>>=
+Parses data from a form and prints it to stdout in a more structured format
+@
+
+\subsection{Problem overview}
+
+We're particularly interested in rewriting the rows of the form from Restlabb 
+into a [[canvaslms]] line to execute.
+They have the following format:
+\begin{enumerate}
+\item Svarsdatum
+\item Studentens namn
+\item\label{StudentLogin} Studentens kth-mail
+\item\label{Course} Kurs
+\item\label{CourseResponsible} Kursledare
+\item\label{Module} Moment
+\item\label{Comments} Kommentarer
+\item Rapporterat i Canvas?
+\item Assistent
+\item Inloggad användare
+\item Användarnamn
+\item\label{GraderLogin} E-post
+\end{enumerate}
+
+We don't really care for most of those fields.
+Those that are interesting are
+\cref{StudentLogin,Course,CourseResponsible,Module,Comments,GraderLogin}.
+\Cref{StudentLogin,GraderLogin} are the KTH mail of the student and the grader, 
+both are on the form username@kth.se.
+The course (\cref{Course}) varies, but looks something like \enquote{DD1310 
+Cmast ht23}.
+The module (\Cref{Module}) and comments (\Cref{Comments}) are the main fields 
+of interest.
+It can look something like this:
+\blockquote{P-uppgift betyg A/D	Sen redovisning, om det är tillåtet att 
+presentera högre betyg Pupp så sent, tycker jag att studenten borde få ett A. 
+Annars blir det ett D.}
+
+Now, we'd like to turn that into a line like this:
+\begin{minted}{bash}
+# Moment: P-uppgift betyg A/D
+# Kommentarer: Sen redovisning, om det är tillåtet att presentera högre betyg 
+# Pupp så sent, tycker jag att studenten borde få ett A. Annars blir det ett D.
+canvaslms grade -c DD1310 -u student@kth.se -m "OK grader@kth.se" \
+  -g A -a redovisning
+\end{minted}
+
+The course code we can regex out of there easily: [[[A-Z]{2}\d{3-4}[A-Z]?]].
+The same for the student's and the grader's KTH emails (usernames), no regex 
+needed even, just to get those fields.
+The grade and assignment (second line in command line), however, must both be 
+parsed out of the comment field.
+
+The assignment can be translated by a translation [[s/P-uppgift/redovisning/]].
+We can find the grade by matching [[betyg ([A-F])]] and use group 1.
+Both are usually in the module field (\cref{Module}).
+
+We present some more examples of module--comment pairs in 
+\cref{ModuleCommentExamples}.
+\begin{table}
+\caption{\label{ModuleCommentExamples} Examples of module--comment pairs}
+\centering
+\begin{tabular}{lp{0.6\columnwidth}}
+{Moment} & {Kommentarer} \\
+\toprule
+Labb 5 del 1&\\
+P-uppgift Godkänd betyg D&Kursen verkar ha ändrat kurskod och DD1315 är något annat nu. Redovisningen tillhör den DD1315 som gavs ht21.\\
+P-uppgift betyg E&\\
+Labb 3&Tidigare blivit godkänd på muntlig redovisning men inte i canvas. Jag har tagit redovisning igen och det är godkänt. Han kan inte lämna in i canvas igen ser det ut som.\\
+Projektspecifikation Godkänd&\\
+p-uppgift betyg E&Bråttom\\
+Lab 3&\\
+Granskning&\\
+\bottomrule
+\end{tabular}
+\end{table}
+This leaves us with some more translations to do.
+We want to translate these names into the correct names of the assignments in 
+Canvas.
+We can see some examples in \cref{AssignmentNames}.
+\begin{table}
+\caption{\label{AssignmentNames} Examples of assignment names}
+\centering
+\begin{tabular}{ll}
+{LADOK module} & {Assignment} \\
+\toprule
+LAB1&Laboration (3) upprepningar, listor och moduler\\
+LAB1&Laboration (6) filhantering\\
+LAB3&Projektspecifikation\\
+LAB3&Projektgranskning\\
+LAB3&Projektredovisning\\
+\bottomrule
+\end{tabular}
+\end{table}
+This leaves us with the following regex suggestions:
+\begin{itemize}
+\item [[s/[Pp]-?upp(gift)?/redovisning/]]
+\item [[s/Lab(b|oration) (\d+)/Laboration..\2./]]
+\item [[s/spec/spec/]]
+\item [[s/[Gg]ranskning/granskning/]]
+\end{itemize}
+
+\subsection{Solution overview}
+
+We can use Python's named format substitutions and the [[re]] module as a base 
+for the solution.
+We can use a system of named rewrites.
+We can store the rewrites and the parsing options in the configuration.
+
+Python supports named format substitutions:
+\begin{minted}{python}
+>>> "test {a} = {b}".format(a=1, b=2)
+'test 1 = 2'
+>>> d = {"a": 1, "b": 2}
+>>> f = "test {a} = {b}"
+>>> f.format(**d)
+'test 1 = 2'
+\end{minted}
+This means that we can have a base string with named substitutions and then let 
+the use specify the values for the substitutions.
+Each such named substitution can then be a regex substitution using [[re.sub]] 
+on the row in the form data.
+
+Then we can do something along the lines of the following to achieve what we 
+outlined above.
+\begin{minted}{bash}
+kthutils config forms.parser.restlabb.format_string -s "
+# Moment: {moment}
+# Kommentarer: {comments}
+canvaslms grade -c '{course}' -u '{student}' -m 'OK {grader}' \
+  -g '{grade}' -a '{assignment}'
+"
+kthutils config forms.parser.restlabb.substs.moment.field -s 5
+kthutils config forms.parser.restlabb.substs.comments.field -s 6
+kthutils config forms.parser.restlabb.substs.course.field -s 3
+kthutils config forms.parser.restlabb.substs.course.regex \
+  -s "s/.*([A-Z]{2}\d{3-4}[A-Z]?).*/\1/"
+kthutils config forms.parser.restlabb.substs.student.field -s 2
+kthutils config forms.parser.restlabb.substs.student.regex \
+  -s "s/.*([a-z]+@kth.se).*/\1/"
+kthutils config forms.parser.restlabb.substs.grader.field -s 11
+kthutils config forms.parser.restlabb.substs.grader.regex \
+  -s "s/.*([a-z]+@kth.se).*/\1/"
+kthutils config forms.parser.restlabb.substs.grade.field -s 5
+kthutils config forms.parser.restlabb.substs.grade.regex \
+  -s "s/.*betyg ([A-F]).*/\1/"
+kthutils config forms.parser.restlabb.substs.assignment.field -s 5
+kthutils config forms.parser.restlabb.substs.assignment.regex \
+  -s "s/.*[Pp]-?upp(gift)?.*/redovisning/" \
+     "s/.*Lab(b|oration) (\d+).*/Laboration..\2./" \
+     "s/.*spec.*/spec/" \
+     "s/.*[Gg]ransk.*/granskning/"
+\end{minted}
