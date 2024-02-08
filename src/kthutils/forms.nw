@@ -237,15 +237,40 @@ In the case of KTH Forms, it exports and XLSX file.
 if content_type == "text/csv":
   csvdata = csv.reader(data.decode("utf-8").splitlines())
 elif "excel" in content_type or "spreadsheet" in content_type:
-  datafile = io.BytesIO(data)
-  wb = openpyxl.load_workbook(datafile)
-  sheet = wb.active
-  csvdata = sheet.iter_rows(values_only=True)
+  <<transform XLSX [[data]] into [[csvdata]]>>
 else:
   raise ValueError(f"Form at {url} is not in CSV nor XLS(X) format")
+@
+
+There is a key detail in the transformation of XLSX to CSV.
+We use the [[openpyxl]] package to read the XLSX file.
+Each row that [[openpyxl]] produces is a tuple of cell values, not a list!
+The [[csv]] module, on the other hand, works with lists, not tuples.
+Hence we must also transform each row into a list.
+Another difference is that [[openpyxl]] uses [[None]] for empty cells, while 
+[[csv]] uses an empty string.
+We must fix this too.
+<<transform XLSX [[data]] into [[csvdata]]>>=
+datafile = io.BytesIO(data)
+<<let [[wb]] contain the workbook of [[datafile]]>>
+sheet = wb.active
+fix_empty_cells = lambda x: list(map(lambda y: y if y is not None else "", x))
+csvdata = map(fix_empty_cells, sheet.iter_rows(values_only=True))
 <<imports>>=
 import io
 import openpyxl
+@
+
+Another annoyance with the [[openpyxl]] package is that it prints warnings when 
+the file has no stylesheet information.
+We're fine with this and there is no problem.
+So when we read, we'll turn off the warnings.
+<<let [[wb]] contain the workbook of [[datafile]]>>=
+with warnings.catch_warnings():
+  warnings.simplefilter("ignore")
+  wb = openpyxl.load_workbook(datafile)
+<<imports>>=
+import warnings
 @
 
 
@@ -274,8 +299,7 @@ We can then get the URL for the form from the configuration and use the
 <<export the form>>=
 <<let [[csvdata]] contain the form data>>
 <<set up [[csvout]] as a CSV writer>>
-for row in csvdata:
-  csvout.writerow(row)
+<<print all rows in [[csvdata]]>>
 @
 
 To get the data, we first need the URL from the configuration.
@@ -298,5 +322,64 @@ delimiter: Annotated[str, delimiter_arg] = "\t",
 delimiter_arg = typer.Option(help="Delimiter to use for the CSV output")
 <<imports>>=
 import sys
+<<print all rows in [[csvdata]]>>=
+for row in csvdata:
+  csvout.writerow(row)
 @
 
+
+\section{Turning a form into a generator}
+
+We want to add the command [[next]] (in reference to Python generators) that 
+essentially turns a form into a generator.
+Whenever run it prints the new rows added to the form since the last time the 
+command was run.
+<<next command doc>>=
+Prints new data from a form to stdout in CSV format
+@
+
+The command is very similar to the [[export]] command.
+The only difference is the filtering.
+<<command definitions>>=
+@cli.command(name="next")
+def cli_next_form(<<args for export command>>):
+  """
+  <<next command doc>>
+  """
+  <<set up [[csvout]] as a CSV writer>>
+  <<let [[csvdata]] contain the form data>>
+  <<filter [[csvdata]] to only contain new data>>
+  <<print all rows in [[csvdata]]>>
+@
+
+To filter the data, we need to know what the export looked like the last time 
+we ran the command.
+We can store this in a file in the data directory.
+Once we've computed the new data, we can store the current data in the file 
+instead.
+<<filter [[csvdata]] to only contain new data>>=
+<<let [[prev_csvdata]] contain the previous form data>>
+new_csvdata = csvdata.copy()
+csvdata = list(filter(lambda x: x not in prev_csvdata, new_csvdata))
+<<store [[new_csvdata]] as the previous form data>>
+@
+
+We use the [[dirs.user_data_dir]] function from [[typerconf]] to get the data 
+directory.
+Then we simply use a file [[next.csv]] to store the data.
+If the file doesn't exist when reading, it's the first time we run [[next]] and 
+we have an empty list.
+<<let [[prev_csvdata]] contain the previous form data>>=
+data_dir = pathlib.Path(typerconf.dirs.user_data_dir)
+prev_csvdata = []
+prev_csvfile = data_dir / "next.csv"
+if prev_csvfile.exists():
+  with prev_csvfile.open("r") as f:
+    prev_csvdata = list(csv.reader(f))
+<<imports>>=
+import pathlib
+<<store [[new_csvdata]] as the previous form data>>=
+if not data_dir.exists():
+  data_dir.mkdir(parents=True)
+with prev_csvfile.open("w") as f:
+  csv.writer(f).writerows(new_csvdata)
