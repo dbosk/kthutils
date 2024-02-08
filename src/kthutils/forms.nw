@@ -93,7 +93,8 @@ class FormName(str):
     return super().__new__(cls, value)
 
 form_name_arg = typer.Argument(help="Name of the form",
-                               parser=FormName)
+                               parser=FormName,
+                               autocompletion=get_added_forms)
 form_url_arg = typer.Argument(help="URL to the form. This can be any public "
                                    "URL that results in a CSV file. But it "
                                    "automatically logs in for KTH Forms.")
@@ -101,6 +102,21 @@ form_url_arg = typer.Argument(help="URL to the form. This can be any public "
 import typerconf
 <<add the form>>=
 typerconf.set(f"forms.{name}", url)
+@
+
+\subsection{Listing all added forms}
+
+We want to list all the forms we've added.
+This is useful for autocompletion if we add a parameter for filtering based on 
+prefix.
+<<API for KTH Forms>>=
+def get_added_forms(prefix: str = "") -> List[str]:
+  """
+  Returns a list of all the forms added to the configuration that are prefixed 
+  by `prefix`. Default prefix is an empty string, which returns all forms.
+  """
+  forms = typerconf.get("forms").keys()
+  return list(filter(lambda x: x.startswith(prefix), forms))
 @
 
 
