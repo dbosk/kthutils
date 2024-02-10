@@ -566,6 +566,8 @@ kthutils config forms.rewriter.restlabb.substitutions.grader.regex \
 kthutils config forms.rewriter.restlabb.substitutions.grade.column -s 5
 kthutils config forms.rewriter.restlabb.substitutions.grade.regex \
   -s "s/.*[Bb]etyg ([A-F]).*/\1/"
+kthutils config forms.rewriter.restlabb.substitutions.grade.no_match_default \
+  -s "P"
 kthutils config forms.rewriter.restlabb.substitutions.assignment.column -s 5
 kthutils config forms.rewriter.restlabb.substitutions.assignment.regex \
   -s "s/.*[Pp]-?upp(gift)?.*/redovisning/" \
@@ -714,12 +716,16 @@ The [[rewriter]] that we get will have the following form.
     "moment": {"column": 5},
     "comments": {"column": 6},
     "course": {"column": 3, "regex": "s/.*([A-Z]{2}\\d{3,4}[A-Z]?).*/\\1/"},
-    "student": {"column": 2, "regex": "s/.*([a-z]+@kth.se).*/\\1/"},
-    "grader": {"column": 11, "regex": "s/.*([a-z]+@kth.se).*/\\1/"},
-    "grade": {"column": 5, "regex": "s/.*betyg ([A-F]).*/\\1/"},
+    "student": {"column": 2, "regex": "s/.*?([a-z]+@kth.se).*/\\1/"},
+    "grader": {"column": 11, "regex": "s/.*?([a-z]+@kth.se).*/\\1/"},
+    "grade": {
+      "column": 5,
+      "regex": "s/.*[Bb]etyg ([A-F]).*/\\1/",
+      "no_match_default": "P"
+    },
     "assignment": {"column": 5, "regex": [
         "s/.*[Pp]-?upp(gift)?.*/redovisning/",
-        "s/.*Lab(b|oration) (\\d+).*/Laboration..\\2./",
+        "s/.*[Ll]ab(b|oration)? (\\d+).*/Laboration..\\2./",
         "s/.*spec.*/spec/",
         "s/.*[Gg]ransk.*/granskning/"
     ]}
@@ -838,7 +844,20 @@ num_results = len(regex_results)
 if num_results == 1:
   substitutions[variable] = regex_results[0]
 elif num_results < 1:
-  substitutions[variable] = data
+  <<update [[substitutions]] with [[data]] if no results>>
 else:
   substitutions[variable] = f"({'|'.join(regex_results)})"
 @
+
+If there are not any results from the regex rewrites, we use the original data.
+However, in some cases, we want to replace it by a constant.
+For instance, sometimes the restlabb TA just writes the name of the lab when 
+the student has passed it.
+In those cases we won't get any rewrite on the grade, but we don't want to use 
+the data, since that's the name of the lab.
+We use a special attribute for this in the [[var_subst]] dictionary.
+<<update [[substitutions]] with [[data]] if no results>>=
+if "no_match_default" in var_subst:
+  substitutions[variable] = var_subst["no_match_default"]
+else:
+  substitutions[variable] = data
