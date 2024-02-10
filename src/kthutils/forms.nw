@@ -24,6 +24,7 @@ import typer
 from typing import Annotated, Any, List, Tuple, Dict
 
 <<imports>>
+<<constants>>
 
 cli = typer.Typer(name="forms", help="Access KTH Forms")
 
@@ -100,8 +101,10 @@ form_url_arg = typer.Argument(help="URL to the form. This can be any public "
                                    "automatically logs in for KTH Forms.")
 <<imports>>=
 import typerconf
+<<constants>>=
+CONFIG_ADDED_FORMS = "forms.added_forms"
 <<add the form>>=
-typerconf.set(f"forms.{name}", url)
+typerconf.set(f"{CONFIG_ADDED_FORMS}.{name}", url)
 @
 
 \subsection{Listing all added forms}
@@ -115,7 +118,7 @@ def get_added_forms(prefix: str = "") -> List[str]:
   Returns a list of all the forms added to the configuration that are prefixed 
   by `prefix`. Default prefix is an empty string, which returns all forms.
   """
-  forms = typerconf.get("forms").keys()
+  forms = typerconf.get(CONFIG_ADDED_FORMS).keys()
   return list(filter(lambda x: x.startswith(prefix), forms))
 @
 
@@ -310,7 +313,7 @@ def export(name: str) -> List[List[str]]:
   """
   Returns data from a form in CSV format (lists of lists)
   """
-  url = typerconf.get(f"forms.{name}")
+  url = typerconf.get(f"{CONFIG_ADDED_FORMS}.{name}")
   forms = kthutils.forms.FormsSession(*kthutils.credentials.get_credentials())
   return forms.get_csv_by_url(url)
 <<imports>>=
@@ -598,7 +601,9 @@ We can get the rewriter from the configuration.
 If we fetch it by name, we get a dictionary that we can pass to the function 
 that contains all the data needed.
 <<get [[rewriter]] from the configuration>>=
-rewriter = typerconf.get(f"forms.rewriter.{rewriter}")
+rewriter = typerconf.get(f"{CONFIG_REWRITERS}.{rewriter}")
+<<constants>>=
+CONFIG_REWRITERS = "forms.rewriter"
 @
 
 Thus we need the user to provide [[rewriter]] as an argument.
@@ -619,7 +624,7 @@ def get_added_rewriters(prefix: str = "") -> List[str]:
   prefixed by `prefix`. Default prefix is an empty string, which returns all 
   rewriters.
   """
-  rewriters = typerconf.get("forms.rewriter").keys()
+  rewriters = typerconf.get(CONFIG_REWRITERS).keys()
   return list(filter(lambda x: x.startswith(prefix), rewriters))
 @
 
