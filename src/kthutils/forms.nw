@@ -631,16 +631,20 @@ def get_added_rewriters(prefix: str = "") -> List[str]:
 
 \subsubsection{Reading the form data}
 
-To read the form data, we can use either the [[export]] or the [[next]] 
-command.
-In either case, we need to know the name of the form.
+To read the form data, we have three options: we can use either the [[export]] 
+or the [[next]] command, or we can read the form data from stdin.
+We make the form name an optional argument, defaulting to stdin.
 <<args for rewrite command>>=
-name: Annotated[FormName, form_name_arg],
+form: Annotated[FormName, opt_form_name_arg] = None,
+<<option and argument definitions>>=
+opt_form_name_arg = typer.Argument(help="Name of the form, if not provided, "
+                                        "read from data from stdin",
+                                   parser=FormName,
+                                   autocompletion=get_added_forms)
 @
 
-We can then read the [[csvdata]] from the form using either the [[export]] or 
-the [[next]] command.
-We let the user decide which command to use.
+If we want to read the [[csvdata]] from the form using the [[export]] or the 
+[[next]] command, we must let the user decide which command to use.
 <<args for rewrite command>>=
 source: Annotated[Source, source_opt] = "next",
 <<option and argument definitions>>=
@@ -653,15 +657,27 @@ source_opt = typer.Option(help="Source of the form data, either "
                           case_sensitive=False)
 <<imports>>=
 from enum import Enum
-<<read [[csvdata]] from the form>>=
-if source == Source.export:
-  csvdata = export(name)
-elif source == Source.next:
-  csvdata = next(name)
-else:
-  raise ValueError(f"Unknown source: {source}")
 @
 
+We can then read the form data.
+<<read [[csvdata]] from the form>>=
+if form is None:
+  <<read [[csvdata]] from stdin>>
+elif source == Source.export:
+  csvdata = export(form)
+elif source == Source.next:
+  csvdata = next(form)
+else:
+  raise typer.BadParameter(f"Unknown source: {source}")
+@
+
+If we read from stdin, we can use the [[csv.reader]] to read the data.
+We also want to control the delimiter, so we need to add an option for that.
+<<read [[csvdata]] from stdin>>=
+csvdata = list(csv.reader(sys.stdin, delimiter=delimiter))
+<<args for rewrite command>>=
+delimiter: Annotated[str, delimiter_arg] = "\t",
+@
 
 \subsubsection{Rewriting a row}
 
@@ -739,7 +755,7 @@ for variable, var_subst in rewriter["substitutions"].items():
 If there is an error, we must make it a useful message to the user, since they 
 have to fix it.
 <<handle that the user-specified column is out of range>>=
-raise ValueError(f"{key}.column = {var_subst['column']} is out of range, "
+raise ValueError(f"{variable}.column = {var_subst['column']} is out of range, "
                  f"row has {len(row)} columns: {row}")
 @
 
