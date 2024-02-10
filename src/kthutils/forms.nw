@@ -729,12 +729,10 @@ The [[/]] can be any character, same as in [[sed]].
 <<create [[substitutions]] from [[row]] and [[rewriter]]>>=
 substitutions = {}
 for variable, var_subst in rewriter["substitutions"].items():
-  try:
-    data = row[int(var_subst["column"])]
-  except KeyError:
+  if "column" in var_subst:
+    <<make [[data]] contain the columns from [[row]]>>
+  else:
     data = "\t".join(row)
-  except IndexError:
-    <<handle that the user-specified column is out of range>>
 
   try:
     if not isinstance(var_subst["regex"], list):
@@ -752,11 +750,41 @@ for variable, var_subst in rewriter["substitutions"].items():
   <<update [[substitutions]] with [[regex_results]]>>
 @
 
+<<make [[data]] contain the columns from [[row]]>>=
+column = var_subst["column"]
+if ":" in column:
+  if column.count(":") == 2:
+    try:
+      start, end, step = map(int, column.split(":"))
+    <<handle that the user specified non-int slices>>
+    s = slice(start, end, step)
+  elif column.count(":") == 1:
+    try:
+      start, end = map(int, column.split(":"))
+    <<handle that the user specified non-int slices>>
+    s = slice(start, end)
+  else:
+    raise ValueError(f"{variable}.column = {column} has too many colons.")
+  data = "\t".join(row[s])
+else:
+  try:
+    data = row[int(column)]
+  <<handle that the user-specified column is out of range>>
+  <<handle that the user-specified column is not an int>>
+@
+
 If there is an error, we must make it a useful message to the user, since they 
 have to fix it.
 <<handle that the user-specified column is out of range>>=
-raise ValueError(f"{variable}.column = {var_subst['column']} is out of range, "
-                 f"row has {len(row)} columns: {row}")
+except IndexError:
+  raise ValueError(f"{variable}.column = {column} is "
+                   f"out of range, row has {len(row)} columns: {row}.")
+<<handle that the user-specified column is not an int>>=
+except ValueError as err:
+  raise ValueError(f"{variable}.column = {column} is not an int: {err}")
+<<handle that the user specified non-int slices>>=
+except ValueError as err:
+  raise ValueError(f"{variable}.column = {column} is not a valid slice: {err}")
 @
 
 We can then apply the regexes to the data and store the result in the 
