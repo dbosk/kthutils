@@ -21,9 +21,10 @@ Since we use [[typer]] we add one function per command as well as option and
 argument definitions for each command.
 <<forms.py>>=
 import typer
-from typing import Annotated, Any, List, Tuple
+from typing import Annotated, Any, List, Tuple, Dict
 
 <<imports>>
+<<constants>>
 
 cli = typer.Typer(name="forms", help="Access KTH Forms")
 
@@ -100,8 +101,10 @@ form_url_arg = typer.Argument(help="URL to the form. This can be any public "
                                    "automatically logs in for KTH Forms.")
 <<imports>>=
 import typerconf
+<<constants>>=
+CONFIG_ADDED_FORMS = "forms.added_forms"
 <<add the form>>=
-typerconf.set(f"forms.{name}", url)
+typerconf.set(f"{CONFIG_ADDED_FORMS}.{name}", url)
 @
 
 \subsection{Listing all added forms}
@@ -115,7 +118,7 @@ def get_added_forms(prefix: str = "") -> List[str]:
   Returns a list of all the forms added to the configuration that are prefixed 
   by `prefix`. Default prefix is an empty string, which returns all forms.
   """
-  forms = typerconf.get("forms").keys()
+  forms = typerconf.get(CONFIG_ADDED_FORMS).keys()
   return list(filter(lambda x: x.startswith(prefix), forms))
 @
 
@@ -297,19 +300,26 @@ name: Annotated[FormName, form_name_arg],
 We can then get the URL for the form from the configuration and use the 
 [[get_form_by_url]] method to get the form.
 <<export the form>>=
-<<let [[csvdata]] contain the form data>>
 <<set up [[csvout]] as a CSV writer>>
+<<let [[csvdata]] contain the form data>>
 <<print all rows in [[csvdata]]>>
 @
 
 To get the data, we first need the URL from the configuration.
 Then we need the credentials to log into KTH Forms.
-<<let [[csvdata]] contain the form data>>=
-url = typerconf.get(f"forms.{name}")
-forms = kthutils.forms.FormsSession(*kthutils.credentials.get_credentials())
-csvdata = forms.get_csv_by_url(url)
+We'll create a helper function for this.
+<<API for KTH Forms>>=
+def export(name: str) -> List[List[str]]:
+  """
+  Returns data from a form in CSV format (lists of lists)
+  """
+  url = typerconf.get(f"{CONFIG_ADDED_FORMS}.{name}")
+  forms = kthutils.forms.FormsSession(*kthutils.credentials.get_credentials())
+  return forms.get_csv_by_url(url)
 <<imports>>=
 import kthutils.credentials
+<<let [[csvdata]] contain the form data>>=
+csvdata = export(name)
 @
 
 We'll print the data as CSV data to stdout.
@@ -347,7 +357,6 @@ def cli_next_form(<<args for export command>>):
   <<next command doc>>
   """
   <<set up [[csvout]] as a CSV writer>>
-  <<let [[csvdata]] contain the form data>>
   <<filter [[csvdata]] to only contain new data>>
   <<print all rows in [[csvdata]]>>
 @
@@ -357,11 +366,18 @@ we ran the command.
 We can store this in a file in the data directory.
 Once we've computed the new data, we can store the current data in the file 
 instead.
+<<API for KTH Forms>>=
+def next(name: str) -> List[List[str]]:
+  """
+  Returns new data (since last run) from a form in CSV format (lists of lists)
+  """
+  <<let [[prev_csvdata]] contain the previous form data>>
+  new_csvdata = export(name)
+  csvdata = list(filter(lambda x: x not in prev_csvdata, new_csvdata))
+  <<store [[new_csvdata]] as the previous form data>>
+  return csvdata
 <<filter [[csvdata]] to only contain new data>>=
-<<let [[prev_csvdata]] contain the previous form data>>
-new_csvdata = csvdata.copy()
-csvdata = list(filter(lambda x: x not in prev_csvdata, new_csvdata))
-<<store [[new_csvdata]] as the previous form data>>
+csvdata = next(name)
 @
 
 We use the [[dirs.user_data_dir]] function from [[typerconf]] to get the data 
@@ -383,3 +399,406 @@ if not data_dir.exists():
   data_dir.mkdir(parents=True)
 with prev_csvfile.open("w") as f:
   csv.writer(f).writerows(new_csvdata)
+@
+
+
+\section{Rewriting the form data}
+
+We want to be able to rewrite the form data into a more structured format.
+We'll add a command for this.
+<<rewrite command doc>>=
+Rewrites data from a form and prints it to stdout
+@
+
+
+\subsection{Problem overview}
+
+We're particularly interested in rewriting the rows of the form from Restlabb 
+into a [[canvaslms]] line to execute.
+They have the following columns:
+\begin{enumerate}
+\item Svarsdatum
+\item Studentens namn
+\item\label{StudentLogin} Studentens kth-mail
+\item\label{Course} Kurs
+\item\label{CourseResponsible} Kursledare
+\item\label{Module} Moment
+\item\label{Comments} Kommentarer
+\item Rapporterat i Canvas?
+\item Assistent
+\item Inloggad användare
+\item Användarnamn
+\item\label{GraderLogin} E-post
+\end{enumerate}
+
+We don't really care for most of those columns.
+Those that are interesting are
+\cref{StudentLogin,Course,CourseResponsible,Module,Comments,GraderLogin}.
+\Cref{StudentLogin,GraderLogin} are the KTH mail of the student and the grader, 
+both are on the form username@kth.se.
+The course (\cref{Course}) varies, but looks something like \enquote{DD1310 
+Cmast ht23}.
+The module (\Cref{Module}) and comments (\Cref{Comments}) are the main columns 
+of interest.
+It can look something like this:
+\blockquote{P-uppgift betyg A/D	Sen redovisning, om det är tillåtet att 
+presentera högre betyg Pupp så sent, tycker jag att studenten borde få ett A. 
+Annars blir det ett D.}
+
+Now, we'd like to turn that into a line like this:
+\begin{minted}{bash}
+# Moment: P-uppgift betyg A/D
+# Kommentarer: Sen redovisning, om det är tillåtet att presentera högre betyg 
+# Pupp så sent, tycker jag att studenten borde få ett A. Annars blir det ett D.
+canvaslms grade -c DD1310 -u student@kth.se -m "OK grader@kth.se" \
+  -g A -a redovisning
+\end{minted}
+
+The course code we can regex out of there easily: [[[A-Z]{2}\d{3,4}[A-Z]?]].
+The same for the student's and the grader's KTH emails (usernames), no regex 
+needed even, just to get those columns.
+The grade and assignment (second line in command line), however, must both be 
+parsed out of the comment column.
+
+The assignment can be translated by a translation [[s/P-uppgift/redovisning/]].
+We can find the grade by matching [[betyg ([A-F])]] and use group 1.
+Both are usually in the module column (\cref{Module}).
+
+We present some more examples of module--comment pairs in 
+\cref{ModuleCommentExamples}.
+\begin{table}
+\caption{\label{ModuleCommentExamples} Examples of module--comment pairs}
+\centering
+\begin{tabular}{lp{0.6\columnwidth}}
+{Moment} & {Kommentarer} \\
+\toprule
+Labb 5 del 1&\\
+P-uppgift Godkänd betyg D&Kursen verkar ha ändrat kurskod och DD1315 är något annat nu. Redovisningen tillhör den DD1315 som gavs ht21.\\
+P-uppgift betyg E&\\
+Labb 3&Tidigare blivit godkänd på muntlig redovisning men inte i canvas. Jag har tagit redovisning igen och det är godkänt. Han kan inte lämna in i canvas igen ser det ut som.\\
+Projektspecifikation Godkänd&\\
+p-uppgift betyg E&Bråttom\\
+Lab 3&\\
+Granskning&\\
+\bottomrule
+\end{tabular}
+\end{table}
+This leaves us with some more translations to do.
+We want to translate these names into the correct names of the assignments in 
+Canvas.
+We can see some examples in \cref{AssignmentNames}.
+\begin{table}
+\caption{\label{AssignmentNames} Examples of assignment names}
+\centering
+\begin{tabular}{ll}
+{LADOK module} & {Assignment} \\
+\toprule
+LAB1&Laboration (3) upprepningar, listor och moduler\\
+LAB1&Laboration (6) filhantering\\
+LAB3&Projektspecifikation\\
+LAB3&Projektgranskning\\
+LAB3&Projektredovisning\\
+\bottomrule
+\end{tabular}
+\end{table}
+This leaves us with the following regex suggestions:
+\begin{itemize}
+\item [[s/[Pp]-?upp(gift)?/redovisning/]]
+\item [[s/Lab(b|oration) (\d+)/Laboration..\2./]]
+\item [[s/spec/spec/]]
+\item [[s/[Gg]ranskning/granskning/]]
+\end{itemize}
+
+
+\subsection{Solution overview}
+
+We can use Python's named format substitutions and the [[re]] module as a base 
+for the solution.
+We can use a system of named rewrites.
+We can store the rewrites and the rewriting options in the configuration.
+
+Python supports named format substitutions:
+\begin{minted}{python}
+>>> "test {a} = {b}".format(a=1, b=2)
+'test 1 = 2'
+>>> d = {"a": 1, "b": 2}
+>>> f = "test {a} = {b}"
+>>> f.format(**d)
+'test 1 = 2'
+\end{minted}
+This means that we can have a base string with named substitutions and then let 
+the use specify the values for the substitutions.
+Each such named substitution can then be a regex substitution using [[re.sub]] 
+on the row in the form data.
+
+Then we can do something along the lines of the following to achieve what we 
+outlined above.
+\begin{minted}{bash}
+kthutils config forms.rewriter.restlabb.format_string -s "
+# Moment: {moment}
+# Kommentarer: {comments}
+canvaslms grade -c '{course}' -u '{student}' -m 'OK {grader}' \
+  -g '{grade}' -a '{assignment}'
+"
+kthutils config forms.rewriter.restlabb.substitutions.moment.column -s 5
+kthutils config forms.rewriter.restlabb.substitutions.comments.column -s 6
+kthutils config forms.rewriter.restlabb.substitutions.course.column -s 3
+kthutils config forms.rewriter.restlabb.substitutions.course.regex \
+  -s "s/.*([A-Z]{2}\d{3,4}[A-Z]?).*/\1/"
+kthutils config forms.rewriter.restlabb.substitutions.student.column -s 2
+kthutils config forms.rewriter.restlabb.substitutions.student.regex \
+  -s "s/^.*?([a-z]+@kth.se).*/\1/"
+kthutils config forms.rewriter.restlabb.substitutions.grader.column -s 11
+kthutils config forms.rewriter.restlabb.substitutions.grader.regex \
+  -s "s/^.*?([a-z]+@kth.se).*/\1/"
+kthutils config forms.rewriter.restlabb.substitutions.grade.column -s 5
+kthutils config forms.rewriter.restlabb.substitutions.grade.regex \
+  -s "s/.*[Bb]etyg ([A-F]).*/\1/"
+kthutils config forms.rewriter.restlabb.substitutions.assignment.column -s 5
+kthutils config forms.rewriter.restlabb.substitutions.assignment.regex \
+  -s "s/.*[Pp]-?upp(gift)?.*/redovisning/" \
+  -s "s/.*[Ll]ab(b|oration)? (\d+).*?/Laboration..\2./" \
+  -s "s/.*spec.*/spec/" \
+  -s "s/.*[Gg]ransk.*/granskning/"
+\end{minted}
+
+
+\subsection{The [[rewriter]] subcommands}
+
+We add a group of commands for the rewriter system, [[rewriter]].
+So we add the rewriter commands to [[rewriter]] instead of [[cli]].
+<<command definitions>>=
+rewriter = typer.Typer(name="rewriter", help="Rewriter for form data")
+cli.add_typer(rewriter)
+@
+
+We want a command to run the rewriter, we want another to add a rewriter.
+The command to add a rewriter is just a more usable way than to add the values 
+to the config directly (as suggested above).
+
+
+\subsection{Rewriting the form data}
+
+Let's start with the command to rewrite the form data.
+<<rewrite command doc>>=
+Rewrites data from a form using a rewriter and prints it to stdout in a more 
+structured format
+<<command definitions>>=
+@rewriter.command(name="rewrite")
+def rewriter_rewrite_form(<<args for rewrite command>>):
+  """
+  <<rewrite command doc>>
+  """
+  <<read [[csvdata]] from the form>>
+  <<get [[rewriter]] from the configuration>>
+  for row in csvdata:
+    print(rewrite_row(row, rewriter))
+@
+
+\subsubsection{Getting the rewriter}
+
+We can get the rewriter from the configuration.
+If we fetch it by name, we get a dictionary that we can pass to the function 
+that contains all the data needed.
+<<get [[rewriter]] from the configuration>>=
+rewriter = typerconf.get(f"{CONFIG_REWRITERS}.{rewriter}")
+<<constants>>=
+CONFIG_REWRITERS = "forms.rewriter"
+@
+
+Thus we need the user to provide [[rewriter]] as an argument.
+<<args for rewrite command>>=
+rewriter: Annotated[FormName, rewriter_arg],
+<<option and argument definitions>>=
+rewriter_arg = typer.Argument(help="Name of the rewriter",
+                              parser=FormName,
+                              autocompletion=get_added_rewriters)
+@
+
+We also need a function to list all the added rewriters to handle the 
+autocompletion.
+<<API for KTH Forms>>=
+def get_added_rewriters(prefix: str = "") -> List[str]:
+  """
+  Returns a list of all the rewriters added to the configuration that are 
+  prefixed by `prefix`. Default prefix is an empty string, which returns all 
+  rewriters.
+  """
+  rewriters = typerconf.get(CONFIG_REWRITERS).keys()
+  return list(filter(lambda x: x.startswith(prefix), rewriters))
+@
+
+
+\subsubsection{Reading the form data}
+
+To read the form data, we have three options: we can use either the [[export]] 
+or the [[next]] command, or we can read the form data from stdin.
+We make the form name an optional argument, defaulting to stdin.
+<<args for rewrite command>>=
+form: Annotated[FormName, opt_form_name_arg] = None,
+<<option and argument definitions>>=
+opt_form_name_arg = typer.Argument(help="Name of the form, if not provided, "
+                                        "read from data from stdin",
+                                   parser=FormName,
+                                   autocompletion=get_added_forms)
+@
+
+If we want to read the [[csvdata]] from the form using the [[export]] or the 
+[[next]] command, we must let the user decide which command to use.
+<<args for rewrite command>>=
+source: Annotated[Source, source_opt] = "next",
+<<option and argument definitions>>=
+class Source(str, Enum):
+  export = "export"
+  next = "next"
+
+source_opt = typer.Option(help="Source of the form data, either "
+                               "the export or next command.",
+                          case_sensitive=False)
+<<imports>>=
+from enum import Enum
+@
+
+We can then read the form data.
+<<read [[csvdata]] from the form>>=
+if form is None:
+  <<read [[csvdata]] from stdin>>
+elif source == Source.export:
+  csvdata = export(form)
+elif source == Source.next:
+  csvdata = next(form)
+else:
+  raise typer.BadParameter(f"Unknown source: {source}")
+@
+
+If we read from stdin, we can use the [[csv.reader]] to read the data.
+We also want to control the delimiter, so we need to add an option for that.
+<<read [[csvdata]] from stdin>>=
+csvdata = list(csv.reader(sys.stdin, delimiter=delimiter))
+<<args for rewrite command>>=
+delimiter: Annotated[str, delimiter_arg] = "\t",
+@
+
+\subsubsection{Rewriting a row}
+
+Now we want to do the actual rewriting.
+<<API for KTH Forms>>=
+def rewrite_row(row: List[str], rewriter: Dict[str, Any]) -> str:
+  """
+  Rewrites a row of form data using the rewriter and returns it as a string.
+  """
+  format_string = rewriter["format_string"]
+  <<create [[substitutions]] from [[row]] and [[rewriter]]>>
+  return format_string.format(**substitutions)
+@
+
+The [[rewriter]] that we get will have the following form.
+\begin{minted}{python}
+{
+  "format_string": "# Moment: {moment}\n# Kommentarer: {comments}\n"
+                   "canvaslms grade -c '{course}' -u '{student}' "
+                   "-m 'OK {grader}' -g '{grade}' -a '{assignment}'",
+  "substitutions": {
+    "moment": {"column": 5},
+    "comments": {"column": 6},
+    "course": {"column": 3, "regex": "s/.*([A-Z]{2}\\d{3,4}[A-Z]?).*/\\1/"},
+    "student": {"column": 2, "regex": "s/.*([a-z]+@kth.se).*/\\1/"},
+    "grader": {"column": 11, "regex": "s/.*([a-z]+@kth.se).*/\\1/"},
+    "grade": {"column": 5, "regex": "s/.*betyg ([A-F]).*/\\1/"},
+    "assignment": {"column": 5, "regex": [
+        "s/.*[Pp]-?upp(gift)?.*/redovisning/",
+        "s/.*Lab(b|oration) (\\d+).*/Laboration..\\2./",
+        "s/.*spec.*/spec/",
+        "s/.*[Gg]ransk.*/granskning/"
+    ]}
+  }
+}
+\end{minted}
+
+We can then create the substitutions from the row and the rewriter.
+Each substitution has the following format:
+\begin{description}
+\item[column] The column whose data that the substitution (regex) should be 
+applied to.
+If the column is not present, we use all the columns and join them by a tab 
+character.
+\item[regex] The regex to apply to the data in the column.
+This should have the form [[s/regex/replacement/]].
+The [[/]] can be any character, same as in [[sed]].
+\end{description}
+<<create [[substitutions]] from [[row]] and [[rewriter]]>>=
+substitutions = {}
+for variable, var_subst in rewriter["substitutions"].items():
+  try:
+    data = row[int(var_subst["column"])]
+  except KeyError:
+    data = "\t".join(row)
+  except IndexError:
+    <<handle that the user-specified column is out of range>>
+
+  try:
+    if not isinstance(var_subst["regex"], list):
+      regexes = [var_subst["regex"]]
+    else:
+      regexes = var_subst["regex"]
+  except KeyError:
+    substitutions[variable] = data
+    continue
+
+  regex_results = []
+  for regex in regexes:
+    <<apply [[regex]] to [[data]] and store the result in [[regex_results]]>>
+
+  <<update [[substitutions]] with [[regex_results]]>>
+@
+
+If there is an error, we must make it a useful message to the user, since they 
+have to fix it.
+<<handle that the user-specified column is out of range>>=
+raise ValueError(f"{variable}.column = {var_subst['column']} is out of range, "
+                 f"row has {len(row)} columns: {row}")
+@
+
+We can then apply the regexes to the data and store the result in the 
+[[substitutions]] dictionary.
+<<apply [[regex]] to [[data]] and store the result in [[regex_results]]>>=
+if regex[0] != "s" and regex[-1] != regex[1]:
+  raise ValueError(f"{variable}.regex has invalid content: '{regex}', "
+                    f"must be of form 's/regex/replacement/'")
+regex = regex.split(regex[1])
+pattern = regex[1]
+replacement = regex[2]
+value = re.sub(pattern, replacement, data)
+<<update [[regex_results]] with [[value]]>>
+<<imports>>=
+import re
+@
+
+We want to apply each regex on the data and add each result.
+Consider the following example:
+\begin{minted}{text}
+projektspec + p-uppgift betyg D
+\end{minted}
+We want both the specification and the project assignments to be included in 
+the result, not just one of them.
+Hence, we need to add each result to the list [[regex_results]].
+However, if there is no match, [[value]] will equal [[data]] and we don't want 
+to add that.
+<<update [[regex_results]] with [[value]]>>=
+if value != data:
+  regex_results.append(value)
+@
+
+If there are more than one result, we want to turn it into a regex group.
+We need opening and closing parentheses and a pipe character between each 
+result.
+If there are no results from the regex rewrites, we use the original data.
+<<update [[substitutions]] with [[regex_results]]>>=
+num_results = len(regex_results)
+if num_results == 1:
+  substitutions[variable] = regex_results[0]
+elif num_results < 1:
+  substitutions[variable] = data
+else:
+  substitutions[variable] = f"({'|'.join(regex_results)})"
+@
