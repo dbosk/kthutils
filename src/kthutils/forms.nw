@@ -276,6 +276,18 @@ with warnings.catch_warnings():
 import warnings
 @
 
+Finally, to make the data more compatible with the command line, we want to 
+clear all [[\n]]s from the data.
+<<process [[data]] into [[csvdata]]>>=
+csvdata = map(clean_row, csvdata)
+<<API for KTH Forms>>=
+def clean_row(row: List[str]) -> List[str]:
+  """
+  Cleans a row of form data by replacing ell newline characters by spaces.
+  """
+  return map(lambda x: x.replace("\n", " "), row)
+@
+
 
 \section{Exporting form data}
 
