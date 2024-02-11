@@ -21,7 +21,10 @@ Since we use [[typer]] we add one function per command as well as option and
 argument definitions for each command.
 <<forms.py>>=
 import typer
-from typing import Annotated, Any, List, Tuple, Dict
+try:
+  from typing import Annotated, Any, List, Tuple, Dict
+except ImportError:
+  from typing_extensions import Annotated, Any, List, Tuple, Dict
 
 <<imports>>
 <<constants>>

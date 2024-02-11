@@ -81,7 +81,11 @@ We also want to use the pretty-printing of the [[rich]] package.
 <<additional imports>>=
 from rich import print
 import typer
-from typing import Annotated
+try:
+  from typing import Annotated
+except ImportError:
+  from typing_extensions import Annotated
+
 <<set up cli>>=
 cli = typer.Typer(name="participants",
                   help="Interacts with the KTH course participants lists")
