@@ -43,7 +43,11 @@ Since we only provide one command, we must provide a function [[add_command]]
 that we can use to add the command to any provided [[Typer]] instance [[cli]].
 <<iprange.py>>=
 import typer
-from typing import Annotated, List
+try:
+  from typing import Annotated, List
+except ImportError:
+  from typing_extensions import Annotated, List
+
 <<imports>>
 
 <<argument and option definitions>>
