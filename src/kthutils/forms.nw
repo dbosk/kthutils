@@ -261,7 +261,7 @@ datafile = io.BytesIO(data)
 <<let [[wb]] contain the workbook of [[datafile]]>>
 sheet = wb.active
 fix_empty_cells = lambda x: list(map(lambda y: y if y is not None else "", x))
-csvdata = map(fix_empty_cells, sheet.iter_rows(values_only=True))
+csvdata = list(map(fix_empty_cells, sheet.iter_rows(values_only=True)))
 <<imports>>=
 import io
 import openpyxl
@@ -286,9 +286,9 @@ csvdata = map(clean_row, csvdata)
 <<API for KTH Forms>>=
 def clean_row(row: List[str]) -> List[str]:
   """
-  Cleans a row of form data by replacing ell newline characters by spaces.
+  Cleans a row of form data by replacing all newline characters by '\n'.
   """
-  return map(lambda x: x.replace("\n", " "), row)
+  return list(map(lambda x: x.replace("\n", r"\n"), row))
 @
 
 
