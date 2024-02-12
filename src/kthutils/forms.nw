@@ -56,6 +56,44 @@ import kthutils.forms
 <<test functions>>
 @
 
+To make life easier writing tests, we'll add [[config]] as a shorthand for the 
+[[typerconf]] instance of the module.
+<<test setup>>=
+config = kthutils.forms.typerconf
+@
+
+To make the tests independent, we'll adjust the filenames used by [[typerconf]] 
+in [[kthutils.forms]].
+The simplest solution would have been to replace [[typerconf]] by 
+[[typerconf.Config()]].
+However, some commands actually need the [[dirs]] attribute, which we won't get 
+in that case.
+So we'll modify the [[typerconf.dirs]] attribute instead and replace the ones 
+we use by temporary directories instead.
+This way recurrent tests will not interfere with each other.
+<<test setup>>=
+class FakeAppDirs:
+  def __init__(self):
+    self.tmpdir_data = tempfile.TemporaryDirectory()
+    self.user_data_dir = pathlib.Path(self.tmpdir_data.name)
+    self.tmpdir_config = tempfile.TemporaryDirectory()
+    self.user_config_dir = pathlib.Path(self.tmpdir_config.name)
+
+config.dirs = FakeAppDirs()
+<<test imports>>=
+import pathlib
+import tempfile
+@
+
+We also want to use Typer's runner to test running the commands, not just the 
+functions.
+<<test setup>>=
+runner = typer.testing.CliRunner()
+forms_cli = kthutils.forms.cli
+<<test imports>>=
+import typer.testing
+@
+
 
 \section{Adding forms}
 
@@ -110,6 +148,29 @@ CONFIG_ADDED_FORMS = "forms.added_forms"
 typerconf.set(f"{CONFIG_ADDED_FORMS}.{name}", url)
 @
 
+We can thus test this as follows.
+<<test functions>>=
+def test_add_form():
+  result = runner.invoke(forms_cli, [
+    "add", "restlabb", "https://..."
+  ])
+  assert result.exit_code == 0
+  assert "restlabb" in config.get(added_forms)
+<<test setup>>=
+added_forms = kthutils.forms.CONFIG_ADDED_FORMS
+@
+
+We also want to test that we can't add a form with a period in the name.
+<<test functions>>=
+def test_add_form_with_period():
+  result = runner.invoke(forms_cli, [
+    "add", "restlabb.2023",
+    "https://..."
+  ])
+  assert result.exit_code != 0
+  assert "restlabb.2023" not in config.get(added_forms)
+@
+
 \subsection{Listing all added forms}
 
 We want to list all the forms we've added.
@@ -123,6 +184,15 @@ def get_added_forms(prefix: str = "") -> List[str]:
   """
   forms = typerconf.get(CONFIG_ADDED_FORMS).keys()
   return list(filter(lambda x: x.startswith(prefix), forms))
+@
+
+We want to test this as well.
+<<test functions>>=
+def test_get_added_forms():
+  config.set(f"{added_forms}.restlabb", "https://...")
+  assert "restlabb" in kthutils.forms.get_added_forms()
+  assert "restlabb" in kthutils.forms.get_added_forms("rest")
+  assert "test" not in kthutils.forms.get_added_forms()
 @
 
 
@@ -203,10 +273,11 @@ import requests
 We can test this with a known form.
 <<test functions>>=
 def test_get_data_by_url():
-  data, content_type = forms.get_data_by_url(
-      "https://www.kth.se/form/admin/api/webform/64ec8baa917ea4c31c33267e/answer/export")
+  data, content_type = forms.get_data_by_url(restlabb_url)
   assert content_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
   assert data.startswith(b"PK")
+<<test setup>>=
+restlabb_url = "https://www.kth.se/form/admin/api/webform/64ec8baa917ea4c31c33267e/answer/export"
 @
 
 \subsection{Getting a form in CSV format}
@@ -228,10 +299,11 @@ def get_csv_by_url(self, url: str) -> List[List[str]]:
 We want to test this method as well.
 We'll use the same form as before, this is the form for Restlabb 2023/2024.
 The first column is \enquote{Svarsdatum} and the second is \enquote{Kurs}.
+We do this test twice to catch any generators not converted to lists.
 <<test functions>>=
 def test_get_csv_by_url():
-  csvdata = forms.get_csv_by_url(
-      "https://www.kth.se/form/admin/api/webform/64ec8baa917ea4c31c33267e/answer/export")
+  csvdata = forms.get_csv_by_url(restlabb_url)
+  assert "Svarsdatum" in csvdata[0] and "Kurs" in csvdata[0]
   assert "Svarsdatum" in csvdata[0] and "Kurs" in csvdata[0]
 @
 
@@ -320,6 +392,24 @@ We can then get the URL for the form from the configuration and use the
 <<print all rows in [[csvdata]]>>
 @
 
+Let's test this.
+<<test functions>>=
+def test_cli_export_command():
+  <<add restlabb form>>
+  result = runner.invoke(forms_cli, [
+    "export", "restlabb"
+  ])
+  assert result.exit_code == 0
+  assert "Svarsdatum" in result.stdout
+  assert "Bosk" in result.stdout
+<<add restlabb form>>=
+result = runner.invoke(forms_cli, [
+  "add", "restlabb", restlabb_url
+])
+assert result.exit_code == 0
+assert "restlabb" in config.get(added_forms)
+@
+
 To get the data, we first need the URL from the configuration.
 Then we need the credentials to log into KTH Forms.
 We'll create a helper function for this.
@@ -337,6 +427,16 @@ import kthutils.credentials
 csvdata = export(name)
 @
 
+We can test this as well.
+We simply test that we get the correct data.
+<<test functions>>=
+def test_export_function():
+  <<add restlabb form>>
+  csvdata = kthutils.forms.export("restlabb")
+  assert "Svarsdatum" in csvdata[0]
+@
+
+
 We'll print the data as CSV data to stdout.
 We'll let the user decide on the delimiter, but we'll default to tab.
 <<set up [[csvout]] as a CSV writer>>=
@@ -352,6 +452,22 @@ for row in csvdata:
   csvout.writerow(row)
 @
 
+We can test this as well.
+<<test functions>>=
+def test_export_delimiter():
+  <<add restlabb form>>
+  result = runner.invoke(forms_cli, [
+    "export", "restlabb", "--delimiter", ","
+  ])
+  assert result.exit_code == 0
+  assert "Svarsdatum,Studentens namn" in result.stdout
+
+  result = runner.invoke(forms_cli, [
+    "export", "restlabb"
+  ])
+  assert result.exit_code == 0
+  assert "Svarsdatum\tStudentens namn" in result.stdout
+@
 
 \section{Turning a form into a generator}
 
@@ -414,6 +530,54 @@ if not data_dir.exists():
   data_dir.mkdir(parents=True)
 with prev_csvfile.open("w") as f:
   csv.writer(f).writerows(new_csvdata)
+@
+
+Let's test it.
+We'll need to have a custom directory to test this properly, we need one to 
+override the [[user_data_dir]] of the [[typerconf]] instance for the [[forms]] 
+module.
+We already did this above, but we need to do it again between each test here.
+This also means that we must readd the form each time, since we also add a new 
+config doing this.
+<<test functions>>=
+def test_next_command():
+  <<reset [[config.dirs]]>>
+  <<add restlabb form>>
+  <<test the next command>>
+
+def test_next_function():
+  <<reset [[config.dirs]]>>
+  <<add restlabb form>>
+  <<test the next function>>
+<<reset [[config.dirs]]>>=
+config.dirs = FakeAppDirs()
+@
+
+Now it's just to test the command.
+We note that we should run it twice, the second time, the result should be 
+empty.
+<<test the next command>>=
+result = runner.invoke(forms_cli, [
+  "next", "restlabb"
+])
+assert result.exit_code == 0
+assert "Svarsdatum" in result.stdout
+assert "Bosk" in result.stdout
+
+result = runner.invoke(forms_cli, [
+  "next", "restlabb"
+])
+assert result.exit_code == 0
+assert "Svarsdatum" not in result.stdout
+assert "Bosk" not in result.stdout
+@
+
+We do similarly for the next function.
+<<test the next function>>=
+csvdata = kthutils.forms.next("restlabb")
+assert "Svarsdatum" in csvdata[0]
+csvdata = kthutils.forms.next("restlabb")
+assert not csvdata
 @
 
 
