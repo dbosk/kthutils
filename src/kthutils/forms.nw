@@ -192,7 +192,7 @@ def test_get_added_forms():
   config.set(f"{added_forms}.restlabb", "https://...")
   assert "restlabb" in kthutils.forms.get_added_forms()
   assert "restlabb" in kthutils.forms.get_added_forms("rest")
-  assert "test" not in kthutils.forms.get_added_forms()
+  assert "nonexisting" not in kthutils.forms.get_added_forms()
 @
 
 
@@ -520,7 +520,7 @@ we have an empty list.
 <<let [[prev_csvdata]] contain the previous form data>>=
 data_dir = pathlib.Path(typerconf.dirs.user_data_dir)
 prev_csvdata = []
-prev_csvfile = data_dir / "next.{name}.csv"
+prev_csvfile = data_dir / f"next.{name}.csv"
 if prev_csvfile.exists():
   with prev_csvfile.open("r") as f:
     prev_csvdata = list(csv.reader(f))
@@ -544,14 +544,21 @@ config doing this.
 def test_next_command():
   <<reset [[config.dirs]]>>
   <<add restlabb form>>
+  <<add test form>>
   <<test the next command>>
 
 def test_next_function():
   <<reset [[config.dirs]]>>
   <<add restlabb form>>
+  <<add test form>>
   <<test the next function>>
 <<reset [[config.dirs]]>>=
 config.dirs = FakeAppDirs()
+<<add test form>>=
+result = runner.invoke(forms_cli, [
+  "add", "test",
+  "https://www.kth.se/form/admin/api/webform/65bbb936dcba25abb5f696da/answer/export"
+])
 @
 
 Now it's just to test the command.
@@ -578,6 +585,17 @@ We do similarly for the next function.
 csvdata = kthutils.forms.next("restlabb")
 assert "Svarsdatum" in csvdata[0]
 csvdata = kthutils.forms.next("restlabb")
+assert not csvdata
+@
+
+But now we also want to try this with the test form.
+We want to see that running next on one form doesn't affect the other.
+<<test the next function>>=
+csvdata = kthutils.forms.next("test")
+assert "Name" in csvdata[0] and "Daniel" in csvdata[1]
+csvdata = kthutils.forms.next("restlabb")
+assert not csvdata
+csvdata = kthutils.forms.next("test")
 assert not csvdata
 @
 
