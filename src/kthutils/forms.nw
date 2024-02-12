@@ -684,9 +684,9 @@ LAB3&Projektredovisning\\
 This leaves us with the following regex suggestions:
 \begin{itemize}
 \item [[s/[Pp]-?upp(gift)?/redovisning/]]
-\item [[s/Lab(b|oration) (\d+)/Laboration..\2./]]
-\item [[s/spec/spec/]]
-\item [[s/[Gg]ranskning/granskning/]]
+\item [[s/[Ll]ab(b|oration) (\d+)/Laboration..\2./]]
+\item [[s/.*[Ss]pec.*/spec/]]
+\item [[s/.*[Gg]ranskning.*/granskning/]]
 \end{itemize}
 
 
