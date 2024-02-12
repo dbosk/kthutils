@@ -513,13 +513,14 @@ csvdata = next(name)
 
 We use the [[dirs.user_data_dir]] function from [[typerconf]] to get the data 
 directory.
-Then we simply use a file [[next.csv]] to store the data.
+Then we simply use a file [[next.{name}.csv]] to store the data.
+We need the [[name]] to keep track of the state of different forms.
 If the file doesn't exist when reading, it's the first time we run [[next]] and 
 we have an empty list.
 <<let [[prev_csvdata]] contain the previous form data>>=
 data_dir = pathlib.Path(typerconf.dirs.user_data_dir)
 prev_csvdata = []
-prev_csvfile = data_dir / "next.csv"
+prev_csvfile = data_dir / "next.{name}.csv"
 if prev_csvfile.exists():
   with prev_csvfile.open("r") as f:
     prev_csvdata = list(csv.reader(f))
