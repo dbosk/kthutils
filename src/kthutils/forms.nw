@@ -526,9 +526,19 @@ if prev_csvfile.exists():
     prev_csvdata = list(csv.reader(f))
 <<imports>>=
 import pathlib
+@
+
+When we want to write the file, we must ensure the directory exists.
+We do this on [[prev_csvfile]] rather than [[data_dir]].
+The reason is that, like this we can handle names ([[name]]) containing [[/]], 
+such as [[restlabb23/24]] without changing it into something like 
+[[restlabb23-24]]---thus avoiding the collision between those two mapping to 
+the same name.
+The consequence is that we create an extra directory, but that's fine---no one 
+is supposed to look in there anyway.
 <<store [[new_csvdata]] as the previous form data>>=
-if not data_dir.exists():
-  data_dir.mkdir(parents=True)
+if not prev_csvfile.parent.exists():
+  prev_csvfile.parent.mkdir(parents=True)
 with prev_csvfile.open("w") as f:
   csv.writer(f).writerows(new_csvdata)
 @
