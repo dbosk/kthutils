@@ -761,12 +761,12 @@ kthutils config forms.rewriter.restlabb.substitutions.grader.regex \
   -s "s/^.*?([a-z]+@kth.se).*/\1/"
 kthutils config forms.rewriter.restlabb.substitutions.grade.column -s 5
 kthutils config forms.rewriter.restlabb.substitutions.grade.regex \
-  -s "s/.*[Bb]etyg ([A-F]).*/\1/"
+  -s "s/.*([Bb]etyg)?\b([A-F])\b.*/\2/"
 kthutils config forms.rewriter.restlabb.substitutions.grade.no_match_default \
   -s "P"
 kthutils config forms.rewriter.restlabb.substitutions.assignment.column -s 5
 kthutils config forms.rewriter.restlabb.substitutions.assignment.regex \
-  -s "s/.*[Pp]-?upp(gift)?.*/redovisning/" \
+  -s "s/.*[Pp](-?upp(gift)?|rojekt).*/redovisning/" \
   -s "s/.*[Ll]ab(b|oration)? (\d+).*?/Laboration..\2./" \
   -s "s/.*spec.*/spec/" \
   -s "s/.*[Gg]ransk.*/granskning/"
