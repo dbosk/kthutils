@@ -92,9 +92,10 @@ def get_credentials():
   """
   Returns tuple (username, password).
   """
+  <<try to get credentials from ladok3>>
   <<try get credentials from environment>>
   <<try get credentials from config>>
-  <<instruct user how to supply credentials>>
+  <<otherwise instruct user how to supply credentials>>
 @
 
 It can be used along the following lines.
@@ -103,6 +104,24 @@ import kthutils.credentials
 
 username, password = kthutils.credentials.get_credentials()
 \end{minted}
+
+\subsection{Credentials from \texttt{ladok3}}
+
+The [[ladok3]] package manages credentials in a good way.
+If the user is using [[kthutils]], they're likely also using [[ladok3]].
+Fortunately, [[ladok3]] has a function to get the credentials.
+It returns a tuple containing the institution, which we're not interested in, 
+and the username and password in a dictionary.
+<<try to get credentials from ladok3>>=
+try:
+  _, dictionary = ladok3.cli.load_credentials()
+  if "username" in dictionary and "password" in dictionary:
+    return dictionary["username"], dictionary["password"]
+except:
+  pass
+<<credential imports>>=
+import ladok3.cli
+@
 
 \subsection{Credentials from environment}
 
@@ -136,7 +155,7 @@ except:
 
 If we couldn't find any credentials, it's a fatal error.
 We should inform the user how to fix it and then we quit the program.
-<<instruct user how to supply credentials>>=
+<<otherwise instruct user how to supply credentials>>=
 logging.error("Couldn't load credentials: "
               "Supply credentials by environment variables "
               "KTH_LOGIN and KTH_PASSWD. "
