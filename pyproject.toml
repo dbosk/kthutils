@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "kthutils"
-version = "1.19"
+version = "1.20"
 description = "Various tools for automation at KTH"
 authors = ["Daniel Bosk <dbosk@kth.se>"]
 license = "MIT"
