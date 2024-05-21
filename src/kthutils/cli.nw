@@ -145,4 +145,5 @@ logging.error("Couldn't load credentials: "
               "kthutils config credentials.password --set <the password>")
 sys.exit(1)
 <<credential imports>>=
+import logging
 import sys
