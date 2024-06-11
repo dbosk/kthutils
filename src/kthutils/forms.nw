@@ -741,11 +741,13 @@ on the row in the form data.
 
 Then we can do something along the lines of the following to achieve what we 
 outlined above.
+(The first line clears the entire restlabb configuration, we do this in case we 
+re-run these lines when we've updated the config.)
 \begin{minted}{bash}
+kthutils config forms.rewriter.restlabb -s ""
 kthutils config forms.rewriter.restlabb.format_string -s "
 echo 'Course:       {course}'
 echo 'Module:       {module}'
-echo 'Grade:        {grade}'
 echo 'Student:      {student}'
 echo 'Comments:     {comments}'
 echo 'Grader:       {grader}'
@@ -755,7 +757,12 @@ canvaslms grade \
   -u '{student}' \
   -g '{grade}' \
   -m 'OK {grader}'
-canvaslms submissions -c '{course}' -a '{assignment}' -u '{student}'
+echo 'Canvas:'
+canvaslms submissions \
+  -c '{course_code} {semester}' \
+  -a '{assignment}' \
+  -u '{student}'
+echo
 "
 kthutils config forms.rewriter.restlabb.substitutions.module.column -s 5
 kthutils config forms.rewriter.restlabb.substitutions.comments.column -s 6
