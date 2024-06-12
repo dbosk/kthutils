@@ -5,8 +5,10 @@ MODULES+=	participants.py
 MODULES+=	iprange.py iprange.sh
 MODULES+=	forms.py
 
+EXTRAS+=	restlabb.sh
+
 .PHONY: all
-all: ${MODULES}
+all: ${MODULES} ${EXTRAS}
 
 credentials.py: cli.nw
 	${NOTANGLE.py}
@@ -18,6 +20,9 @@ iprange.py: iprange.sh
 iprange.sh: iprange.nw
 	${NOTANGLE.sh}
 	chmod +x $@
+
+restlabb.sh: forms.nw
+	${NOTANGLE.sh}
 
 .PHONY: clean
 clean:

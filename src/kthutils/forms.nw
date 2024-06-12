@@ -741,10 +741,17 @@ on the row in the form data.
 
 Then we can do something along the lines of the following to achieve what we 
 outlined above.
-(The first line clears the entire restlabb configuration, we do this in case we 
-re-run these lines when we've updated the config.)
-\begin{minted}{bash}
+We'll write a shell script [[<<restlabb.sh>>]] that can be used to set the 
+configuration.
+
+The first line clears the entire restlabb configuration, we do this in case we 
+re-run these lines when we've updated the config.
+<<restlabb.sh>>=
 kthutils config forms.rewriter.restlabb -s ""
+@
+
+We then want to have the overall format string.
+<<restlabb.sh>>=
 kthutils config forms.rewriter.restlabb.format_string -s "
 echo 'Course:       {course}'
 echo 'Module:       {module}'
@@ -764,34 +771,128 @@ canvaslms submissions \
   -u '{student}'
 echo
 "
+@
+
+Now we need to define the substitutions used in the format string above.
+<<restlabb.sh>>=
 kthutils config forms.rewriter.restlabb.substitutions.module.column -s 5
 kthutils config forms.rewriter.restlabb.substitutions.comments.column -s 6
 kthutils config forms.rewriter.restlabb.substitutions.course.column -s 3
+@ These just copy the values from the column verbatim.
+
+Next we want the course code.
+This we can extract from the course column, we'll need a regex substitution to 
+filter out the course code in particular.
+<<restlabb.sh>>=
 kthutils config forms.rewriter.restlabb.substitutions.course_code.column -s 3
 kthutils config forms.rewriter.restlabb.substitutions.course_code.regex \
   -s "s/^.*([A-Z]{2}\d{3,4}[A-Z]?).*$/\1/"
+@
+
+We also want to extract the semster from that column.
+<<restlabb.sh>>=
 kthutils config forms.rewriter.restlabb.substitutions.semester.column -s 3
 kthutils config forms.rewriter.restlabb.substitutions.semester.regex \
   -s "s/^.*[Hh][Tt](\d{2}).*$/HT\1/" \
   -s "s/^.*[Vv][Tt](\d{2}).*$/VT\1/"
+@ We used two regexes to ensure that we rewrite both HT and VT to the correct 
+case.
+
+We also want to extract the grader, or rather, the grader's (KTH) email.
+The same for the student.
+<<restlabb.sh>>=
 kthutils config forms.rewriter.restlabb.substitutions.grader.column -s 11
 kthutils config forms.rewriter.restlabb.substitutions.grader.regex \
   -s "s/^.*?([A-Za-z0-9]+@kth.se).* $/\1/"
-kthutils config forms.rewriter.restlabb.substitutions.grade.column -s 5
-kthutils config forms.rewriter.restlabb.substitutions.grade.regex \
-  -s "s/.*([Bb]etyg|,)?\b([A-F])(\b.*)?$/\2/"
-kthutils config forms.rewriter.restlabb.substitutions.grade.no_match_default \
-  -s P
-kthutils config forms.rewriter.restlabb.substitutions.assignment.column -s 5
-kthutils config forms.rewriter.restlabb.substitutions.assignment.regex \
-  -s 's/.*[Pp](-?upp(gift)?|rojekt).*/redovisning/' \
-  -s 's/.*[Ll]ab(b|oration)? *(\\d+)[^0-9]*.*/Laboration..\\2./' \
-  -s 's/.*[Ss]pec.*/spec/' \
-  -s 's/.*[Gg]ransk.*/granskning/'
 kthutils config forms.rewriter.restlabb.substitutions.student.column -s 2
 kthutils config forms.rewriter.restlabb.substitutions.student.regex \
   -s "s/^.*?([A-Za-z0-9]+@kth.se).*$/\1/"
-\end{minted}
+@
+
+The grade is a bit trickier to extract.
+It's in the module column.
+Usually the TAs write something like ``P-uppgift betyg A/D'' or ``Projekt, A''.
+We try to extract the grade from that.
+<<restlabb.sh>>=
+kthutils config forms.rewriter.restlabb.substitutions.grade.column -s 5
+kthutils config forms.rewriter.restlabb.substitutions.grade.regex \
+  -s "s/.*([Bb]etyg|,)?\b([A-F])(\b.*)?$/\2/" \
+  -s "s/.*EJ GODKÄN[TD].*$/F/"
+@ For P/F assignments, the TAs usually don't write any grade.
+They just write ``granskning''.
+For this, we have a default grade, in case the substitution doesn't match 
+anything.
+<<restlabb.sh>>=
+kthutils config forms.rewriter.restlabb.substitutions.grade.no_match_default \
+  -s P
+@
+
+The trickiest part, though, is the assignment.
+This must also be extracted from the module column.
+Let's start with the easy ones.
+The more challenging here is the project.
+We don't want to match the project when the TA wrote ``Projektgranskning'', 
+then we just want ``granskning''.
+But for ``Projekt'', we actually want to match that as ``redovisning''.
+We use a negative lookahead assertion for this ([[(?!...)]]).
+<<restlabb.sh>>=
+kthutils config forms.rewriter.restlabb.substitutions.assignment.column -s 5
+kthutils config forms.rewriter.restlabb.substitutions.assignment.regex \
+  -s 's/.*[Ss]pec.*/spec/' \
+  -s 's/.*[Gg]ransk.*/granskning/' \
+  -s 's/.*[Pp](-?upp(gift)?|rojekt(?!spec|gransk)).*/redovisning/' \
+  <<regexes for labs>>
+@
+
+The labs are a bit more tricky.
+Here the TAs usually write something like ``Labb 3'' or ``Lab 3''.
+They might also write ``Labb 1\&2\&3'' or ``Lab 1-3''.
+
+We can match all kinds of variations of the word for labb as follows.
+We never want to get the group here, so we use a non-capturing group 
+([[(?:...)]]).
+<<lab spelling>>=
+.*[Ll]ab(?:b|oration)?
+@
+
+The range is rather straight forward.
+We can just take the range and put it in a regex [[[...]]].
+<<regexes for labs>>=
+-s 's/<<lab spelling>> *(\d-\d)\D*.*/Laboration..[\1]./' \
+@
+
+The single lab pattern is as easy, just without the range.
+<<regexes for labs>>=
+-s 's/<<lab spelling>> *(\d+)\D*.*/Laboration..\1./' \
+@
+
+For the combined labs, we match the conjunctions.
+We also match spacing around the conjunctions, if any.
+(The same as above, we use non-capturing groups.)
+<<conjunctions>>=
+\s*(?:[,&+]|o(?:ch)?|å)\s*
+@
+
+We assume that there will never be more than three labs combined.
+The idea is to have one regex capturing the number of the first, one capturing 
+the second, and a third capturing the last.
+(Note that it's the last, not necessarily the third; it could be the fourth if 
+it's a longer series.
+It depends on the greedyness of Python's [[+]] operator.)
+
+The first is already captured by the pattern above.
+In the second, we see that we have a number, then a conjunction, then a 
+number---which we capture.
+<<regexes for labs>>=
+-s 's/<<lab spelling>> *\d+(?:<<conjunctions>>)(\d+)\D*.*/Laboration .\1./' \
+@
+
+The third is similar to the second, but we have several conjunctions, hence the 
+[[+]] operator on the (non-capture) group.
+Then we capture the last number.
+<<regexes for labs>>=
+-s 's/<<lab spelling>> *(?:\d+<<conjunctions>>)+(\d+)\D*.*/Laboration .\1./'
+@
 
 
 \subsection{The [[rewriter]] subcommands}
