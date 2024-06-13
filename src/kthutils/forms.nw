@@ -28,6 +28,7 @@ except ImportError:
 
 <<imports>>
 <<constants>>
+<<functions>>
 
 cli = typer.Typer(name="forms", help="Access KTH Forms")
 
@@ -838,8 +839,8 @@ We use a negative lookahead assertion for this ([[(?!...)]]).
 <<restlabb.sh>>=
 kthutils config forms.rewriter.restlabb.substitutions.assignment.column -s 5
 kthutils config forms.rewriter.restlabb.substitutions.assignment.regex \
-  -s 's/.*[Ss]pec.*/spec/' \
-  -s 's/.*[Gg]ransk.*/granskning/' \
+  -s 's/.*[Ss][Pp][Ee][Cc].*/spec/' \
+  -s 's/.*[Gg](ransk|RANSK).*/granskning/' \
   -s 's/.*[Pp](-?upp(gift)?|rojekt(?!spec|gransk)).*/redovisning/' \
   <<regexes for labs>>
 @
@@ -861,38 +862,38 @@ We can just take the range and put it in a regex [[[...]]].
 -s 's/<<lab spelling>> *(\d-\d)\D*.*/Laboration..[\1]./' \
 @
 
-The single lab pattern is as easy, just without the range.
-<<regexes for labs>>=
--s 's/<<lab spelling>> *(\d+)\D*.*/Laboration..\1./' \
-@
-
 For the combined labs, we match the conjunctions.
 We also match spacing around the conjunctions, if any.
 (The same as above, we use non-capturing groups.)
 <<conjunctions>>=
-\s*(?:[,&+]|o(?:ch)?|å)\s*
+\s*(?:[,&+]| och | å )\s*
 @
 
-We assume that there will never be more than three labs combined.
-The idea is to have one regex capturing the number of the first, one capturing 
-the second, and a third capturing the last.
-(Note that it's the last, not necessarily the third; it could be the fourth if 
-it's a longer series.
-It depends on the greedyness of Python's [[+]] operator.)
-
-The first is already captured by the pattern above.
-In the second, we see that we have a number, then a conjunction, then a 
-number---which we capture.
+The idea is to use two consecutive regexes, separated by [[;]].
+(This has the same meaning as with [[sed]], see 
+page~\pageref{ParseSubstPatterns}.)
+The first will rewrite the lab part:
+[[Labb 1&2&3]] to [[Laboration .(1\&2\&4).]].
+The second will rewrite the conjunctions:
+all [[&]] to [[|]], that is the [[<<conjunctions>>]].
 <<regexes for labs>>=
--s 's/<<lab spelling>> *\d+(?:<<conjunctions>>)(\d+)\D*.*/Laboration .\1./' \
+-s '<<rewrite lab>>; <<rewrite conjunctions>>'
 @
 
-The third is similar to the second, but we have several conjunctions, hence the 
-[[+]] operator on the (non-capture) group.
-Then we capture the last number.
-<<regexes for labs>>=
--s 's/<<lab spelling>> *(?:\d+<<conjunctions>>)+(\d+)\D*.*/Laboration .\1./'
+When we rewrite the lab, we want to capture any numbers and conjunctions.
+<<rewrite lab>>=
+s/<<lab spelling>> *(\d+(?:<<conjunctions>>\d+)*)\D*.*/Laboration .(\1)./
 @
+
+When we rewrite the conjunctions, we simply want to replace them by the 
+disjunction ([[|]]).
+<<rewrite conjunctions>>=
+s/<<conjunctions>>/|/
+@
+
+We note that the last pattern also captures single labs.
+Since the (non-capturing) group around the conjunctions has [[*]], we also 
+capture labs using no conjunctions.
 
 
 \subsection{The [[rewriter]] subcommands}
@@ -1125,15 +1126,30 @@ except ValueError as err:
 
 We can then apply the regexes to the data and store the result in the 
 [[substitutions]] dictionary.
+The regex that we get can be a list of regexes, using [[sed]] syntax.
+Meaning that we can get something like
+[[s/match/replacement/; s/match/replacement/; ...]],
+rather than just one of them.
+Just as with [[sed]], we apply each regex in order through a pipe.
+The second regex applies to the result of the first, etc.
 <<apply [[regex]] to [[data]] and store the result in [[regex_results]]>>=
-if regex[0] != "s" and regex[-1] != regex[1]:
-  raise ValueError(f"{variable}.regex has invalid content: '{regex}', "
-                    f"must be of form 's/regex/replacement/'")
-regex = regex.split(regex[1])
-pattern = regex[1]
-replacement = regex[2]
-value = re.sub(pattern, replacement, data)
+subst_patterns = parse_subst_pattern(regex)
+value = data
+for subst_pattern in subst_patterns:
+  try:
+    value = substitute(subst_pattern, value)
+  except ValueError as err:
+    raise ValueError(f"{variable}.regex: {subst_pattern} is invalid: {err}")
 <<update [[regex_results]] with [[value]]>>
+<<functions>>=
+def substitute(subst_pattern, data):
+  """
+  Takes a substitution pattern `subst_pattern` (`s/match/replacement/`) and
+  returns the result of applying it to `data`.
+  """
+  <<check that [[subst_pattern]] is value, raise [[ValueError]] if not>>
+  <<break out [[pattern]] and [[replacement]] from [[subst_pattern]]>>
+  return re.sub(pattern, replacement, data)
 <<imports>>=
 import re
 @
@@ -1179,3 +1195,65 @@ if "no_match_default" in var_subst:
   substitutions[variable] = var_subst["no_match_default"]
 else:
   substitutions[variable] = data
+@
+
+Now, let's return to parsing the substitution patterns.
+We want to split the substitution patterns into a list of patterns.
+Instinctively, we can do this by splitting on [[;]].
+However, the user is likely to use [[;]] in the regexes, so we need to be 
+careful.
+
+The syntax of a substitution pattern is [[s/match/replacement/]].
+We can use any character as the separator, but [[/]] is the most common.
+We assume that the use will use a character that will \emph{not be in the 
+pattern}, to avoid having to escape it in the pattern.
+This assumption allows us to ignore looking for escaped separators.
+<<check that [[subst_pattern]] is value, raise [[ValueError]] if not>>=
+if subst_pattern[0] != "s" and subst_pattern.count(subst_pattern[1]) < 3:
+  subst_char = subst_pattern[1]
+  raise ValueError(f"'{subst_pattern}' is invalid: must be of form "
+                   f"'s{subst_char}match{subst_char}replacement{subst_char}'")
+<<break out [[pattern]] and [[replacement]] from [[subst_pattern]]>>=
+_, pattern, replacement, _ = subst_pattern.split(subst_pattern[1])
+@
+
+\label{ParseSubstPatterns}%
+Time to parse a series of these patterns.
+We'll go through the string and look for starts and ends:
+[[sX]] starts and [[X;]] ends, where [[X]] can be any character.
+We should also ensure we find [[X]] somewhere in the middle too.
+We'll use a regex for this.
+<<functions>>=
+def parse_subst_pattern(subst_pattern: str) -> List[str]:
+  """
+  Parses a substitution pattern `subst_pattern`, for example
+
+    `s/match/replacement/; s/match/replacement/; ...`
+
+  and returns a list of the patterns.
+  """
+  patterns = []
+  <<let [[regex]] be the regex for finding substitution patterns>>
+  for pattern in re.finditer(regex, subst_pattern):
+    subst_char = pattern.group(1)
+    match = pattern.group(2)
+    replacement = pattern.group(3)
+    patterns.append(f"s{subst_char}{match}{subst_char}{replacement}{subst_char}")
+  return patterns
+@
+
+Let's look at the details of the regex.
+<<let [[regex]] be the regex for finding substitution patterns>>=
+regex = r"s(.)(.*?)(?<!\\)\1(.*?)(?<!\\)\1(?:; *|$)"
+@ The important details are the following:
+\begin{itemize}
+  \item Use a non-greedy match ([[.*?]], the [[?]] has this effect) for the 
+  match and replacement.
+  If not, we'll match from the first into the second (or last) pattern.
+  \item We use a negative lookbehind assertion ([[(?<!\\)]]) to ensure that the 
+  separator isn't escaped.
+  This is to avoid matching on [[\/]] and the like.
+  \item We use a non-capturing group for the separator and the end of the 
+  pattern ([[(?:; *|$)]]) to ensure that we match on either the separator 
+  ([[;]]) or the end of the string.
+\end{itemize}
