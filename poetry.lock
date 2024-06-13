@@ -427,14 +427,14 @@ testing = ["pytest (>=6)", "pytest-checkdocs (>=2.4)", "pytest-cov", "pytest-ena
 
 [[package]]
 name = "ladok3"
-version = "4.10"
+version = "4.11"
 description = "Python wrapper and CLI for the LADOK3 REST API."
 category = "main"
 optional = false
 python-versions = "<4.0,>=3.8"
 files = [
-    {file = "ladok3-4.10-py3-none-any.whl", hash = "sha256:e3a87fa0030fa4be0884d51ba0600d26bedcec4e7b1f1a906edfbd12a65d3a23"},
-    {file = "ladok3-4.10.tar.gz", hash = "sha256:ee09bfc5d60218552788bc77ee842005f3d94a2490a99b5465bac9dcc8accd00"},
+    {file = "ladok3-4.11-py3-none-any.whl", hash = "sha256:2196a0a90e226875b6461ff0ee8e526c9b40b3b9434d458a077bbb5780e71b7d"},
+    {file = "ladok3-4.11.tar.gz", hash = "sha256:0f31d405f9733fa2730a5bb100fdad03bb6ee1b542ffaea6e0b0b36858bd03d3"},
 ]
 
 [package.dependencies]
@@ -881,4 +881,4 @@ testing = ["big-O", "jaraco.functools", "jaraco.itertools", "jaraco.test", "more
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.8"
-content-hash = "a463f27875138ca8cf46c8646a850ce022f5a892593fb979dc2262a011d9eed4"
+content-hash = "4813e0d55ebae8833f2239596cdca5102daeb58f0ae5a2abfd56440cbae8de86"
