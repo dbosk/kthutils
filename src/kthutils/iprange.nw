@@ -78,7 +78,10 @@ We'll simply call it from our Python-implemented subommand.
 @cli.command()
 def iprange(rooms: Annotated[List[str], rooms_arg]):
   """
-  Generate the IP ranges for the given lab rooms.
+  Generate the IP ranges for the given lab rooms. The lab rooms have the 
+  following prefixes that can be used:
+
+  <<list of rooms' prefixes>>
   """
   <<find the path of [[iprange.sh]]>>
   <<run [[iprange.sh]] with the given [[rooms]]>>
@@ -86,6 +89,17 @@ def iprange(rooms: Annotated[List[str], rooms_arg]):
 rooms_arg = typer.Argument(help="The lab rooms to generate IP ranges for. "
                                 "The lab room is the hostname prefix, eg red "
                                 "(for Röd) or toke (for Toker).")
+@
+
+\subsection{The rooms' hostname prefixes}
+
+I got this list in an email from IT.
+<<list of rooms' prefixes>>=
+ARCPLAN BALT BILBO BURE BUTT BYVPROJ CADLAB CHRIS COS-LAB
+DELL DFL FAGG FRODO FYLKE GLAD HALLF ITM-C13 ITM-C30 ITM-C45
+ITM-C46 ITSC KA-209 KA-309 KLOK KTHB LABB305 M102 M122 MACL
+MAT MAX MERRY NILS PIPPIN PROS RB33 REMOTE SAM T41 T65 TOKE
+TROT XQ23 XQ25 XQ32 XW343 XW344 XW41 XW50
 @
 
 \subsection{Find the path of [[iprange.sh]]}
