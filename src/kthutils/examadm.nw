@@ -1,0 +1,15 @@
+\chapter{Exam administration}
+
+Now that KTH has centralised exam administration, they want us to fill in the 
+following form with information about the exam:
+\begin{center}
+\url{https://www.kth.se/form/kompletterande-info}.
+\end{center}
+This should be filled in for every time the exam is given.
+Of course, the information in this form will be the same every time, which 
+makes it a perfect target for automation.
+
+Other information about exam administration can be found on
+\begin{center}
+\url{https://intra.kth.se/utbildning/examination/salskrivning/exadm/examinatorer-och-lar/infor-tentamen-1.1338307}.
+\end{center}
