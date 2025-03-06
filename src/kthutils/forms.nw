@@ -754,34 +754,43 @@ kthutils config forms.rewriter.restlabb -s ""
 We then want to have the overall format string.
 <<restlabb.sh>>=
 kthutils config forms.rewriter.restlabb.format_string -s "
+echo 'Time:         {time}'
 echo 'Course:       {course}'
 echo 'Module:       {module}'
 echo 'Student:      {student}'
 echo 'Comments:     {comments}'
 echo 'Grader:       {grader}'
 canvaslms grade \
-  -c '{course_code} {semester}' \
+  -c '{course_nick}{year}' \
   -a '{assignment}' \
   -u '{student}' \
   -g '{grade}' \
   -m 'OK {grader}'
 echo 'Canvas:'
 canvaslms submissions \
-  -c '{course_code} {semester}' \
+  -c '{course_nick}{year}' \
   -a '{assignment}' \
   -u '{student}'
 echo
+canvaslms results \
+  -c '{course_nick}{year}' \
+  -A '{assignment_group}' \
+  -u '{student}' \
+| sed -E 's/ ?[HV]T[0-9]{2}( \(.*\))?//' \
+| ladok report -fv
 "
 @
 
 Now we need to define the substitutions used in the format string above.
 <<restlabb.sh>>=
+kthutils config forms.rewriter.restlabb.substitutions.time.column -s 0
 kthutils config forms.rewriter.restlabb.substitutions.module.column -s 5
 kthutils config forms.rewriter.restlabb.substitutions.comments.column -s 6
 kthutils config forms.rewriter.restlabb.substitutions.course.column -s 3
 @ These just copy the values from the column verbatim.
 
-Next we want the course code.
+Next, let's illustrate how we extract the course code---although we don't use 
+it for now.
 This we can extract from the course column, we'll need a regex substitution to 
 filter out the course code in particular.
 <<restlabb.sh>>=
@@ -790,7 +799,9 @@ kthutils config forms.rewriter.restlabb.substitutions.course_code.regex \
   -s "s/^.*([A-Z]{2}\d{3,4}[A-Z]?).*$/\1/"
 @
 
-We also want to extract the semster from that column.
+We also want to extract the semester from that column, and turn it into 
+capitals.
+We give a list of rewrites, one for each semester.
 <<restlabb.sh>>=
 kthutils config forms.rewriter.restlabb.substitutions.semester.column -s 3
 kthutils config forms.rewriter.restlabb.substitutions.semester.regex \
@@ -798,6 +809,30 @@ kthutils config forms.rewriter.restlabb.substitutions.semester.regex \
   -s "s/^.*[Vv][Tt](\d{2}).*$/VT\1/"
 @ We used two regexes to ensure that we rewrite both HT and VT to the correct 
 case.
+
+However, we can do a bit better.
+We can actually rewrite to the normal nicknames that we use for the courses:
+DD1310 HT24 CMAST should become prgm24.
+We can do this with a simple substitution, we treat the nick and year 
+separately, as can be seen in the format string above.
+
+When we rewrite the nick, we do it with a list of regexes---one for each 
+course.
+<<restlabb.sh>>=
+kthutils config forms.rewriter.restlabb.substitutions.course_nick.column -s 3
+kthutils config forms.rewriter.restlabb.substitutions.course_nick.regex \
+  -s "s/^.*DD1310.*(CMAST|[SC]ITEH?).*$/prgm/" \
+  -s "s/^.*DD1317.*$/prgi/"
+@
+
+Now, let's turn to that year.
+We can extract the year from the course column, same as we did for the semester 
+above.
+<<restlabb.sh>>=
+kthutils config forms.rewriter.restlabb.substitutions.year.column -s 3
+kthutils config forms.rewriter.restlabb.substitutions.year.regex \
+  -s "s/^.*[HhVv][Tt](\d{2}).*$/\1/"
+@
 
 We also want to extract the grader, or rather, the grader's (KTH) email.
 The same for the student.
@@ -832,16 +867,16 @@ The trickiest part, though, is the assignment.
 This must also be extracted from the module column.
 Let's start with the easy ones.
 The more challenging here is the project.
-We don't want to match the project when the TA wrote ``Projektgranskning'', 
-then we just want ``granskning''.
+We don't want to match the project when the TA wrote ``Projektgranskning'' or 
+``P-uppgiftsgranskning'', then we just want ``granskning''.
 But for ``Projekt'', we actually want to match that as ``redovisning''.
 We use a negative lookahead assertion for this ([[(?!...)]]).
 <<restlabb.sh>>=
 kthutils config forms.rewriter.restlabb.substitutions.assignment.column -s 5
 kthutils config forms.rewriter.restlabb.substitutions.assignment.regex \
+  -s 's/.*[Pp](-?upp(gift)?|rojekt(?!spec|gransk)).*/redovisning/' \
   -s 's/.*[Ss][Pp][Ee][Cc].*/spec/' \
   -s 's/.*[Gg](ransk|RANSK).*/granskning/' \
-  -s 's/.*[Pp](-?upp(gift)?|rojekt(?!spec|gransk)).*/redovisning/' \
   <<regexes for labs>>
 @
 
@@ -887,14 +922,29 @@ s/<<lab spelling>> *(\d+(?:<<conjunctions>>\d+)*)\D*.*/Laboration .(\1)./
 
 When we rewrite the conjunctions, we simply want to replace them by the 
 disjunction ([[|]]).
+However, since these conjunctions are for the lab numbers,
+we want to match---but not rewrite---the numbers as well.
+Otherwise we'll rewrite conjunctions in all kinds of settings.
 <<rewrite conjunctions>>=
-s/<<conjunctions>>/|/
+s/(?<=\d)<<conjunctions>>(?=\d)/|/
 @
 
 We note that the last pattern also captures single labs.
 Since the (non-capturing) group around the conjunctions has [[*]], we also 
 capture labs using no conjunctions.
 
+Finally, the last thing we want to do is to take the assignment and turn it 
+into the correct assignment group---that is, labs to LAB1 and project-related 
+assignments to LAB3.
+<<restlabb.sh>>=
+kthutils config forms.rewriter.restlabb.substitutions.assignment_group.column -s 5
+kthutils config forms.rewriter.restlabb.substitutions.assignment_group.regex \
+  -s "s/.*[Ll]ab(b|oration).*/LAB1/" \
+  -s "s/.*[Pp]-?(upp(gift)?|UPP(GIFT)?|rojekt|ROJEKT).*/LAB3/" \
+  -s "s/.*[Ss][Pp][Ee][Cc].*/LAB3/" \
+  -s "s/.*[Gg](ransk|RANSK).*/LAB3/" \
+  -s "s/.*[Rr](edovisn|EDOVISN).*/LAB3/"
+@
 
 \subsection{The [[rewriter]] subcommands}
 
@@ -1164,8 +1214,9 @@ the result, not just one of them.
 Hence, we need to add each result to the list [[regex_results]].
 However, if there is no match, [[value]] will equal [[data]] and we don't want 
 to add that.
+We also don't want to add the same result twice.
 <<update [[regex_results]] with [[value]]>>=
-if value != data:
+if value != data and value not in regex_results:
   regex_results.append(value)
 @
 
