@@ -1214,8 +1214,9 @@ the result, not just one of them.
 Hence, we need to add each result to the list [[regex_results]].
 However, if there is no match, [[value]] will equal [[data]] and we don't want 
 to add that.
+We also don't want to add the same result twice.
 <<update [[regex_results]] with [[value]]>>=
-if value != data:
+if value != data and value not in regex_results:
   regex_results.append(value)
 @
 
