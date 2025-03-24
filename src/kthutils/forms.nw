@@ -196,6 +196,19 @@ def test_get_added_forms():
   assert "nonexisting" not in kthutils.forms.get_added_forms()
 @
 
+Now, let's add a CLI command for listing the forms.
+<<list command doc>>=
+Lists all forms added to the configuration
+<<command definitions>>=
+@cli.command(name="ls")
+def cli_list_forms():
+  """
+  <<list command doc>>
+  """
+  for form in get_added_forms():
+    print(form)
+@
+
 
 \section{An API for KTH Forms}
 
