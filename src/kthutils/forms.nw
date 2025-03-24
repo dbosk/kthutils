@@ -760,23 +760,24 @@ echo 'Module:       {module}'
 echo 'Student:      {student}'
 echo 'Comments:     {comments}'
 echo 'Grader:       {grader}'
-canvaslms grade \
-  -c '{course_nick}{year}' \
-  -a '{assignment}' \
-  -u '{student}' \
-  -g '{grade}' \
+echo 'In Canvas:    {in_canvas}'
+canvaslms grade \\
+  -c '{course_nick}{year}' \\
+  -a '{assignment}' \\
+  -u '{student}' \\
+  -g '{grade}' \\
   -m 'OK {grader}'
 echo 'Canvas:'
-canvaslms submissions \
-  -c '{course_nick}{year}' \
-  -a '{assignment}' \
+canvaslms submissions \\
+  -c '{course_nick}{year}' \\
+  -a '{assignment}' \\
   -u '{student}'
 echo
-canvaslms results \
-  -c '{course_nick}{year}' \
-  -A '{assignment_group}' \
-  -u '{student}' \
-| sed -E 's/ ?[HV]T[0-9]{2}( \(.*\))?//' \
+canvaslms results \\
+  -c '{course_nick}{year}' \\
+  -A '{assignment_group}' \\
+  -u '{student}' \\
+| sed -E 's/ ?[HV]T[0-9]{{2}}( \(.*\))?//' \\
 | ladok report -fv
 "
 @
@@ -845,6 +846,13 @@ kthutils config forms.rewriter.restlabb.substitutions.student.regex \
   -s "s/^.*?([A-Za-z0-9]+@kth.se).*$/\1/"
 @
 
+Also, we want to extract if the grader already put the result into Canvas or 
+not.
+This has its own column.
+<<restlabb.sh>>=
+kthutils config forms.rewriter.restlabb.substitutions.in_canvas.column -s 7
+@
+
 The grade is a bit trickier to extract.
 It's in the module column.
 Usually the TAs write something like ``P-uppgift betyg A/D'' or ``Projekt, A''.
@@ -874,7 +882,7 @@ We use a negative lookahead assertion for this ([[(?!...)]]).
 <<restlabb.sh>>=
 kthutils config forms.rewriter.restlabb.substitutions.assignment.column -s 5
 kthutils config forms.rewriter.restlabb.substitutions.assignment.regex \
-  -s 's/.*[Pp](-?upp(gift)?|rojekt(?!spec|gransk)).*/redovisning/' \
+  -s 's/.*[Pp](.?uppgift|rojekt)s?(?![sg]).*/redovisning/' \
   -s 's/.*[Ss][Pp][Ee][Cc].*/spec/' \
   -s 's/.*[Gg](ransk|RANSK).*/granskning/' \
   <<regexes for labs>>
