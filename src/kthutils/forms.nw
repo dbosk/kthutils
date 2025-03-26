@@ -985,12 +985,18 @@ to the config directly (as suggested above).
 
 This way, we can have rewriter for the restlabb form and turn it into result 
 reporting commands.
+We'll have a bash script that will be run by Cron.
+We must source our [[.profile]] to ensure everything works as usual.
+<<restlabb.sh>>=
+#!/bin/bash
+
+source ${HOME}/.profile
+@
+
 We always name the restlabb forms as [[restlabb{AC_YEAR}]],
 where [[AC_YEAR]] is the academic year (e.g., 24/25).
 We switch academic year during summer.
 <<restlabb.sh>>=
-#!/bin/bash
-
 YEAR=$(date +%y)
 MONTH=$(date +%m)
 if [[ $MONTH -lt 7 ]]; then
