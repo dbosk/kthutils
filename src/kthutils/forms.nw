@@ -843,7 +843,7 @@ above.
 <<restlabbsetup.sh>>=
 kthutils config forms.rewriter.restlabb.substitutions.year.column -s 3
 kthutils config forms.rewriter.restlabb.substitutions.year.regex \
-  -s "s/^.*[HhVv][Tt](\d{2}).*$/\1/"
+  -s "s/^.*[HhVv][Tt][- ]*(\d{2}).*$/\1/"
 @
 
 We also want to extract the grader, or rather, the grader's (KTH) email.
