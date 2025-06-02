@@ -833,8 +833,8 @@ course.
 <<restlabbsetup.sh>>=
 kthutils config forms.rewriter.restlabb.substitutions.course_nick.column -s 3
 kthutils config forms.rewriter.restlabb.substitutions.course_nick.regex \
-  -s "s/^.*DD1310.*(CMAST|[SC]ITEH?).*$/prgm/" \
-  -s "s/^.*DD1317.*$/prgi/"
+  -s "s/^.*DD1310.*(CMAST|[SC]ITEH?)?.*$/prgm/" \
+  -s "s/^.*DD1317.*(prgi)?.*$/prgi/"
 @
 
 Now, let's turn to that year.
@@ -843,7 +843,7 @@ above.
 <<restlabbsetup.sh>>=
 kthutils config forms.rewriter.restlabb.substitutions.year.column -s 3
 kthutils config forms.rewriter.restlabb.substitutions.year.regex \
-  -s "s/^.*[HhVv][Tt][- ]*(\d{2}).*$/\1/"
+  -s "s/^.*([HhVv][Tt][- ]*|prg[im])(\d{2}).*$/\2/"
 @
 
 We also want to extract the grader, or rather, the grader's (KTH) email.
@@ -893,7 +893,7 @@ We use a negative lookahead assertion for this ([[(?!...)]]).
 <<restlabbsetup.sh>>=
 kthutils config forms.rewriter.restlabb.substitutions.assignment.column -s 5
 kthutils config forms.rewriter.restlabb.substitutions.assignment.regex \
-  -s 's/.*[Pp](.?uppgift|rojekt)s?(?![sg]).*/redovisning/' \
+  -s 's/.*[Pp](.?uppgift|rojekt)[s ]?(?![sg]).*/redovisning/' \
   -s 's/.*[Ss][Pp][Ee][Cc].*/spec/' \
   -s 's/.*[Gg](ransk|RANSK).*/granskning/' \
   <<regexes for labs>>
