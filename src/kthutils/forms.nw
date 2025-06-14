@@ -893,7 +893,7 @@ We use a negative lookahead assertion for this ([[(?!...)]]).
 <<restlabbsetup.sh>>=
 kthutils config forms.rewriter.restlabb.substitutions.assignment.column -s 5
 kthutils config forms.rewriter.restlabb.substitutions.assignment.regex \
-  -s 's/.*[Pp](.?uppgift|rojekt)[s ]?(?![sg]).*/redovisning/' \
+  -s 's/.*[Pp](.?[Uu]ppgift|rojekt)[s ]?(?![sg]).*/redovisning/' \
   -s 's/.*[Ss][Pp][Ee][Cc].*/spec/' \
   -s 's/.*[Gg](ransk|RANSK).*/granskning/' \
   <<regexes for labs>>
