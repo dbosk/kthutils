@@ -996,9 +996,14 @@ source ${HOME}/.profile
 We always name the restlabb forms as [[restlabb{AC_YEAR}]],
 where [[AC_YEAR]] is the academic year (e.g., 24/25).
 We switch academic year during summer.
+Particularly, when we hit July, we want to look forward.
+Then we also get a reminder early on to add the new form.
+
+One thing to remember here is to remove the leading zero from the month.
+Otherwise the [[test]] program will interpret the month as octal.
 <<restlabb.sh>>=
 YEAR=$(date +%y)
-MONTH=$(date +%m)
+MONTH=$(date +%m | sed "s/^0//")  # Remove leading zero
 if [[ $MONTH -lt 7 ]]; then
   AC_YEAR="$((YEAR-1))/${YEAR}"
 else
