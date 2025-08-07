@@ -25,7 +25,19 @@ repository = "https://github.com/dbosk/kthutils"
 "documentation" = "https://github.com/dbosk/kthutils/releases"
 
 [tool.poetry]
-include = ["*/**/*.py", "*/**/*.sh"]
+include = [
+  { path = "src/**/*.py", format = "wheel" },
+  { path = "src/**/*.sh", format = "wheel" },
+  { path = "makefiles", format = "sdist" }
+]
+exclude = [
+  "*/**/.gitignore",
+  { path = "*/**/Makefile", format = "wheel" },
+  "*/**/ltxobj",
+  "*/**/.git",
+  "*/**/*.csv",
+  "*/**/*.xlsx"
+]
 
 [project.scripts]
 kthutils = "kthutils.cli:cli"
