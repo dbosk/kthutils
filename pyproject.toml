@@ -39,11 +39,11 @@ exclude = [
   "*/**/*.xlsx"
 ]
 
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.2.0"
+
 [project.scripts]
 kthutils = "kthutils.cli:cli"
-
-[poetry.group.dev.dependencies]
-pytest = ">=7.2.0"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
