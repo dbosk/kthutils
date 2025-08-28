@@ -772,12 +772,16 @@ echo 'Student:      {student}'
 echo 'Comments:     {comments}'
 echo 'Grader:       {grader}'
 echo 'In Canvas:    {in_canvas}'
-canvaslms grade \\
-  -c '{course_nick}{year}' \\
-  -a '{assignment}' \\
-  -u '{student}' \\
-  -g '{grade}' \\
-  -m 'OK {grader}'
+if [ '{in_canvas}' = 'Ja' ]; then
+  echo 'Already in Canvas.'
+else
+  canvaslms grade \\
+    -c '{course_nick}{year}' \\
+    -a '{assignment}' \\
+    -u '{student}' \\
+    -g '{grade}' \\
+    -m 'OK {grader}'
+fi
 echo 'Canvas:'
 canvaslms submissions \\
   -c '{course_nick}{year}' \\
@@ -790,6 +794,7 @@ canvaslms results \\
   -u '{student}' \\
 | sed -E 's/ ?[HV]T[0-9]{{2}}( \(.*\))?//' \\
 | ladok report -fv
+echo
 "
 @
 
@@ -840,10 +845,11 @@ kthutils config forms.rewriter.restlabb.substitutions.course_nick.regex \
 Now, let's turn to that year.
 We can extract the year from the course column, same as we did for the semester 
 above.
+However, some TAs write HT24 (most), some HT2024 (Edvin).
 <<restlabbsetup.sh>>=
 kthutils config forms.rewriter.restlabb.substitutions.year.column -s 3
 kthutils config forms.rewriter.restlabb.substitutions.year.regex \
-  -s "s/^.*([HhVv][Tt][- ]*|prg[im])(\d{2}).*$/\2/"
+  -s "s/^.*([HhVv][Tt][- ]*|prg[im])(?:20)?(\d{2}).*$/\2/"
 @
 
 We also want to extract the grader, or rather, the grader's (KTH) email.
@@ -872,7 +878,7 @@ We try to extract the grade from that.
 kthutils config forms.rewriter.restlabb.substitutions.grade.column -s 5
 kthutils config forms.rewriter.restlabb.substitutions.grade.regex \
   -s "s/.*([Bb]etyg|,)?\b([A-F])(\b.*)?$/\2/" \
-  -s "s/.*EJ GODKÄN[TD].*$/F/"
+  -s "s/.*(EJ GODKÄN[TD]|[Ee]j godkän[dt]).*$/F/"
 @ For P/F assignments, the TAs usually don't write any grade.
 They just write ``granskning''.
 For this, we have a default grade, in case the substitution doesn't match 
