@@ -149,7 +149,7 @@ try:
   return username, password
 except KeyError:
   pass
-<<imports>>=
+<<credential imports>>=
 import typerconf as config
 @
 
