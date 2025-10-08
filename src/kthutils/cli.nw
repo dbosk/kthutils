@@ -132,7 +132,7 @@ try:
   username = os.environ["KTH_LOGIN"]
   password = os.environ["KTH_PASSWD"]
   return username, password
-except:
+except KeyError:
   pass
 <<credential imports>>=
 import os
@@ -147,8 +147,10 @@ try:
   username = config.get("credentials.username")
   password = config.get("credentials.password")
   return username, password
-except:
+except KeyError:
   pass
+<<imports>>=
+import typerconf as config
 @
 
 \subsection{Instruct user about credentials}
