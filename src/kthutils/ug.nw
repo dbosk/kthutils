@@ -65,9 +65,10 @@ We create a [[ug]] object and will add test functions to [[<<test functions>>]]
 as we add methods to [[<<UG methods>>]].
 <<test ug.py>>=
 import kthutils.ug
+import kthutils.credentials
 import os
 
-ug = kthutils.ug.UGsession(os.environ["KTH_LOGIN"], os.environ["KTH_PASSWD"])
+ug = kthutils.ug.UGsession(*kthutils.credentials.get_credentials())
 
 <<test functions>>
 @
