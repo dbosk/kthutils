@@ -1024,7 +1024,7 @@ Finally, we rewrite those lines using the rewriter named [[restlabb]], that we
 configured above (in [[restlabbsetup.sh>>]]).
 <<restlabb.sh>>=
 kthutils forms next restlabb${AC_YEAR} \
-| grep -E "(Bosk|DD1310.*(CMAST|[CS]ITEH?)|DD131[57].*CINEK)" \
+| grep -E "(Bosk|DD131[57].*[CS]INEK)" \
 | kthutils forms rewriter rewrite restlabb
 @
 
