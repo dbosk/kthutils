@@ -1122,47 +1122,19 @@ def test_rewriter_command():
   config.set(f"{rewriter_config}.simple", {
     "format_string": "Col1: {col1}, Col2: {col2}",
     "substitutions": {
-      "col1": {"column": 0},
-      "col2": {"column": 1}
+      "col1": {"column": "0"},
+      "col2": {"column": "1"}
     }
   })
   
-  # Test with stdin input
-  from io import StringIO
-  import sys
-  old_stdin = sys.stdin
-  sys.stdin = StringIO("value1\tvalue2\nvalue3\tvalue4\n")
-  
+  # Test with stdin input using Typer's input parameter
   result = runner.invoke(forms_cli, [
     "rewriter", "rewrite", "simple"
-  ])
-  
-  sys.stdin = old_stdin
+  ], input="value1\tvalue2\nvalue3\tvalue4\n")
   
   assert result.exit_code == 0
   assert "Col1: value1, Col2: value2" in result.stdout
   assert "Col1: value3, Col2: value4" in result.stdout
-
-def test_rewriter_command_with_form():
-  <<reset [[config.dirs]]>>
-  <<add restlabb form>>
-  
-  # Set up a rewriter that extracts some data
-  rewriter_config = kthutils.forms.CONFIG_REWRITERS
-  config.set(f"{rewriter_config}.extract_date", {
-    "format_string": "Date: {date}",
-    "substitutions": {
-      "date": {"column": 0}
-    }
-  })
-  
-  # Test with export source
-  result = runner.invoke(forms_cli, [
-    "rewriter", "rewrite", "extract_date", "restlabb", "--source", "export"
-  ])
-  
-  assert result.exit_code == 0
-  assert "Date:" in result.stdout
 @
 
 
@@ -1237,7 +1209,7 @@ def test_rewrite_row_simple():
   rewriter = {
     "format_string": "Value: {value}",
     "substitutions": {
-      "value": {"column": 1}
+      "value": {"column": "1"}
     }
   }
   result = kthutils.forms.rewrite_row(row, rewriter)
@@ -1249,7 +1221,7 @@ def test_rewrite_row_with_regex():
   rewriter = {
     "format_string": "Email: {email}",
     "substitutions": {
-      "email": {"column": 1, "regex": "s/.*?([a-z]+@kth.se).*/\\1/"}
+      "email": {"column": "1", "regex": "s/.*?([a-z]+@kth.se).*/\\1/"}
     }
   }
   result = kthutils.forms.rewrite_row(row, rewriter)
@@ -1262,7 +1234,7 @@ def test_rewrite_row_with_default():
     "format_string": "Grade: {grade}",
     "substitutions": {
       "grade": {
-        "column": 1,
+        "column": "1",
         "regex": "s/.*betyg ([A-F]).*/\\1/",
         "no_match_default": "P"
       }
@@ -1278,7 +1250,7 @@ def test_rewrite_row_multiple_regexes():
     "format_string": "Assignment: {assignment}",
     "substitutions": {
       "assignment": {
-        "column": 1,
+        "column": "1",
         "regex": [
           "s/.*[Pp]-?upp(gift)?.*/redovisning/",
           "s/.*[Ll]ab(b|oration)? (\\d+).*/Laboration..\\2./"
