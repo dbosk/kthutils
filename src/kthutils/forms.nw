@@ -377,6 +377,20 @@ def clean_row(row: List[str]) -> List[str]:
   return list(map(lambda x: x.replace("\n", r"\n"), row))
 @
 
+We want to test the [[clean_row]] function.
+<<test functions>>=
+def test_clean_row():
+  row = ["test\ndata", "more\nlines", "simple"]
+  cleaned = kthutils.forms.clean_row(row)
+  assert cleaned == [r"test\ndata", r"more\nlines", "simple"]
+  
+  # Test empty row
+  assert kthutils.forms.clean_row([]) == []
+  
+  # Test row with no newlines
+  assert kthutils.forms.clean_row(["a", "b", "c"]) == ["a", "b", "c"]
+@
+
 
 \section{Exporting form data}
 
@@ -1080,6 +1094,77 @@ def get_added_rewriters(prefix: str = "") -> List[str]:
   return list(filter(lambda x: x.startswith(prefix), rewriters))
 @
 
+We want to test the [[get_added_rewriters]] function.
+<<test functions>>=
+def test_get_added_rewriters():
+  rewriter_config = kthutils.forms.CONFIG_REWRITERS
+  config.set(f"{rewriter_config}.test_rewriter", {"format_string": "test"})
+  config.set(f"{rewriter_config}.restlabb", {"format_string": "test2"})
+  
+  rewriters = kthutils.forms.get_added_rewriters()
+  assert "test_rewriter" in rewriters
+  assert "restlabb" in rewriters
+  
+  # Test prefix filtering
+  assert "restlabb" in kthutils.forms.get_added_rewriters("rest")
+  assert "test_rewriter" in kthutils.forms.get_added_rewriters("test")
+  assert "nonexisting" not in kthutils.forms.get_added_rewriters()
+@
+
+We also want to test the [[rewriter rewrite]] command.
+<<test functions>>=
+def test_rewriter_command():
+  <<reset [[config.dirs]]>>
+  <<add restlabb form>>
+  
+  # Set up a simple rewriter
+  rewriter_config = kthutils.forms.CONFIG_REWRITERS
+  config.set(f"{rewriter_config}.simple", {
+    "format_string": "Col1: {col1}, Col2: {col2}",
+    "substitutions": {
+      "col1": {"column": 0},
+      "col2": {"column": 1}
+    }
+  })
+  
+  # Test with stdin input
+  from io import StringIO
+  import sys
+  old_stdin = sys.stdin
+  sys.stdin = StringIO("value1\tvalue2\nvalue3\tvalue4\n")
+  
+  result = runner.invoke(forms_cli, [
+    "rewriter", "rewrite", "simple"
+  ])
+  
+  sys.stdin = old_stdin
+  
+  assert result.exit_code == 0
+  assert "Col1: value1, Col2: value2" in result.stdout
+  assert "Col1: value3, Col2: value4" in result.stdout
+
+def test_rewriter_command_with_form():
+  <<reset [[config.dirs]]>>
+  <<add restlabb form>>
+  
+  # Set up a rewriter that extracts some data
+  rewriter_config = kthutils.forms.CONFIG_REWRITERS
+  config.set(f"{rewriter_config}.extract_date", {
+    "format_string": "Date: {date}",
+    "substitutions": {
+      "date": {"column": 0}
+    }
+  })
+  
+  # Test with export source
+  result = runner.invoke(forms_cli, [
+    "rewriter", "rewrite", "extract_date", "restlabb", "--source", "export"
+  ])
+  
+  assert result.exit_code == 0
+  assert "Date:" in result.stdout
+@
+
 
 \subsubsection{Reading the form data}
 
@@ -1142,6 +1227,79 @@ def rewrite_row(row: List[str], rewriter: Dict[str, Any]) -> str:
   format_string = rewriter["format_string"]
   <<create [[substitutions]] from [[row]] and [[rewriter]]>>
   return format_string.format(**substitutions)
+@
+
+We want to test the [[rewrite_row]] function.
+<<test functions>>=
+def test_rewrite_row_simple():
+  # Simple column substitution without regex
+  row = ["col0", "col1", "col2"]
+  rewriter = {
+    "format_string": "Value: {value}",
+    "substitutions": {
+      "value": {"column": 1}
+    }
+  }
+  result = kthutils.forms.rewrite_row(row, rewriter)
+  assert result == "Value: col1"
+
+def test_rewrite_row_with_regex():
+  # Test with regex substitution
+  row = ["data", "test@kth.se", "more data"]
+  rewriter = {
+    "format_string": "Email: {email}",
+    "substitutions": {
+      "email": {"column": 1, "regex": "s/.*?([a-z]+@kth.se).*/\\1/"}
+    }
+  }
+  result = kthutils.forms.rewrite_row(row, rewriter)
+  assert result == "Email: test@kth.se"
+
+def test_rewrite_row_with_default():
+  # Test no_match_default
+  row = ["data", "no match here", "more"]
+  rewriter = {
+    "format_string": "Grade: {grade}",
+    "substitutions": {
+      "grade": {
+        "column": 1,
+        "regex": "s/.*betyg ([A-F]).*/\\1/",
+        "no_match_default": "P"
+      }
+    }
+  }
+  result = kthutils.forms.rewrite_row(row, rewriter)
+  assert result == "Grade: P"
+
+def test_rewrite_row_multiple_regexes():
+  # Test with multiple regex patterns
+  row = ["data", "Labb 3", "more"]
+  rewriter = {
+    "format_string": "Assignment: {assignment}",
+    "substitutions": {
+      "assignment": {
+        "column": 1,
+        "regex": [
+          "s/.*[Pp]-?upp(gift)?.*/redovisning/",
+          "s/.*[Ll]ab(b|oration)? (\\d+).*/Laboration..\\2./"
+        ]
+      }
+    }
+  }
+  result = kthutils.forms.rewrite_row(row, rewriter)
+  assert result == "Assignment: Laboration..3."
+
+def test_rewrite_row_column_slice():
+  # Test column slicing
+  row = ["col0", "col1", "col2", "col3", "col4"]
+  rewriter = {
+    "format_string": "Range: {range}",
+    "substitutions": {
+      "range": {"column": "1:3"}
+    }
+  }
+  result = kthutils.forms.rewrite_row(row, rewriter)
+  assert result == "Range: col1\tcol2"
 @
 
 The [[rewriter]] that we get will have the following form.
@@ -1273,6 +1431,37 @@ def substitute(subst_pattern, data):
 import re
 @
 
+We want to test the [[substitute]] function.
+<<test functions>>=
+def test_substitute():
+  # Basic substitution
+  result = kthutils.forms.substitute("s/test/result/", "test data")
+  assert result == "result data"
+  
+  # No match
+  result = kthutils.forms.substitute("s/xyz/abc/", "test data")
+  assert result == "test data"
+  
+  # Different separator
+  result = kthutils.forms.substitute("s|test|result|", "test data")
+  assert result == "result data"
+  
+  # Regex pattern
+  result = kthutils.forms.substitute("s/[0-9]+/NUM/", "test 123 data")
+  assert result == "test NUM data"
+  
+  # Capture groups
+  result = kthutils.forms.substitute(r"s/([A-Z]+)([0-9]+)/\2-\1/", "ABC123")
+  assert result == "123-ABC"
+  
+  # Test invalid pattern raises ValueError
+  try:
+    kthutils.forms.substitute("invalid", "data")
+    assert False, "Should have raised ValueError"
+  except ValueError:
+    pass
+@
+
 We want to apply each regex on the data and add each result.
 Consider the following example:
 \begin{minted}{text}
@@ -1360,6 +1549,30 @@ def parse_subst_pattern(subst_pattern: str) -> List[str]:
     replacement = pattern.group(3)
     patterns.append(f"s{subst_char}{match}{subst_char}{replacement}{subst_char}")
   return patterns
+@
+
+We want to test the [[parse_subst_pattern]] function.
+<<test functions>>=
+def test_parse_subst_pattern():
+  # Single pattern
+  patterns = kthutils.forms.parse_subst_pattern("s/test/result/")
+  assert patterns == ["s/test/result/"]
+  
+  # Multiple patterns
+  patterns = kthutils.forms.parse_subst_pattern("s/a/b/; s/c/d/")
+  assert patterns == ["s/a/b/", "s/c/d/"]
+  
+  # Different separator
+  patterns = kthutils.forms.parse_subst_pattern("s|test|result|")
+  assert patterns == ["s|test|result|"]
+  
+  # Multiple patterns with spaces
+  patterns = kthutils.forms.parse_subst_pattern("s/a/b/;  s/c/d/")
+  assert patterns == ["s/a/b/", "s/c/d/"]
+  
+  # Complex patterns
+  patterns = kthutils.forms.parse_subst_pattern("s/.*test.*/result/; s/foo/bar/")
+  assert patterns == ["s/.*test.*/result/", "s/foo/bar/"]
 @
 
 Let's look at the details of the regex.
