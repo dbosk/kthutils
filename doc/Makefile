@@ -6,7 +6,6 @@ TEX_PYTHONTEX=	yes
 PYTHONTEXFLAGS=	--interpreter "python:poetry run python3"
 
 kthutils.pdf: preamble.tex abstract.tex ../LICENSE
-kthutils.pdf: ../.github/copilot-instructions.md
 
 kthutils.pdf: ../src/kthutils/cli.tex
 kthutils.pdf: ../src/kthutils/ug.tex

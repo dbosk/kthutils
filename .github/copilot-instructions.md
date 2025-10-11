@@ -119,7 +119,7 @@ make distclean
 2. Add it to `MODULES` in `src/kthutils/Makefile`
 3. Add extraction rules if needed
 4. Import and register in `cli.nw` if it has CLI commands
-5. Add documentation chapter in `doc/kthutils.tex`
+5. Add documentation chapter in `doc/kthutils.tex` and `doc/Makefile`
 
 ### Modifying Existing Code
 1. Edit the `.nw` file, not the generated `.py` file
