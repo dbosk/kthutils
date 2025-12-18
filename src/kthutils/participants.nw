@@ -395,81 +395,80 @@ The funka codes are divided into two categories, R and P.
 R-stöd: Anpassningar som rör rum, tid och fysisk omständighet anses normalt 
 beviljade av examinator.
 
-- R1: 50% längre skrivtid vid skriftlig salsexamination
+- R0: 50% längre skrivtid vid skriftlig salsexamination
 
-- R2: Examination i mindre grupp
+- R1: 25% längre skrivtid vid skriftlig salsexamination
 
-- R3: Examination i mindre grupp med skärmar som avgränsar sittplatserna
+- R2: Tentera i mindre grupp
 
-- R4: Examination helt enskilt
+- R3: Tentera i mindre grupp med skärmar som avgränsar sittplatserna i SAL
 
-- R5: Examination med anpassad placering i skrivrum
+- R4: Tentera helt enskilt
 
-- R6: Examination med anpassade lokaler
+- R5: Examination i mindre grupp med skärmar som avgränsar sittplatserna i RUM
 
-- R7: Examination med anpassad placering enskilt i skrivrum
+- R6: Examination i tillgänglighetsanpassade lokaler
 
-- R8: Skriva på dator
+- R7: Möjlighet till liggande vila under examinationstillfället
+
+- R8: Skriva på dator ALLTID
 
 - R9: Höj- och sänkbart bord
 
-- R10: Ljudavskärmning, hörselkåpor
-
-- R11: Ljudavskärmning, utdelade öronproppar
-
-- R12: Ljudavskärmning, musik i hörlurar
+- R10: Ljud avskärmning: Hörselkåpor
 
 - R13: Pauser under första timmen
 
 - R14: Kortare pauser under examinationstillfället
 
-- R15: Möjlighet till liggande vila under examinationen
+- R15: Anpassad tentamenslydelse som examinator tillgodoser
 
-- R17: Tentamen utskriven på A3-format
+- R16: Anpassad tentamenslydelse som examinationsadministrationsgruppen 
+  tillgodoser
 
-- R20: Upplästa frågor
+- R17: Tentamen utskriven i A3-format
 
-- R21: Teckentolk
+- R19: Delad tentamen
 
-- R22: Egen teknisk utrustning
+- R20: Upplästa frågor ALLTID
+
+- R21: Utbildningstolkning
+
+- R22: Teknisk utrustning eller annan utrustning
 
 - R23: Medicinsk utrustning
 
-- R100: Övriga anpassningar
+- R24: Medicinsk utrustning + 20 minuter förlängd skrivtid
+
+- R28: Skrivhjälp
+
+- R33: Personlig assistent med under examinationstillfället
+
+- R100: Övriga anpassningar som tillgodoses under examination med anmälan i 
+  Ladok
 
 - RANTSTOD: Anteckningsstöd
 
-P-stöd: Pedagogiska anpassningar ska alltid prövas av examinator i samråd med 
-berörd programansvarig alternativt grundutbildningsansvarig eller studierektor.
+P-stöd: Pedagogiska anpassningar ska i vissa fall prövas av examinator i samråd 
+med berörd programansvarig alternativt grundutbildningsansvarig eller 
+studierektor och funkahandläggare.
 
-- P8: Skriva på dator
+- P8: Skriva på dator vid behov
 
-- P16: Anpassad tentamenslydelse
+- P18: Förlängd tid vid hemtentamen/uppgifter/rapporter/projekt
 
-- P18: Flexibel inlämnings tid vid hemtentamen/uppgifter
+- P20: Upplästa frågor vid behov
 
-- P19: Delad tentamen
+- P29: Muntlig examination som komplettering till skriftlig examination
 
-- P20: Upplästa frågor
-
-- P24: Pedagogiskt hjälpmedel: formelsamling
-
-- P25: Pedagogisk hjälpmedel: miniräknare
-
-- P26: Pedagogisk hjälpmedel: lexikon
-
-- P27: Pedagogisk hjälpmedel: övrigt
-
-- P28: Assistans vid examination
-
-- P29: Muntlig examination/muntlig examination som komplettering till skriftlig 
-  examination
-
-- P30: Rörelsehjälpmedel t.ex. rullstol
+- P30: Rörelsehjälpmedel till exempel rullstol
 
 - P31: Assistans- eller ledarhund
 
-- P100: Övriga anpassningar
+- P32: Redovisa i mindre grupp
+
+- P100: Övriga anpassningar som tillgodoses vid examination utan en anmälan i 
+  Ladok
 
 A more detailed coverage of the funka codes can be found at
 

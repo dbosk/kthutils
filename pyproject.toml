@@ -9,14 +9,14 @@ license = "MIT"
 readme = "README.md"
 requires-python = ">=3.8,<4.0"
 dependencies = [
-  "weblogin>=1.8,<2.0",
+  "weblogin (>=1.13,<2.0)",
   "cachetools>=5.2.0,<6.0",
   "typer>=0.9.0,<1.0",
   "typerconf>=2.6,<3.0",
   "rich>=13.3.2,<14.0",
   "openpyxl>=3.1.2,<4.0",
   "typing-extensions>=4.9.0,<5.0; python_version < '3.9'",
-  "ladok3>=4.13,<5.0"
+  "ladok3 (>=5.5,<6.0)"
 ]
 
 [project.urls]
