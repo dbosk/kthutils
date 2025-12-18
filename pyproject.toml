@@ -1,6 +1,6 @@
 [project]
 name = "kthutils"
-version = "1.27"
+version = "1.28"
 description = "Various tools for automation at KTH"
 authors = [
   {name="Daniel Bosk", email="dbosk@kth.se"}
