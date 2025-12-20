@@ -967,19 +967,19 @@ typing-extensions = ">=3.7.4.3"
 
 [[package]]
 name = "typerconf"
-version = "2.8"
+version = "2.10"
 description = "Library to read and write configs using API and CLI with Typer"
 optional = false
 python-versions = "<4.0,>=3.7"
 groups = ["main"]
 files = [
-    {file = "typerconf-2.8-py3-none-any.whl", hash = "sha256:1ffbc6a63637eb97c6e0f6f5060016437de1fcaff926b4718ea5e1ce77a077ba"},
-    {file = "typerconf-2.8.tar.gz", hash = "sha256:5fb59d3d323d7c2cfbdfb078fe3cbce52190cbec8edc52ad515b7249a37d8f12"},
+    {file = "typerconf-2.10-py3-none-any.whl", hash = "sha256:3bc901bfcb0471916924f6a8c7313f21bc7740a23e15c634c4696d19cb2fe37b"},
+    {file = "typerconf-2.10.tar.gz", hash = "sha256:3c60de26bccb7a891d987bb1168614ace7978840c6a131ffe1fe839d5df27a22"},
 ]
 
 [package.dependencies]
 appdirs = ">=1.4.4,<2.0.0"
-typer = ">=0.9,<0.16"
+typer = ">=0.9,<0.20"
 
 [[package]]
 name = "typing-extensions"
@@ -1052,4 +1052,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.8,<4.0"
-content-hash = "346bac0a7c7671c40b001d60e4bd2af7b8eeef9438be383f30a536749b252f2a"
+content-hash = "33b7b412f6b120a2ed74897794294183ebece7903061b495914cec4e590e4037"
