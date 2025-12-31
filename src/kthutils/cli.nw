@@ -46,6 +46,19 @@ def test_cli_help():
   assert "A collection of tools useful at KTH" in result.stdout
 @
 
+We also want to test that all the expected subcommands are registered.
+<<test functions>>=
+def test_cli_subcommands():
+  """Test that all expected subcommands are registered"""
+  result = runner.invoke(kthutils.cli.cli, ["--help"])
+  assert result.exit_code == 0
+  assert "config" in result.stdout
+  assert "ug" in result.stdout
+  assert "participants" in result.stdout
+  assert "forms" in result.stdout
+  assert "iprange" in result.stdout
+@
+
 Now we can start to add the modules.
 We start with the UG module.
 <<import subcommand modules>>=
@@ -113,19 +126,6 @@ def test_forms_command():
   result = runner.invoke(kthutils.cli.cli, ["forms", "--help"])
   assert result.exit_code == 0
   assert "forms" in result.stdout
-@
-
-We also want to test that all the expected subcommands are registered.
-<<test functions>>=
-def test_cli_subcommands():
-  """Test that all expected subcommands are registered"""
-  result = runner.invoke(kthutils.cli.cli, ["--help"])
-  assert result.exit_code == 0
-  assert "config" in result.stdout
-  assert "ug" in result.stdout
-  assert "participants" in result.stdout
-  assert "forms" in result.stdout
-  assert "iprange" in result.stdout
 @
 
 
