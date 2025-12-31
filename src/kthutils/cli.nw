@@ -26,6 +26,26 @@ if __name__ == "__main__":
     cli()
 @
 
+We want to test that the main CLI command works and shows help.
+<<test cli.py>>=
+import pytest
+import typer.testing
+import kthutils.cli
+
+runner = typer.testing.CliRunner()
+
+<<test functions>>
+@
+
+<<test functions>>=
+def test_cli_help():
+  """Test that the main CLI shows help"""
+  result = runner.invoke(kthutils.cli.cli, ["--help"])
+  assert result.exit_code == 0
+  assert "kthutils" in result.stdout
+  assert "A collection of tools useful at KTH" in result.stdout
+@
+
 Now we can start to add the modules.
 We start with the UG module.
 <<import subcommand modules>>=
@@ -34,11 +54,29 @@ import kthutils.ug
 cli.add_typer(kthutils.ug.cli)
 @
 
+We want to test that the UG subcommand is registered.
+<<test functions>>=
+def test_ug_command():
+  """Test that the ug command shows help"""
+  result = runner.invoke(kthutils.cli.cli, ["ug", "--help"])
+  assert result.exit_code == 0
+  assert "ug" in result.stdout
+@
+
 Then we add the participants module.
 <<import subcommand modules>>=
 import kthutils.participants
 <<add subcommand typers to cli>>=
 cli.add_typer(kthutils.participants.cli)
+@
+
+We want to test that the participants subcommand is registered.
+<<test functions>>=
+def test_participants_command():
+  """Test that the participants command shows help"""
+  result = runner.invoke(kthutils.cli.cli, ["participants", "--help"])
+  assert result.exit_code == 0
+  assert "participants" in result.stdout
 @
 
 Then we add the [[iprange]] module.
@@ -52,11 +90,42 @@ import kthutils.iprange
 kthutils.iprange.add_command(cli)
 @
 
+We want to test that the iprange subcommand is registered.
+<<test functions>>=
+def test_iprange_command():
+  """Test that the iprange command shows help"""
+  result = runner.invoke(kthutils.cli.cli, ["iprange", "--help"])
+  assert result.exit_code == 0
+  assert "iprange" in result.stdout
+@
+
 Finally, we add the [[forms]] module.
 <<import subcommand modules>>=
 import kthutils.forms
 <<add subcommand typers to cli>>=
 cli.add_typer(kthutils.forms.cli)
+@
+
+We want to test that the forms subcommand is registered.
+<<test functions>>=
+def test_forms_command():
+  """Test that the forms command shows help"""
+  result = runner.invoke(kthutils.cli.cli, ["forms", "--help"])
+  assert result.exit_code == 0
+  assert "forms" in result.stdout
+@
+
+We also want to test that all the expected subcommands are registered.
+<<test functions>>=
+def test_cli_subcommands():
+  """Test that all expected subcommands are registered"""
+  result = runner.invoke(kthutils.cli.cli, ["--help"])
+  assert result.exit_code == 0
+  assert "config" in result.stdout
+  assert "ug" in result.stdout
+  assert "participants" in result.stdout
+  assert "forms" in result.stdout
+  assert "iprange" in result.stdout
 @
 
 
@@ -80,6 +149,15 @@ But we want to add the [[config]] subcommand from [[typerconf]] here.
 import typerconf as config
 <<get username and password>>=
 config.add_config_cmd(cli)
+@
+
+We want to test that the config subcommand is registered.
+<<test functions>>=
+def test_config_command():
+  """Test that the config command shows help"""
+  result = runner.invoke(kthutils.cli.cli, ["config", "--help"])
+  assert result.exit_code == 0
+  assert "config" in result.stdout
 @
 
 Now each subcommand can check for the username and password in the config or in 
@@ -169,86 +247,3 @@ sys.exit(1)
 import logging
 import sys
 
-
-\section{Testing}
-
-We need to test the CLI to ensure that it works as expected.
-We use the [[typer.testing.CliRunner]] to test the CLI commands.
-
-<<test cli.py>>=
-import pytest
-import typer.testing
-import kthutils.cli
-
-runner = typer.testing.CliRunner()
-
-<<test functions>>
-@
-
-We'll test that the main CLI command works and shows help.
-<<test functions>>=
-def test_cli_help():
-  """Test that the main CLI shows help"""
-  result = runner.invoke(kthutils.cli.cli, ["--help"])
-  assert result.exit_code == 0
-  assert "kthutils" in result.stdout
-  assert "A collection of tools useful at KTH" in result.stdout
-@
-
-We'll test that all the expected subcommands are registered.
-<<test functions>>=
-def test_cli_subcommands():
-  """Test that all expected subcommands are registered"""
-  result = runner.invoke(kthutils.cli.cli, ["--help"])
-  assert result.exit_code == 0
-  assert "config" in result.stdout
-  assert "ug" in result.stdout
-  assert "participants" in result.stdout
-  assert "forms" in result.stdout
-  assert "iprange" in result.stdout
-@
-
-We'll test that the config subcommand works.
-<<test functions>>=
-def test_config_command():
-  """Test that the config command shows help"""
-  result = runner.invoke(kthutils.cli.cli, ["config", "--help"])
-  assert result.exit_code == 0
-  assert "config" in result.stdout
-@
-
-We'll test that the ug subcommand works.
-<<test functions>>=
-def test_ug_command():
-  """Test that the ug command shows help"""
-  result = runner.invoke(kthutils.cli.cli, ["ug", "--help"])
-  assert result.exit_code == 0
-  assert "ug" in result.stdout
-@
-
-We'll test that the participants subcommand works.
-<<test functions>>=
-def test_participants_command():
-  """Test that the participants command shows help"""
-  result = runner.invoke(kthutils.cli.cli, ["participants", "--help"])
-  assert result.exit_code == 0
-  assert "participants" in result.stdout
-@
-
-We'll test that the forms subcommand works.
-<<test functions>>=
-def test_forms_command():
-  """Test that the forms command shows help"""
-  result = runner.invoke(kthutils.cli.cli, ["forms", "--help"])
-  assert result.exit_code == 0
-  assert "forms" in result.stdout
-@
-
-We'll test that the iprange subcommand works.
-<<test functions>>=
-def test_iprange_command():
-  """Test that the iprange command shows help"""
-  result = runner.invoke(kthutils.cli.cli, ["iprange", "--help"])
-  assert result.exit_code == 0
-  assert "iprange" in result.stdout
-@
