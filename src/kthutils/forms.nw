@@ -839,7 +839,7 @@ course.
 kthutils config forms.rewriter.restlabb.substitutions.course_nick.column -s 3
 kthutils config forms.rewriter.restlabb.substitutions.course_nick.regex \
   -s "s/^.*DD1310.*(CMAST|[SC]ITEH?)?.*$/prgm/" \
-  -s "s/^.*DD1317.*(prgi)?.*$/prgi/"
+  -s "s/^.*DD131[57].*(prgi)?.*$/prgi/"
 @
 
 Now, let's turn to that year.
