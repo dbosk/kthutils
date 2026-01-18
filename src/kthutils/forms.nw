@@ -913,11 +913,13 @@ We use a negative lookahead assertion for this ([[(?!...)]]).
 <<restlabbsetup.sh>>=
 kthutils config forms.rewriter.restlabb.substitutions.assignment.column -s 5
 kthutils config forms.rewriter.restlabb.substitutions.assignment.regex \
-  -s 's/.*[Pp](.?[Uu]ppgift|rojekt)[s ]?(?![sg]).*/redovisning/' \
-  -s 's/.*[Ss][Pp][Ee][Cc].*/spec/' \
-  -s 's/.*[Gg](ransk|RANSK).*/granskning/' \
+  -s 's/.*[Pp](.?[Uu]ppgift|rojekt)[s ]?(?![sg]).*/Projektredovisning/' \
+  -s 's/.*[Ss][Pp][Ee][Cc].*/Projektspec/' \
+  -s 's/.*[Gg](ransk|RANSK).*/Projektgranskning/' \
   <<regexes for labs>>
-@
+@ We used to match on only `spec`, `granskn` and `redovisn`.
+But now the `granskning` will also match `kamratgranskning` in the lab titles.
+So we'd better be more specific.
 
 The labs are a bit more tricky.
 Here the TAs usually write something like ``Labb 3'' or ``Lab 3''.
