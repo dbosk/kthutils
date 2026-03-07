@@ -251,15 +251,19 @@ To trigger the login we must have the correct URL.
 "https://www.kth.se/form/admin"
 @
 
-We can then create a session using [[weblogin]].
+We can then create a session using [[weblogin]],
+including the Azure MFA handler for number-matching challenges.
 <<Forms constructor>>=
 self.__session = weblogin.AutologinSession([
                       weblogin.kth.UGlogin(username, password,
-                                           self.BASE_URL)
+                                           self.BASE_URL),
+                      weblogin.microsoft.AzureMFA(
+                        url="https://login.ug.kth.se"),
                     ])
 <<imports>>=
 import weblogin
 import weblogin.kth
+import weblogin.microsoft
 @
 
 
@@ -806,6 +810,7 @@ canvaslms results \\
   -c '{course_nick}{year}' \\
   -A '{assignment_group}' \\
   -u '{student}' \\
+  -S canvaslms.grades.conjunctavgsurvey \\
 | sed -E 's/ ?[HV]T[0-9]{{2}}( \(.*\))?//' \\
 | ladok report -fv
 echo
