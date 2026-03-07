@@ -124,15 +124,19 @@ However, it requires logging in to use it, so we use
 [[weblogin.AutologinSession]]
 together with the KTH UG login handler
 [[weblogin.kth.UGlogin]]
+and the Azure MFA handler
+[[weblogin.microsoft.AzureMFA]]
 for that.
 <<PS constructor>>=
 self.__session = weblogin.AutologinSession([
       weblogin.kth.UGlogin(username, password,
-                           self.BASE_URL)
+                           self.BASE_URL),
+      weblogin.microsoft.AzureMFA(url="https://login.ug.kth.se"),
   ])
 <<additional imports>>=
 import weblogin
 import weblogin.kth
+import weblogin.microsoft
 @
 
 
