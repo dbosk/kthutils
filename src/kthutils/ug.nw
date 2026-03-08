@@ -18,9 +18,7 @@ import operator
 import re
 import requests
 import sys
-import weblogin
-import weblogin.kth
-import weblogin.microsoft
+import ladok3
 
 <<additional imports>>
 
@@ -32,12 +30,10 @@ class UGsession:
   """
   BASE_URL = <<the UG group editor base URL>>
 
-  def __init__(self, username, password):
+  def __init__(self):
     """
-    Requires `username` and `password` which are the normal credentials for 
-    logging in through https://login.ug.kth.se.
-
-    All API requests are performed as this user.
+    Creates a new session to the UG Editor APIs.
+    Reuses the centralized authenticated session from ladok3.
     """
     <<UG constructor>>
 
@@ -66,10 +62,9 @@ We create a [[ug]] object and will add test functions to [[<<test functions>>]]
 as we add methods to [[<<UG methods>>]].
 <<test ug.py>>=
 import kthutils.ug
-import kthutils.credentials
 import os
 
-ug = kthutils.ug.UGsession(*kthutils.credentials.get_credentials())
+ug = kthutils.ug.UGsession()
 
 <<test functions>>
 @
@@ -98,35 +93,21 @@ This means that we must create an instance of [[UGsession]] and perform the
 method calls on that in normal functions, one function (command) per method.
 Each command matches a method call on the [[ug]] object.
 
-However, to create that we need the user's credentials.
-We'll use the [[credentials]] module and its [[get_credentials]] function for 
-this.
-We simply unpack the (username, password) tuple we get and pass it directly to 
-[[UGsession]].
-<<additional imports>>=
-import kthutils.credentials
 <<create UGsession instance ug or exit>>=
-ug = UGsession(*kthutils.credentials.get_credentials())
+ug = UGsession()
 @
 
 
 \section{Constructing a UG session}
 
-All we need for the UG session object is a [[requests]] session to the UG web 
-interface.
-However, it requires logging in to use it, so we use
-[[weblogin.AutologinSession]]
-together with the KTH UG login handler
-[[weblogin.kth.UGlogin]]
-and the Azure MFA handler
-[[weblogin.microsoft.AzureMFA]]
-for that.
+Instead of managing our own login session with [[weblogin]], we reuse the
+centralized authenticated session from [[ladok3]].
+The [[ladok3.session]] object is a lazy-loaded [[LadokSession]] whose
+[[.session]] attribute exposes the underlying [[weblogin.AutologinSession]].
+This avoids duplicate logins and centralizes credential management---the
+user only needs to configure credentials once (in [[ladok3]]).
 <<UG constructor>>=
-self.__session = weblogin.AutologinSession([
-      weblogin.kth.UGlogin(username, password,
-                           self.BASE_URL),
-      weblogin.microsoft.AzureMFA(url="https://login.ug.kth.se"),
-  ])
+self.__session = ladok3.session.session
 @
 
 
@@ -167,7 +148,7 @@ Each JSON object in the resulting list has the following format.
 import json
 import kthutils.ug
 
-ug = kthutils.ug.UGsession(os.environ["KTH_LOGIN"], os.environ["KTH_PASSWD"])
+ug = kthutils.ug.UGsession()
 groups = ug.find_group_by_name("edu.courses.DD.DD1317.20222.1.courseresponsible")
 
 print(r"\begin{minted}{json}")
