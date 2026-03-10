@@ -1014,14 +1014,14 @@ zstd = ["zstandard (>=0.18.0)"]
 
 [[package]]
 name = "weblogin"
-version = "1.15"
+version = "1.16"
 description = "Automates logging into web UIs to access unofficial APIs"
 optional = false
 python-versions = "<4.0,>=3.8"
 groups = ["main"]
 files = [
-    {file = "weblogin-1.15-py3-none-any.whl", hash = "sha256:d94132f0473b6d4a0a74ce55c6d072402adce00df9fae060f5ae3c85382c0270"},
-    {file = "weblogin-1.15.tar.gz", hash = "sha256:0d747e174e377fc6f9fbebe7e38c0d12e7517e2577349311cc9a24a79ca44c3d"},
+    {file = "weblogin-1.16-py3-none-any.whl", hash = "sha256:6e5a22b7728e8e128c48b147c6883dd7990400f896b180581844c3a7e4e0a85c"},
+    {file = "weblogin-1.16.tar.gz", hash = "sha256:a204359351cf0104e8338bfa93846dbda8ad364a6939d19bfd2d65f55813f530"},
 ]
 
 [package.dependencies]
@@ -1052,4 +1052,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.8,<4.0"
-content-hash = "82aff5e172d3c80fb196eac5ab39c2ce34ee8c0063ce9e612c4acd8f4fdbacac"
+content-hash = "7989f2783dcf65f84535177a24550fe28344de587f7b9d9f98b2a7a4a40287bc"
