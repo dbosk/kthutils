@@ -106,15 +106,31 @@ ps = ParticipantsSession()
 
 \section{Constructing a session}
 
-Instead of managing our own login session with [[weblogin]], we reuse the
-centralized authenticated session from [[ladok3]].
-The [[ladok3.session]] object is a lazy-loaded [[LadokSession]] whose
-[[.session]] attribute exposes the underlying [[weblogin.AutologinSession]].
-This avoids duplicate logins and centralizes credential management.
+We reuse the centralized authenticated session from [[ladok3]] to avoid
+duplicate logins.
+However, the ladok3 session only carries [[SSOlogin]] and [[AzureMFA]]
+handlers, which authenticate against LADOK's own endpoints.
+The participants service authenticates through [[login.ug.kth.se]], which
+requires the [[UGlogin]] handler from [[weblogin.kth]].
+We add it with [[add_handler]], which checks for duplicates before appending,
+so multiple modules sharing the same session object won't register the
+handler more than once.
 <<PS constructor>>=
 self.__session = ladok3.session.session
+_, credentials = ladok3.cli.load_credentials()
+self.__session.add_handler(
+    weblogin.kth.UGlogin(credentials["username"],
+                         credentials["password"],
+                         self.BASE_URL))
 <<additional imports>>=
 import ladok3
+@
+
+For the [[UGlogin]] handler we need the [[weblogin.kth]] module and
+[[ladok3.cli]] for loading credentials.
+<<additional imports>>=
+import ladok3.cli
+import weblogin.kth
 @
 
 
