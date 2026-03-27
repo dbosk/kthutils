@@ -58,7 +58,7 @@ import pytest
 import typer.testing
 import kthutils.stayawhile
 
-runner = typer.testing.CliRunner()
+runner = typer.testing.CliRunner(mix_stderr=False)
 
 <<test helpers>>
 <<test functions>>
@@ -531,6 +531,46 @@ def reconstruct_current_queue(queue_log):
     view.append(row)
 
   return view
+
+
+def queue_view_warnings(queue_log, view):
+  """Return warnings when reconstructed queue counts look inconsistent."""
+  if not queue_log:
+    return []
+
+  last_entry = max(enumerate(queue_log),
+                   key=lambda pair: (pair[1].get("time", ""), pair[0]))[1]
+  warnings = []
+  actual_queue_length = len(view)
+  expected_queue_length = last_entry.get("queue_length")
+  if expected_queue_length is not None and actual_queue_length != expected_queue_length:
+    warnings.append(
+        f"reconstructed queue has {actual_queue_length} active entries, "
+        f"but latest queue_length is {expected_queue_length}")
+
+  actual_help_amount = sum(1 for entry in view if entry.get("type") == "help")
+  expected_help_amount = last_entry.get("help_amount")
+  if expected_help_amount is not None and actual_help_amount != expected_help_amount:
+    warnings.append(
+        f"reconstructed queue has {actual_help_amount} help entries, "
+        f"but latest help_amount is {expected_help_amount}")
+
+  actual_present_amount = sum(1 for entry in view
+                              if entry.get("type") == "present")
+  expected_present_amount = last_entry.get("present_amount")
+  if (expected_present_amount is not None
+      and actual_present_amount != expected_present_amount):
+    warnings.append(
+        f"reconstructed queue has {actual_present_amount} present entries, "
+        f"but latest present_amount is {expected_present_amount}")
+
+  return warnings
+
+
+def print_warnings(warnings):
+  """Print reconstruction warnings to standard error."""
+  for warning in warnings:
+    print(f"warning: {warning}", file=sys.stderr)
 @
 
 The new [[view]] command is just a filtered replay of the queue log.
@@ -589,6 +629,34 @@ def test_reconstruct_current_queue():
       "type": "help",
       "joined_at": "2026-03-01T10:20:00Z",
     },
+  ]
+
+
+def test_queue_view_warnings_for_inconsistent_counts():
+  queue_log = [{
+    "username": "ada",
+    "ugkthid": "u1ada",
+    "realname": "Ada Lovelace",
+    "time": "2026-03-01T10:05:00Z",
+    "help": False,
+    "left_queue": False,
+    "queue_length": 4,
+    "help_amount": 2,
+    "present_amount": 2,
+  }]
+  view = [{
+    "position": 1,
+    "realname": "Ada Lovelace",
+    "username": "ada",
+    "ugkthid": "u1ada",
+    "type": "present",
+    "joined_at": "2026-03-01T10:05:00Z",
+  }]
+
+  assert kthutils.stayawhile.queue_view_warnings(queue_log, view) == [
+    "reconstructed queue has 1 active entries, but latest queue_length is 4",
+    "reconstructed queue has 0 help entries, but latest help_amount is 2",
+    "reconstructed queue has 1 present entries, but latest present_amount is 2",
   ]
 @
 
@@ -856,7 +924,9 @@ def cli_view_queue(queue: Annotated[str, queue_arg],
   queue_log = get_session().get_queue_log(queue,
                                           from_date=from_date,
                                           until=until)
-  print_records(reconstruct_current_queue(queue_log),
+  view = reconstruct_current_queue(queue_log)
+  print_warnings(queue_view_warnings(queue_log, view))
+  print_records(view,
                 ["position",
                  "realname",
                  "username",
@@ -1129,8 +1199,9 @@ def test_cli_views_current_queue(monkeypatch):
   fake = FakeStayawhileSession()
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
 
-  result = runner.invoke(kthutils.stayawhile.cli,
-                         ["view", "Queue", "--from", "2026-03-01"])
+  with runner.isolated_filesystem():
+    result = runner.invoke(kthutils.stayawhile.cli,
+                           ["view", "Queue", "--from", "2026-03-01"])
 
   assert result.exit_code == 0
   assert fake.calls == [("get_queue_log", "Queue", "2026-03-01", None)]
@@ -1140,5 +1211,13 @@ def test_cli_views_current_queue(monkeypatch):
      "2026-03-01T10:00:00Z"],
     ["2", "Ada Lovelace", "present1", "u1present", "present",
      "2026-03-01T10:05:00Z"],
+  ]
+  warnings = kthutils.stayawhile.queue_view_warnings(
+      fake.get_queue_log("Queue", "2026-03-01", None),
+      kthutils.stayawhile.reconstruct_current_queue(
+          fake.get_queue_log("Queue", "2026-03-01", None)))
+  assert warnings == [
+    "reconstructed queue has 2 active entries, but latest queue_length is 3",
+    "reconstructed queue has 1 present entries, but latest present_amount is 2",
   ]
 @
