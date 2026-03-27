@@ -68,8 +68,11 @@ runner = typer.testing.CliRunner(mix_stderr=False)
 
 \section{Authentication and configuration}
 
-The API uses token authentication rather than KTH's browser login flow.
-We therefore only need an API key and, optionally, an alternate base URL.
+The Stay A While API now mixes two authentication styles.
+The API-key management endpoints rely on the ordinary KTH browser login flow,
+while the queue endpoints still accept token authentication.
+We therefore reuse the shared authenticated browser session from [[ladok3]]
+and only look up an API key when a token-authenticated endpoint needs one.
 The defaults follow the public service.
 <<the Stay A While base URL>>=
 "https://queue.eecs.kth.se"
@@ -78,7 +81,7 @@ CONFIG_API_KEY = "stayawhile.api_key"
 CONFIG_BASE_URL = "stayawhile.base_url"
 @
 
-The API key should be easy to supply both interactively and in scripts.
+The API key should still be easy to supply both interactively and in scripts.
 We first check the environment variable [[STAYAWHILE_API_KEY]].
 If it is absent, we fall back to [[typerconf]].
 <<helper functions>>=
@@ -93,8 +96,16 @@ def get_api_key():
     return typerconf.get(CONFIG_API_KEY)
   except KeyError:
     raise ValueError(
-        "missing Stay A While API key; set STAYAWHILE_API_KEY or run "
-        "kthutils config stayawhile.api_key --set <your-api-key>")
+         "missing Stay A While API key; set STAYAWHILE_API_KEY or run "
+         "kthutils config stayawhile.api_key --set <your-api-key>")
+
+
+def find_api_key():
+  """Return the configured Stay A While API key, when available."""
+  try:
+    return get_api_key()
+  except ValueError:
+    return None
 <<imports>>=
 import os
 import typerconf
@@ -167,14 +178,28 @@ def test_get_base_url_defaults(monkeypatch):
 
 \section{Common request handling}
 
-All API calls share the same authentication header and JSON decoding logic.
-We therefore centralise them in a single request helper.
+All API calls share the same JSON decoding logic, but not the same
+authentication mechanism.
+We therefore centralise them in a request helper that can choose between the
+shared browser session and token authentication.
 <<[[StayawhileSession]] constructor>>=
-self.api_key = api_key or get_api_key()
+self.api_key = api_key if api_key is not None else find_api_key()
 self.base_url = (base_url or get_base_url()).rstrip("/")
-self.__session = session or requests.Session()
+self.__session = session or ladok3.session.session
+if session is None:
+  _, credentials = ladok3.cli.load_credentials()
+  self.__session.add_handler(
+      weblogin.kth.UGlogin(credentials["username"],
+                           credentials["password"],
+                           self.base_url))
 <<imports>>=
 import requests
+@
+
+<<imports>>=
+import ladok3
+import ladok3.cli
+import weblogin.kth
 @
 
 <<imports>>=
@@ -196,13 +221,25 @@ import urllib.parse
 @
 
 The request helper keeps the public methods small and uniform.
+Token-authenticated endpoints ask for the API key lazily so that callers can
+still use the browser-authenticated endpoints without configuring a token.
 It returns parsed JSON when possible and otherwise falls back to plain text.
 <<[[StayawhileSession]] methods>>=
-def _request(self, method, path, *, params=None, payload=None):
+def _request(self,
+             method,
+             path,
+             *,
+             params=None,
+             payload=None,
+             use_api_key=False):
+  headers = None
+  if use_api_key:
+    headers = {"Authorization": f"Token {self.require_api_key()}"}
+
   response = self.__session.request(
       method,
       f"{self.base_url}{path}",
-      headers={"Authorization": f"Token {self.api_key}"},
+      headers=headers,
       params=params,
       json=payload)
   response.raise_for_status()
@@ -214,9 +251,16 @@ def _request(self, method, path, *, params=None, payload=None):
     return response.json()
   except ValueError:
     return response.text
+
+
+def require_api_key(self):
+  """Return the configured API key or raise a helpful error."""
+  if self.api_key is None:
+    self.api_key = get_api_key()
+  return self.api_key
 @
 
-Let's verify both the queue encoding and the shared authentication header.
+Let's verify both the queue encoding and token-authentication header.
 <<test helpers>>=
 class FakeResponse:
   def __init__(self,
@@ -242,6 +286,10 @@ class FakeHTTPSession:
   def __init__(self, responses=None):
     self.responses = list(responses or [FakeResponse(json_data={})])
     self.requests = []
+    self.handlers = []
+
+  def add_handler(self, handler):
+    self.handlers.append(handler)
 
   def request(self,
               method,
@@ -261,6 +309,45 @@ class FakeHTTPSession:
 @
 
 <<test functions>>=
+def test_find_api_key_returns_none_when_not_configured(monkeypatch):
+  monkeypatch.delenv("STAYAWHILE_API_KEY", raising=False)
+
+  def fake_get(_):
+    raise KeyError()
+
+  monkeypatch.setattr(kthutils.stayawhile.typerconf, "get", fake_get)
+  assert kthutils.stayawhile.find_api_key() is None
+
+
+def test_default_session_uses_shared_browser_session(monkeypatch):
+  fake_http = FakeHTTPSession()
+
+  class FakeUGlogin:
+    def __init__(self, username, password, base_url):
+      self.username = username
+      self.password = password
+      self.base_url = base_url
+
+  monkeypatch.setattr(kthutils.stayawhile.ladok3.session,
+                      "session",
+                      fake_http)
+  monkeypatch.setattr(kthutils.stayawhile.ladok3.cli,
+                      "load_credentials",
+                      lambda: (None, {
+                        "username": "alice",
+                        "password": "secret",
+                      }))
+  monkeypatch.setattr(kthutils.stayawhile.weblogin.kth,
+                      "UGlogin",
+                      FakeUGlogin)
+
+  sa = kthutils.stayawhile.StayawhileSession(base_url="https://example.invalid")
+
+  assert sa._StayawhileSession__session is fake_http
+  assert len(fake_http.handlers) == 1
+  assert fake_http.handlers[0].base_url == "https://example.invalid"
+
+
 def test_queue_paths_are_url_encoded():
   fake_http = FakeHTTPSession([FakeResponse(json_data=[])])
   sa = kthutils.stayawhile.StayawhileSession(
@@ -281,7 +368,9 @@ def test_queue_paths_are_url_encoded():
 \section{API keys}
 
 The API lets users manage their own API keys.
-We expose the same operations directly on the session object.
+Those endpoints rely on the ordinary KTH login session rather than the
+separate Stay A While API token.
+We therefore send them through the shared authenticated browser session.
 <<[[StayawhileSession]] methods>>=
 def list_api_keys(self):
   """Return the caller's API keys."""
@@ -317,8 +406,11 @@ def test_api_key_requests():
   assert sa.create_api_key("Exam") == {"id": 2, "label": "Exam"}
   assert sa.revoke_api_key("2") is None
 
+  assert fake_http.requests[0]["headers"] is None
   assert fake_http.requests[1]["json"] == {"label": "Exam"}
+  assert fake_http.requests[1]["headers"] is None
   assert fake_http.requests[2]["method"] == "DELETE"
+  assert fake_http.requests[2]["headers"] is None
 @
 
 
@@ -329,24 +421,31 @@ inspect their own booking.
 <<[[StayawhileSession]] methods>>=
 def list_bookings(self, queue):
   """Return the bookings for [[queue]]."""
-  return self._request("GET", self._queue_path(queue, "bookings"))
+  return self._request("GET",
+                       self._queue_path(queue, "bookings"),
+                       use_api_key=True)
 
 
 def upsert_bookings(self, queue, bookings):
   """Upload or update [[bookings]] for [[queue]]."""
   return self._request("POST",
                        self._queue_path(queue, "bookings"),
-                       payload=bookings)
+                       payload=bookings,
+                       use_api_key=True)
 
 
 def clear_bookings(self, queue):
   """Delete all bookings for [[queue]]."""
-  return self._request("DELETE", self._queue_path(queue, "bookings"))
+  return self._request("DELETE",
+                       self._queue_path(queue, "bookings"),
+                       use_api_key=True)
 
 
 def get_my_booking(self, queue):
   """Return the caller's booking for [[queue]]."""
-  return self._request("GET", self._queue_path(queue, "my_booking"))
+  return self._request("GET",
+                       self._queue_path(queue, "my_booking"),
+                       use_api_key=True)
 @
 
 The upload endpoint expects a JSON array.
@@ -386,6 +485,17 @@ def test_booking_requests():
 
   assert fake_http.requests[1]["json"] == bookings
   assert fake_http.requests[2]["method"] == "DELETE"
+
+
+def test_token_endpoint_requires_api_key(monkeypatch):
+  fake_http = FakeHTTPSession()
+  sa = kthutils.stayawhile.StayawhileSession(session=fake_http)
+
+  monkeypatch.setattr(kthutils.stayawhile, "get_api_key",
+                      lambda: (_ for _ in ()).throw(ValueError("missing token")))
+
+  with pytest.raises(ValueError, match="missing token"):
+    sa.list_bookings("Queue")
 @
 
 We can also verify that the JSON loader accepts files.
@@ -408,14 +518,16 @@ def add_assistant(self, queue, username):
   """Add [[username]] as assistant for [[queue]]."""
   return self._request("POST",
                        self._queue_path(queue, "assistants"),
-                       payload={"username": username})
+                       payload={"username": username},
+                       use_api_key=True)
 
 
 def remove_assistant(self, queue, username):
   """Remove [[username]] as assistant for [[queue]]."""
   return self._request(
       "DELETE",
-      self._queue_path(queue, f"assistants/{urllib.parse.quote(username)}"))
+      self._queue_path(queue, f"assistants/{urllib.parse.quote(username)}"),
+      use_api_key=True)
 @
 
 This is a small endpoint family, but it is worth checking that usernames land
@@ -461,7 +573,8 @@ def get_interaction_log(self,
 
   return self._request("GET",
                        self._queue_path(queue, "interaction_log"),
-                       params=params)
+                       params=params,
+                       use_api_key=True)
 
 
 def get_queue_log(self, queue, from_date=None, until=None):
@@ -474,12 +587,13 @@ def get_queue_log(self, queue, from_date=None, until=None):
 
   return self._request("GET",
                        self._queue_path(queue, "queue_log"),
-                       params=params)
+                       params=params,
+                       use_api_key=True)
 
 
 def get_my_help_history(self):
   """Return the caller's help history."""
-  return self._request("GET", "/api/my_help_history")
+  return self._request("GET", "/api/my_help_history", use_api_key=True)
 @
 
 The queue log tells us who is still in the queue, but not whether a help entry
