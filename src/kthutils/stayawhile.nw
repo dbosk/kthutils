@@ -480,11 +480,10 @@ def get_my_help_history(self):
   return self._request("GET", "/api/my_help_history")
 @
 
-The queue log is also enough to reconstruct who is currently active in a queue.
-Each non-leave event adds or updates one queue entry, while a leave event
-removes it.
-We replay the log in chronological order and keep the final active state for
-each student.
+The queue log tells us who is still in the queue, but not whether a help entry
+is currently being helped or is still waiting.
+To answer that, we combine the active queue reconstructed from [[queue_log]]
+with the currently active interactions from [[interaction_log]].
 <<helper functions>>=
 def queue_entry_key(entry):
   """Return a stable identity key for one queue-log [[entry]]."""
@@ -499,8 +498,8 @@ def queue_entry_key(entry):
   raise ValueError(f"queue log entry lacks identity: {entry!r}")
 
 
-def reconstruct_current_queue(queue_log):
-  """Return the currently active queue entries from [[queue_log]]."""
+def reconstruct_active_queue_entries(queue_log):
+  """Return the active queue entries reconstructed from [[queue_log]]."""
   active = {}
   ordered_log = sorted(enumerate(queue_log),
                        key=lambda pair: (pair[1].get("time", ""), pair[0]))
@@ -515,32 +514,110 @@ def reconstruct_current_queue(queue_log):
     current["_event_index"] = event_index
     active[key] = current
 
-  rows = sorted(active.values(),
+  return sorted(active.values(),
                 key=lambda entry: (entry.get("time", ""),
                                    entry.get("_event_index", 0)))
+
+
+def interaction_entry_key(entry):
+  """Return a stable identity key for one interaction-log [[entry]]."""
+  ugkthid = entry.get("student_ugkthid")
+  if ugkthid:
+    return ("ugkthid", ugkthid)
+
+  username = entry.get("student_username")
+  if username:
+    return ("username", username)
+
+  raise ValueError(f"interaction log entry lacks identity: {entry!r}")
+
+
+def interaction_is_active(entry):
+  """Return whether an interaction-log [[entry]] is still active."""
+  ended_at = entry.get("ended_at")
+  return ended_at in (None, "")
+
+
+def collect_active_interactions(interaction_log):
+  """Return active interactions keyed by student identity."""
+  active = {}
+  warnings = []
+  ordered_log = sorted(enumerate(interaction_log),
+                       key=lambda pair: (pair[1].get("started_at", ""),
+                                         pair[0]))
+  for event_index, entry in ordered_log:
+    if not interaction_is_active(entry):
+      continue
+
+    key = interaction_entry_key(entry)
+    current = dict(entry)
+    current["_event_index"] = event_index
+    if key in active:
+      warnings.append(
+          f"multiple active interactions found for {key[1]}; using latest")
+    active[key] = current
+
+  return active, warnings
+
+
+def reconstruct_current_queue(queue_log, interaction_log):
+  """Return the current queue view from both logs."""
+  active_queue = reconstruct_active_queue_entries(queue_log)
+  active_interactions, warnings = collect_active_interactions(interaction_log)
   view = []
-  for position, entry in enumerate(rows, start=1):
+  waiting_position = 0
+  matched_interactions = set()
+  for entry in active_queue:
+    key = queue_entry_key(entry)
+    interaction = active_interactions.get(key)
+    entry_type = "help" if entry.get("help") else "present"
+    if interaction is not None:
+      matched_interactions.add(key)
+      status = "being_helped"
+      helper_name = interaction.get("helper_name")
+      help_started_at = interaction.get("started_at")
+      waiting_slot = ""
+    elif entry_type == "help":
+      status = "waiting"
+      helper_name = ""
+      help_started_at = ""
+      waiting_position += 1
+      waiting_slot = waiting_position
+    else:
+      status = "present"
+      helper_name = ""
+      help_started_at = ""
+      waiting_slot = ""
+
     row = {
-      "position": position,
+      "waiting_position": waiting_slot,
       "realname": entry.get("realname"),
       "username": entry.get("username"),
       "ugkthid": entry.get("ugkthid"),
-      "type": "help" if entry.get("help") else "present",
+      "entry_type": entry_type,
+      "status": status,
       "joined_at": entry.get("time"),
+      "helper_name": helper_name,
+      "help_started_at": help_started_at,
     }
     view.append(row)
 
-  return view
+  for key, interaction in active_interactions.items():
+    if key not in matched_interactions:
+      warnings.append(
+          f"active interaction for {key[1]} has no matching queue entry")
+
+  return view, warnings
 
 
-def queue_view_warnings(queue_log, view):
+def queue_view_warnings(queue_log, view, warnings=None):
   """Return warnings when reconstructed queue counts look inconsistent."""
+  warnings = list(warnings or [])
   if not queue_log:
-    return []
+    return warnings
 
   last_entry = max(enumerate(queue_log),
                    key=lambda pair: (pair[1].get("time", ""), pair[0]))[1]
-  warnings = []
   actual_queue_length = len(view)
   expected_queue_length = last_entry.get("queue_length")
   if expected_queue_length is not None and actual_queue_length != expected_queue_length:
@@ -548,7 +625,8 @@ def queue_view_warnings(queue_log, view):
         f"reconstructed queue has {actual_queue_length} active entries, "
         f"but latest queue_length is {expected_queue_length}")
 
-  actual_help_amount = sum(1 for entry in view if entry.get("type") == "help")
+  actual_help_amount = sum(1 for entry in view
+                           if entry.get("entry_type") == "help")
   expected_help_amount = last_entry.get("help_amount")
   if expected_help_amount is not None and actual_help_amount != expected_help_amount:
     warnings.append(
@@ -556,7 +634,7 @@ def queue_view_warnings(queue_log, view):
         f"but latest help_amount is {expected_help_amount}")
 
   actual_present_amount = sum(1 for entry in view
-                              if entry.get("type") == "present")
+                              if entry.get("entry_type") == "present")
   expected_present_amount = last_entry.get("present_amount")
   if (expected_present_amount is not None
       and actual_present_amount != expected_present_amount):
@@ -577,7 +655,7 @@ The new [[view]] command is just a filtered replay of the queue log.
 This is more useful than the raw event stream when we want the current state.
 <<test functions>>=
 def test_reconstruct_current_queue():
-  queue = kthutils.stayawhile.reconstruct_current_queue([
+  queue, warnings = kthutils.stayawhile.reconstruct_current_queue([
     {
       "username": "grace",
       "ugkthid": "u1grace",
@@ -610,26 +688,40 @@ def test_reconstruct_current_queue():
       "help": True,
       "left_queue": False,
     },
+  ], [
+    {
+      "helper_name": "Ada Lovelace",
+      "student_ugkthid": "u1linus",
+      "started_at": "2026-03-01T10:25:00Z",
+      "ended_at": None,
+    },
   ])
 
   assert queue == [
     {
-      "position": 1,
+      "waiting_position": "",
       "realname": "Ada Lovelace",
       "username": "ada",
       "ugkthid": "u1ada",
-      "type": "present",
+      "entry_type": "present",
+      "status": "present",
       "joined_at": "2026-03-01T10:05:00Z",
+      "helper_name": "",
+      "help_started_at": "",
     },
     {
-      "position": 2,
+      "waiting_position": "",
       "realname": "Linus Torvalds",
       "username": "linus",
       "ugkthid": "u1linus",
-      "type": "help",
+      "entry_type": "help",
+      "status": "being_helped",
       "joined_at": "2026-03-01T10:20:00Z",
+      "helper_name": "Ada Lovelace",
+      "help_started_at": "2026-03-01T10:25:00Z",
     },
   ]
+  assert warnings == []
 
 
 def test_queue_view_warnings_for_inconsistent_counts():
@@ -645,12 +737,15 @@ def test_queue_view_warnings_for_inconsistent_counts():
     "present_amount": 2,
   }]
   view = [{
-    "position": 1,
+    "waiting_position": "",
     "realname": "Ada Lovelace",
     "username": "ada",
     "ugkthid": "u1ada",
-    "type": "present",
+    "entry_type": "present",
+    "status": "present",
     "joined_at": "2026-03-01T10:05:00Z",
+    "helper_name": "",
+    "help_started_at": "",
   }]
 
   assert kthutils.stayawhile.queue_view_warnings(queue_log, view) == [
@@ -921,18 +1016,26 @@ def cli_view_queue(queue: Annotated[str, queue_arg],
                    from_date: Annotated[Optional[str], from_opt] = None,
                    until: Annotated[Optional[str], until_opt] = None):
   """Show who is currently active in one queue."""
-  queue_log = get_session().get_queue_log(queue,
-                                          from_date=from_date,
-                                          until=until)
-  view = reconstruct_current_queue(queue_log)
-  print_warnings(queue_view_warnings(queue_log, view))
+  session = get_session()
+  queue_log = session.get_queue_log(queue,
+                                    from_date=from_date,
+                                    until=until)
+  interaction_log = session.get_interaction_log(queue,
+                                                from_date=from_date,
+                                                until=until)
+  view, overlay_warnings = reconstruct_current_queue(queue_log,
+                                                     interaction_log)
+  print_warnings(queue_view_warnings(queue_log, view, overlay_warnings))
   print_records(view,
-                ["position",
+                ["waiting_position",
                  "realname",
                  "username",
                  "ugkthid",
-                 "type",
-                 "joined_at"])
+                 "entry_type",
+                 "status",
+                 "joined_at",
+                 "helper_name",
+                 "help_started_at"])
 
 
 @history_cli.command(name="mine")
@@ -1006,7 +1109,7 @@ class FakeStayawhileSession:
       "student_name": "Grace Hopper",
       "student_ugkthid": "u1student",
       "started_at": "2026-03-01T10:00:00Z",
-      "ended_at": "2026-03-01T10:10:00Z",
+      "ended_at": None,
       "duration_secs": 600,
       "help": True,
     }]
@@ -1204,18 +1307,24 @@ def test_cli_views_current_queue(monkeypatch):
                            ["view", "Queue", "--from", "2026-03-01"])
 
   assert result.exit_code == 0
-  assert fake.calls == [("get_queue_log", "Queue", "2026-03-01", None)]
+  assert fake.calls == [
+    ("get_queue_log", "Queue", "2026-03-01", None),
+    ("get_interaction_log", "Queue", "2026-03-01", None, None),
+  ]
   assert parse_csv_output(result.stdout) == [
-    ["position", "realname", "username", "ugkthid", "type", "joined_at"],
-    ["1", "Grace Hopper", "student1", "u1student", "help",
+    ["waiting_position", "realname", "username", "ugkthid", "entry_type",
+     "status", "joined_at", "helper_name", "help_started_at"],
+    ["", "Grace Hopper", "student1", "u1student", "help",
+     "being_helped", "2026-03-01T10:00:00Z", "Ada Lovelace",
      "2026-03-01T10:00:00Z"],
-    ["2", "Ada Lovelace", "present1", "u1present", "present",
-     "2026-03-01T10:05:00Z"],
+    ["", "Ada Lovelace", "present1", "u1present", "present",
+     "present", "2026-03-01T10:05:00Z", "", ""],
   ]
   warnings = kthutils.stayawhile.queue_view_warnings(
       fake.get_queue_log("Queue", "2026-03-01", None),
       kthutils.stayawhile.reconstruct_current_queue(
-          fake.get_queue_log("Queue", "2026-03-01", None)))
+          fake.get_queue_log("Queue", "2026-03-01", None),
+          fake.get_interaction_log("Queue", "2026-03-01", None))[0])
   assert warnings == [
     "reconstructed queue has 2 active entries, but latest queue_length is 3",
     "reconstructed queue has 1 present entries, but latest present_amount is 2",
