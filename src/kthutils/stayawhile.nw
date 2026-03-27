@@ -52,6 +52,7 @@ if __name__ == "__main__":
 
 We also extract unit tests from this file.
 <<test stayawhile.py>>=
+import csv
 import json
 import pytest
 import typer.testing
@@ -173,6 +174,12 @@ self.base_url = (base_url or get_base_url()).rstrip("/")
 self.__session = session or requests.Session()
 <<imports>>=
 import requests
+@
+
+<<imports>>=
+import csv
+from rich.console import Console
+from rich.table import Table
 @
 
 The API paths contain queue names as path segments.
@@ -539,8 +546,59 @@ cli.add_typer(history_cli)
 <<command definitions>>
 @
 
-The CLI prints JSON so that it can be piped directly into tools such as
-[[jq]].
+The commands that read tabular data should adapt to their output target.
+When we print to a terminal, a clean table is easier to scan.
+When we print to a pipe or file, tab-separated CSV is easier to post-process
+with standard POSIX tools such as [[cut]].
+<<helper functions>>=
+def is_tty():
+  """Return whether standard output is a terminal."""
+  return sys.stdout.isatty()
+
+
+def value_to_text(value):
+  """Return a stable textual representation of [[value]]."""
+  if value is None:
+    return ""
+  if isinstance(value, bool):
+    return str(value).lower()
+  if isinstance(value, (dict, list)):
+    return json.dumps(value)
+  return str(value)
+
+
+def print_csv_rows(rows, fields, headers=None):
+  """Print [[rows]] as CSV with the given [[fields]]."""
+  writer = csv.writer(sys.stdout, delimiter="\t")
+  writer.writerow(headers or fields)
+  for row in rows:
+    writer.writerow([value_to_text(row.get(field)) for field in fields])
+
+
+def print_rich_table(rows, fields, headers=None):
+  """Print [[rows]] as a clean Rich table."""
+  table = Table(box=None, show_edge=False, pad_edge=False)
+  for header in headers or fields:
+    table.add_column(header)
+  for row in rows:
+    table.add_row(*[value_to_text(row.get(field)) for field in fields])
+
+  Console(file=sys.stdout).print(table)
+
+
+def print_records(rows, fields, headers=None, tty=None):
+  """Print tabular [[rows]] either as Rich output or as CSV."""
+  rows = list(rows)
+  if tty is None:
+    tty = is_tty()
+
+  if tty:
+    print_rich_table(rows, fields, headers=headers)
+  else:
+    print_csv_rows(rows, fields, headers=headers)
+@
+
+Commands that return non-tabular data still use formatted JSON.
 <<helper functions>>=
 def print_json(data):
   """Print [[data]] as formatted JSON."""
@@ -566,7 +624,8 @@ Each command is just a thin wrapper around the corresponding session method.
 @api_keys_cli.command(name="ls")
 def cli_list_api_keys():
   """List the caller's API keys."""
-  print_json(get_session().list_api_keys())
+  print_records(get_session().list_api_keys(),
+                ["id", "label", "created", "expires"])
 
 
 @api_keys_cli.command(name="create")
@@ -586,7 +645,8 @@ def cli_revoke_api_key(api_key_id: Annotated[str, api_key_id_arg]):
 @bookings_cli.command(name="ls")
 def cli_list_bookings(queue: Annotated[str, queue_arg]):
   """List bookings for one queue."""
-  print_json(get_session().list_bookings(queue))
+  print_records(get_session().list_bookings(queue),
+                ["ugkthid", "slot_time", "entry_type"])
 
 
 @bookings_cli.command(name="upsert")
@@ -612,7 +672,11 @@ def cli_clear_bookings(queue: Annotated[str, queue_arg]):
 @booking_cli.command(name="mine")
 def cli_my_booking(queue: Annotated[str, queue_arg]):
   """Show the caller's own booking for one queue."""
-  print_json(get_session().get_my_booking(queue))
+  booking = get_session().get_my_booking(queue)
+  if isinstance(booking, dict):
+    print_records([booking], ["ugkthid", "slot_time", "entry_type"])
+  else:
+    print_json(booking)
 
 
 @assistants_cli.command(name="add")
@@ -638,11 +702,19 @@ def cli_interaction_log(
     until: Annotated[Optional[str], until_opt] = None,
     interaction_type: Annotated[Optional[str], interaction_type_opt] = None):
   """Read the interaction log for one queue."""
-  print_json(get_session().get_interaction_log(
+  print_records(get_session().get_interaction_log(
       queue,
       from_date=from_date,
       until=until,
-      interaction_type=interaction_type))
+      interaction_type=interaction_type),
+      ["helper_name",
+       "helper_ugkthid",
+       "student_name",
+       "student_ugkthid",
+       "started_at",
+       "ended_at",
+       "duration_secs",
+       "help"])
 
 
 @log_cli.command(name="queue")
@@ -650,15 +722,29 @@ def cli_queue_log(queue: Annotated[str, queue_arg],
                   from_date: Annotated[Optional[str], from_opt] = None,
                   until: Annotated[Optional[str], until_opt] = None):
   """Read the queue log for one queue."""
-  print_json(get_session().get_queue_log(queue,
-                                         from_date=from_date,
-                                         until=until))
+  print_records(get_session().get_queue_log(queue,
+                                            from_date=from_date,
+                                            until=until),
+                ["username",
+                 "ugkthid",
+                 "realname",
+                 "time",
+                 "help",
+                 "left_queue",
+                 "queue_length",
+                 "help_amount",
+                 "present_amount"])
 
 
 @history_cli.command(name="mine")
 def cli_help_history():
   """Read the caller's own help history."""
-  print_json(get_session().get_my_help_history())
+  print_records(get_session().get_my_help_history(),
+                ["queue",
+                 "started_at",
+                 "ended_at",
+                 "duration_secs",
+                 "helper"])
 @
 
 The CLI tests should verify both the command hierarchy and the translation from
@@ -692,7 +778,11 @@ class FakeStayawhileSession:
 
   def get_my_booking(self, queue):
     self.calls.append(("get_my_booking", queue))
-    return {"queue": queue}
+    return {
+      "ugkthid": "u1abc123",
+      "slot_time": "2026-03-01T10:00:00Z",
+      "entry_type": "help",
+    }
 
   def add_assistant(self, queue, username):
     self.calls.append(("add_assistant", queue, username))
@@ -711,18 +801,69 @@ class FakeStayawhileSession:
                        from_date,
                        until,
                        interaction_type))
-    return [{"queue": queue}]
+    return [{
+      "helper_name": "Ada Lovelace",
+      "helper_ugkthid": "u1helper",
+      "student_name": "Grace Hopper",
+      "student_ugkthid": "u1student",
+      "started_at": "2026-03-01T10:00:00Z",
+      "ended_at": "2026-03-01T10:10:00Z",
+      "duration_secs": 600,
+      "help": True,
+    }]
 
   def get_queue_log(self, queue, from_date=None, until=None):
     self.calls.append(("get_queue_log", queue, from_date, until))
-    return [{"queue": queue}]
+    return [{
+      "username": "student1",
+      "ugkthid": "u1student",
+      "realname": "Grace Hopper",
+      "time": "2026-03-01T10:00:00Z",
+      "help": True,
+      "left_queue": False,
+      "queue_length": 3,
+      "help_amount": 2,
+      "present_amount": 1,
+    }]
 
   def get_my_help_history(self):
     self.calls.append(("get_my_help_history",))
-    return [{"queue": "Queue"}]
+    return [{
+      "queue": "Queue",
+      "started_at": "2026-03-01T10:00:00Z",
+      "ended_at": "2026-03-01T10:10:00Z",
+      "duration_secs": 600,
+      "helper": "Ada Lovelace",
+    }]
+@
+
+<<test helpers>>=
+def parse_csv_output(output):
+  return list(csv.reader(output.splitlines(), delimiter="\t"))
 @
 
 <<test functions>>=
+def test_print_records_uses_csv_when_not_tty(capsys):
+  kthutils.stayawhile.print_records(
+      [{"id": 1, "label": "X1"}],
+      ["id", "label"],
+      tty=False)
+
+  assert capsys.readouterr().out == "id\tlabel\r\n1\tX1\r\n"
+
+
+def test_print_records_uses_clean_rich_table(capsys):
+  kthutils.stayawhile.print_records(
+      [{"id": 1, "label": "X1"}],
+      ["id", "label"],
+      tty=True)
+
+  output = capsys.readouterr().out
+  assert "id" in output
+  assert "X1" in output
+  assert "\u2500" not in output
+
+
 def test_stayawhile_help():
   result = runner.invoke(kthutils.stayawhile.cli, ["--help"])
   assert result.exit_code == 0
@@ -740,7 +881,10 @@ def test_cli_lists_api_keys(monkeypatch):
   result = runner.invoke(kthutils.stayawhile.cli, ["api-keys", "ls"])
 
   assert result.exit_code == 0
-  assert json.loads(result.stdout) == [{"id": 1, "label": "X1"}]
+  assert parse_csv_output(result.stdout) == [
+    ["id", "label", "created", "expires"],
+    ["1", "X1", "", ""],
+  ]
   assert fake.calls == [("list_api_keys",)]
 
 
@@ -793,5 +937,30 @@ def test_cli_reads_help_history(monkeypatch):
 
   assert result.exit_code == 0
   assert fake.calls == [("get_my_help_history",)]
-  assert json.loads(result.stdout) == [{"queue": "Queue"}]
+  assert parse_csv_output(result.stdout) == [[
+    "queue",
+    "started_at",
+    "ended_at",
+    "duration_secs",
+    "helper",
+  ], [
+    "Queue",
+    "2026-03-01T10:00:00Z",
+    "2026-03-01T10:10:00Z",
+    "600",
+    "Ada Lovelace",
+  ]]
+
+
+def test_cli_reads_my_booking_as_csv(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli, ["booking", "mine", "Q"])
+
+  assert result.exit_code == 0
+  assert parse_csv_output(result.stdout) == [
+    ["ugkthid", "slot_time", "entry_type"],
+    ["u1abc123", "2026-03-01T10:00:00Z", "help"],
+  ]
 @
