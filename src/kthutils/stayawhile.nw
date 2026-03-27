@@ -512,8 +512,15 @@ def test_load_json_input(tmp_path):
 
 \section{Teaching assistants}
 
-Teachers can add or remove queue assistants by username.
+Teachers can list, add, or remove queue assistants by username.
 <<[[StayawhileSession]] methods>>=
+def list_assistants(self, queue):
+  """Return the assistants for [[queue]]."""
+  return self._request("GET",
+                       self._queue_path(queue, "assistants"),
+                       use_api_key=True)
+
+
 def add_assistant(self, queue, username):
   """Add [[username]] as assistant for [[queue]]."""
   return self._request("POST",
@@ -530,11 +537,12 @@ def remove_assistant(self, queue, username):
       use_api_key=True)
 @
 
-This is a small endpoint family, but it is worth checking that usernames land
-in the expected place.
+This is a small endpoint family, but it is worth checking both the collection
+endpoint and the username-specific removal path.
 <<test functions>>=
 def test_assistant_requests():
   fake_http = FakeHTTPSession([
+    FakeResponse(json_data=[{"username": "abcde"}]),
     FakeResponse(json_data={"username": "abcde"}),
     FakeResponse(status_code=204),
   ])
@@ -542,11 +550,13 @@ def test_assistant_requests():
       api_key="token",
       session=fake_http)
 
+  assert sa.list_assistants("Queue") == [{"username": "abcde"}]
   assert sa.add_assistant("Queue", "abcde") == {"username": "abcde"}
   assert sa.remove_assistant("Queue", "abcde") is None
 
-  assert fake_http.requests[0]["json"] == {"username": "abcde"}
-  assert fake_http.requests[1]["url"].endswith("/assistants/abcde")
+  assert fake_http.requests[0]["url"].endswith("/assistants")
+  assert fake_http.requests[1]["json"] == {"username": "abcde"}
+  assert fake_http.requests[2]["url"].endswith("/assistants/abcde")
 @
 
 
@@ -1148,6 +1158,7 @@ The commands that expose queue participants should hide [[ugkthid]] by
 default, but let the user opt in when they need identifiers.
 <<helper functions>>=
 BOOKING_FIELDS = ["ugkthid", "slot_time", "entry_type"]
+ASSISTANT_FIELDS = ["username"]
 INTERACTION_LOG_FIELDS = [
   "helper_name",
   "helper_ugkthid",
@@ -1256,6 +1267,12 @@ def cli_add_assistant(queue: Annotated[str, queue_arg],
                       username: Annotated[str, username_arg]):
   """Add one assistant to a queue."""
   print_json(get_session().add_assistant(queue, username))
+
+
+@assistants_cli.command(name="ls")
+def cli_list_assistants(queue: Annotated[str, queue_arg]):
+  """List assistants for one queue."""
+  print_records(get_session().list_assistants(queue), ASSISTANT_FIELDS)
 
 
 @assistants_cli.command(name="rm")
@@ -1368,6 +1385,10 @@ class FakeStayawhileSession:
       "slot_time": "2026-03-01T10:00:00Z",
       "entry_type": "help",
     }
+
+  def list_assistants(self, queue):
+    self.calls.append(("list_assistants", queue))
+    return [{"username": "abcde"}]
 
   def add_assistant(self, queue, username):
     self.calls.append(("add_assistant", queue, username))
@@ -1586,6 +1607,20 @@ def test_cli_upserts_bookings(monkeypatch, tmp_path):
     [{"ugkthid": "u1abc123", "slot_time": "2026-03-01T10:00:00Z"}],
   )]
   assert json.loads(result.stdout) == {"updated": 1}
+
+
+def test_cli_lists_assistants(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli, ["assistants", "ls", "Queue"])
+
+  assert result.exit_code == 0
+  assert fake.calls == [("list_assistants", "Queue")]
+  assert parse_csv_output(result.stdout) == [
+    ["username"],
+    ["abcde"],
+  ]
 
 
 def test_cli_reads_interaction_log(monkeypatch):
