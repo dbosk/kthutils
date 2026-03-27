@@ -4,6 +4,7 @@ MODULES+=	ug.py
 MODULES+=	participants.py
 MODULES+=	iprange.py iprange.sh
 MODULES+=	forms.py
+MODULES+=	stayawhile.py
 
 EXTRAS+=	restlabb.sh restlabbsetup.sh
 

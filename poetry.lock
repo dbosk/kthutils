@@ -499,14 +499,14 @@ testing = ["pytest (>=6)", "pytest-checkdocs (>=2.4)", "pytest-cov", "pytest-ena
 
 [[package]]
 name = "ladok3"
-version = "5.12"
+version = "5.13"
 description = "Python wrapper and CLI for the LADOK3 REST API."
 optional = false
 python-versions = "<4.0,>=3.8"
 groups = ["main"]
 files = [
-    {file = "ladok3-5.12-py3-none-any.whl", hash = "sha256:e11f82a2df42e3d05f16e41e6e3eedd3bd210390d394df842e8f5c7a32671435"},
-    {file = "ladok3-5.12.tar.gz", hash = "sha256:260109c1aaa4f531245eb9d113b62909a278032f0319551512299f546550c814"},
+    {file = "ladok3-5.13-py3-none-any.whl", hash = "sha256:89aa059fd77a696cceffe53ba65adb27d3bd0491b9a25897932aa04af619cd1d"},
+    {file = "ladok3-5.13.tar.gz", hash = "sha256:2e381d361bcc0116cd1e5ce83c5ece005f60643d2ee1859b3ab8a640e1b026ad"},
 ]
 
 [package.dependencies]
@@ -517,7 +517,7 @@ cryptography = ">=41.0.3,<42.0.0"
 keyring = ">=24.2.0,<25.0.0"
 requests = ">=2.31.0,<3.0.0"
 urllib3 = ">=2.0"
-weblogin = ">=1.14,<2.0"
+weblogin = ">=1.16,<2.0"
 
 [[package]]
 name = "lxml"
@@ -1014,14 +1014,14 @@ zstd = ["zstandard (>=0.18.0)"]
 
 [[package]]
 name = "weblogin"
-version = "1.16"
+version = "1.17"
 description = "Automates logging into web UIs to access unofficial APIs"
 optional = false
 python-versions = "<4.0,>=3.8"
 groups = ["main"]
 files = [
-    {file = "weblogin-1.16-py3-none-any.whl", hash = "sha256:6e5a22b7728e8e128c48b147c6883dd7990400f896b180581844c3a7e4e0a85c"},
-    {file = "weblogin-1.16.tar.gz", hash = "sha256:a204359351cf0104e8338bfa93846dbda8ad364a6939d19bfd2d65f55813f530"},
+    {file = "weblogin-1.17-py3-none-any.whl", hash = "sha256:e09c50cf52865458f5ada14262550b3706089709a21c4bb49dbbcc76a97482da"},
+    {file = "weblogin-1.17.tar.gz", hash = "sha256:6eeb58f4aaf409f656b74d8f7c7efd652fb3917e57b018ce2f983481abf27596"},
 ]
 
 [package.dependencies]
@@ -1052,4 +1052,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.8,<4.0"
-content-hash = "7989f2783dcf65f84535177a24550fe28344de587f7b9d9f98b2a7a4a40287bc"
+content-hash = "e58a3f168399f25b0cb515870dcea62986973f4c8298f9e5c6ad06c96b0741e3"
