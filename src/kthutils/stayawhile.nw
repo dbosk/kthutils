@@ -480,6 +480,118 @@ def get_my_help_history(self):
   return self._request("GET", "/api/my_help_history")
 @
 
+The queue log is also enough to reconstruct who is currently active in a queue.
+Each non-leave event adds or updates one queue entry, while a leave event
+removes it.
+We replay the log in chronological order and keep the final active state for
+each student.
+<<helper functions>>=
+def queue_entry_key(entry):
+  """Return a stable identity key for one queue-log [[entry]]."""
+  ugkthid = entry.get("ugkthid")
+  if ugkthid:
+    return ("ugkthid", ugkthid)
+
+  username = entry.get("username")
+  if username:
+    return ("username", username)
+
+  raise ValueError(f"queue log entry lacks identity: {entry!r}")
+
+
+def reconstruct_current_queue(queue_log):
+  """Return the currently active queue entries from [[queue_log]]."""
+  active = {}
+  ordered_log = sorted(enumerate(queue_log),
+                       key=lambda pair: (pair[1].get("time", ""), pair[0]))
+
+  for event_index, entry in ordered_log:
+    key = queue_entry_key(entry)
+    if entry.get("left_queue"):
+      active.pop(key, None)
+      continue
+
+    current = dict(entry)
+    current["_event_index"] = event_index
+    active[key] = current
+
+  rows = sorted(active.values(),
+                key=lambda entry: (entry.get("time", ""),
+                                   entry.get("_event_index", 0)))
+  view = []
+  for position, entry in enumerate(rows, start=1):
+    row = {
+      "position": position,
+      "realname": entry.get("realname"),
+      "username": entry.get("username"),
+      "ugkthid": entry.get("ugkthid"),
+      "type": "help" if entry.get("help") else "present",
+      "joined_at": entry.get("time"),
+    }
+    view.append(row)
+
+  return view
+@
+
+The new [[view]] command is just a filtered replay of the queue log.
+This is more useful than the raw event stream when we want the current state.
+<<test functions>>=
+def test_reconstruct_current_queue():
+  queue = kthutils.stayawhile.reconstruct_current_queue([
+    {
+      "username": "grace",
+      "ugkthid": "u1grace",
+      "realname": "Grace Hopper",
+      "time": "2026-03-01T10:00:00Z",
+      "help": True,
+      "left_queue": False,
+    },
+    {
+      "username": "ada",
+      "ugkthid": "u1ada",
+      "realname": "Ada Lovelace",
+      "time": "2026-03-01T10:05:00Z",
+      "help": False,
+      "left_queue": False,
+    },
+    {
+      "username": "grace",
+      "ugkthid": "u1grace",
+      "realname": "Grace Hopper",
+      "time": "2026-03-01T10:15:00Z",
+      "help": True,
+      "left_queue": True,
+    },
+    {
+      "username": "linus",
+      "ugkthid": "u1linus",
+      "realname": "Linus Torvalds",
+      "time": "2026-03-01T10:20:00Z",
+      "help": True,
+      "left_queue": False,
+    },
+  ])
+
+  assert queue == [
+    {
+      "position": 1,
+      "realname": "Ada Lovelace",
+      "username": "ada",
+      "ugkthid": "u1ada",
+      "type": "present",
+      "joined_at": "2026-03-01T10:05:00Z",
+    },
+    {
+      "position": 2,
+      "realname": "Linus Torvalds",
+      "username": "linus",
+      "ugkthid": "u1linus",
+      "type": "help",
+      "joined_at": "2026-03-01T10:20:00Z",
+    },
+  ]
+@
+
 We test the query parameters here because that is the only real moving part.
 <<test functions>>=
 def test_log_requests_and_filters():
@@ -736,6 +848,23 @@ def cli_queue_log(queue: Annotated[str, queue_arg],
                  "present_amount"])
 
 
+@cli.command(name="view")
+def cli_view_queue(queue: Annotated[str, queue_arg],
+                   from_date: Annotated[Optional[str], from_opt] = None,
+                   until: Annotated[Optional[str], until_opt] = None):
+  """Show who is currently active in one queue."""
+  queue_log = get_session().get_queue_log(queue,
+                                          from_date=from_date,
+                                          until=until)
+  print_records(reconstruct_current_queue(queue_log),
+                ["position",
+                 "realname",
+                 "username",
+                 "ugkthid",
+                 "type",
+                 "joined_at"])
+
+
 @history_cli.command(name="mine")
 def cli_help_history():
   """Read the caller's own help history."""
@@ -815,6 +944,16 @@ class FakeStayawhileSession:
   def get_queue_log(self, queue, from_date=None, until=None):
     self.calls.append(("get_queue_log", queue, from_date, until))
     return [{
+      "username": "former",
+      "ugkthid": "u1former",
+      "realname": "Former Student",
+      "time": "2026-03-01T09:50:00Z",
+      "help": True,
+      "left_queue": False,
+      "queue_length": 1,
+      "help_amount": 1,
+      "present_amount": 0,
+    }, {
       "username": "student1",
       "ugkthid": "u1student",
       "realname": "Grace Hopper",
@@ -824,6 +963,26 @@ class FakeStayawhileSession:
       "queue_length": 3,
       "help_amount": 2,
       "present_amount": 1,
+    }, {
+      "username": "present1",
+      "ugkthid": "u1present",
+      "realname": "Ada Lovelace",
+      "time": "2026-03-01T10:05:00Z",
+      "help": False,
+      "left_queue": False,
+      "queue_length": 4,
+      "help_amount": 2,
+      "present_amount": 2,
+    }, {
+      "username": "former",
+      "ugkthid": "u1former",
+      "realname": "Former Student",
+      "time": "2026-03-01T10:10:00Z",
+      "help": True,
+      "left_queue": True,
+      "queue_length": 3,
+      "help_amount": 1,
+      "present_amount": 2,
     }]
 
   def get_my_help_history(self):
@@ -872,6 +1031,7 @@ def test_stayawhile_help():
   assert "bookings" in result.stdout
   assert "assistants" in result.stdout
   assert "history" in result.stdout
+  assert "view" in result.stdout
 
 
 def test_cli_lists_api_keys(monkeypatch):
@@ -962,5 +1122,23 @@ def test_cli_reads_my_booking_as_csv(monkeypatch):
   assert parse_csv_output(result.stdout) == [
     ["ugkthid", "slot_time", "entry_type"],
     ["u1abc123", "2026-03-01T10:00:00Z", "help"],
+  ]
+
+
+def test_cli_views_current_queue(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["view", "Queue", "--from", "2026-03-01"])
+
+  assert result.exit_code == 0
+  assert fake.calls == [("get_queue_log", "Queue", "2026-03-01", None)]
+  assert parse_csv_output(result.stdout) == [
+    ["position", "realname", "username", "ugkthid", "type", "joined_at"],
+    ["1", "Grace Hopper", "student1", "u1student", "help",
+     "2026-03-01T10:00:00Z"],
+    ["2", "Ada Lovelace", "present1", "u1present", "present",
+     "2026-03-01T10:05:00Z"],
   ]
 @
