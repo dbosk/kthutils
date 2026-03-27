@@ -1,0 +1,797 @@
+\chapter{The Stay A While queue API}
+
+Stay A While is the EECS queueing system.
+We want to access its documented REST API both from Python and from the
+shell.
+
+We therefore provide two interfaces:
+first, a class, [[StayawhileSession]], that wraps the HTTP API;
+second, a Typer CLI rooted at [[kthutils stayawhile]].
+
+We extract the Python module from the following root chunk.
+<<stayawhile.py>>=
+import json
+import sys
+import typer
+try:
+  from typing import Annotated, Optional
+except ImportError:
+  from typing_extensions import Annotated, Optional
+
+<<imports>>
+<<constants>>
+<<helper functions>>
+
+class StayawhileSession:
+  """
+  Maintains a session to the Stay A While REST API.
+  """
+
+  BASE_URL = <<the Stay A While base URL>>
+
+  def __init__(self,
+               api_key=None,
+               base_url=None,
+               session=None):
+    """
+    Creates a new session to the Stay A While API.
+    """
+    <<[[StayawhileSession]] constructor>>
+
+  <<[[StayawhileSession]] methods>>
+
+<<set up cli>>
+
+def main():
+  """Run the Stay A While CLI."""
+  cli()
+
+if __name__ == "__main__":
+  main()
+@
+
+We also extract unit tests from this file.
+<<test stayawhile.py>>=
+import json
+import pytest
+import typer.testing
+import kthutils.stayawhile
+
+runner = typer.testing.CliRunner()
+
+<<test helpers>>
+<<test functions>>
+@
+
+
+\section{Authentication and configuration}
+
+The API uses token authentication rather than KTH's browser login flow.
+We therefore only need an API key and, optionally, an alternate base URL.
+The defaults follow the public service.
+<<the Stay A While base URL>>=
+"https://queue.eecs.kth.se"
+<<constants>>=
+CONFIG_API_KEY = "stayawhile.api_key"
+CONFIG_BASE_URL = "stayawhile.base_url"
+@
+
+The API key should be easy to supply both interactively and in scripts.
+We first check the environment variable [[STAYAWHILE_API_KEY]].
+If it is absent, we fall back to [[typerconf]].
+<<helper functions>>=
+def get_api_key():
+  """Return the configured Stay A While API key."""
+  try:
+    return os.environ["STAYAWHILE_API_KEY"]
+  except KeyError:
+    pass
+
+  try:
+    return typerconf.get(CONFIG_API_KEY)
+  except KeyError:
+    raise ValueError(
+        "missing Stay A While API key; set STAYAWHILE_API_KEY or run "
+        "kthutils config stayawhile.api_key --set <your-api-key>")
+<<imports>>=
+import os
+import typerconf
+@
+
+We use the same strategy for the base URL, but here the public service is a
+safe default.
+<<helper functions>>=
+def get_base_url():
+  """Return the configured Stay A While base URL."""
+  try:
+    return os.environ["STAYAWHILE_BASE_URL"]
+  except KeyError:
+    pass
+
+  try:
+    return typerconf.get(CONFIG_BASE_URL)
+  except KeyError:
+    return StayawhileSession.BASE_URL
+@
+
+The CLI commands all need a session object.
+We factor out its construction so that the tests can replace it easily.
+<<helper functions>>=
+def get_session():
+  """Return a configured [[StayawhileSession]]."""
+  return StayawhileSession()
+@
+
+We can verify the configuration lookups independently of the network layer.
+<<test functions>>=
+def test_get_api_key_from_environment(monkeypatch):
+  monkeypatch.setenv("STAYAWHILE_API_KEY", "env-token")
+  assert kthutils.stayawhile.get_api_key() == "env-token"
+
+
+def test_get_api_key_from_config(monkeypatch):
+  monkeypatch.delenv("STAYAWHILE_API_KEY", raising=False)
+
+  def fake_get(key):
+    assert key == kthutils.stayawhile.CONFIG_API_KEY
+    return "config-token"
+
+  monkeypatch.setattr(kthutils.stayawhile.typerconf, "get", fake_get)
+  assert kthutils.stayawhile.get_api_key() == "config-token"
+
+
+def test_get_api_key_requires_configuration(monkeypatch):
+  monkeypatch.delenv("STAYAWHILE_API_KEY", raising=False)
+
+  def fake_get(_):
+    raise KeyError()
+
+  monkeypatch.setattr(kthutils.stayawhile.typerconf, "get", fake_get)
+  with pytest.raises(ValueError, match="Stay A While API key"):
+    kthutils.stayawhile.get_api_key()
+
+
+def test_get_base_url_defaults(monkeypatch):
+  monkeypatch.delenv("STAYAWHILE_BASE_URL", raising=False)
+
+  def fake_get(_):
+    raise KeyError()
+
+  monkeypatch.setattr(kthutils.stayawhile.typerconf, "get", fake_get)
+  assert (kthutils.stayawhile.get_base_url()
+          == kthutils.stayawhile.StayawhileSession.BASE_URL)
+@
+
+
+\section{Common request handling}
+
+All API calls share the same authentication header and JSON decoding logic.
+We therefore centralise them in a single request helper.
+<<[[StayawhileSession]] constructor>>=
+self.api_key = api_key or get_api_key()
+self.base_url = (base_url or get_base_url()).rstrip("/")
+self.__session = session or requests.Session()
+<<imports>>=
+import requests
+@
+
+The API paths contain queue names as path segments.
+The documentation explicitly requires URL encoding for names with spaces or
+parentheses, so we apply that in one place.
+<<[[StayawhileSession]] methods>>=
+def _queue_path(self, queue, suffix):
+  encoded_queue = urllib.parse.quote(queue, safe="")
+  return f"/api/queues/{encoded_queue}/{suffix}"
+<<imports>>=
+import urllib.parse
+@
+
+The request helper keeps the public methods small and uniform.
+It returns parsed JSON when possible and otherwise falls back to plain text.
+<<[[StayawhileSession]] methods>>=
+def _request(self, method, path, *, params=None, payload=None):
+  response = self.__session.request(
+      method,
+      f"{self.base_url}{path}",
+      headers={"Authorization": f"Token {self.api_key}"},
+      params=params,
+      json=payload)
+  response.raise_for_status()
+
+  if response.status_code == 204:
+    return None
+
+  try:
+    return response.json()
+  except ValueError:
+    return response.text
+@
+
+Let's verify both the queue encoding and the shared authentication header.
+<<test helpers>>=
+class FakeResponse:
+  def __init__(self,
+               *,
+               json_data=None,
+               text="",
+               status_code=200):
+    self._json_data = json_data
+    self.text = text
+    self.status_code = status_code
+
+  def raise_for_status(self):
+    if self.status_code >= 400:
+      raise RuntimeError(f"HTTP {self.status_code}")
+
+  def json(self):
+    if self._json_data is None:
+      raise ValueError()
+    return self._json_data
+
+
+class FakeHTTPSession:
+  def __init__(self, responses=None):
+    self.responses = list(responses or [FakeResponse(json_data={})])
+    self.requests = []
+
+  def request(self,
+              method,
+              url,
+              *,
+              headers=None,
+              params=None,
+              json=None):
+    self.requests.append({
+      "method": method,
+      "url": url,
+      "headers": headers,
+      "params": params,
+      "json": json,
+    })
+    return self.responses.pop(0)
+@
+
+<<test functions>>=
+def test_queue_paths_are_url_encoded():
+  fake_http = FakeHTTPSession([FakeResponse(json_data=[])])
+  sa = kthutils.stayawhile.StayawhileSession(
+      api_key="token",
+      session=fake_http)
+
+  sa.list_bookings("tilda (alba)")
+
+  assert (fake_http.requests[0]["url"]
+          == "https://queue.eecs.kth.se/api/queues/"
+             "tilda%20%28alba%29/bookings")
+  assert fake_http.requests[0]["headers"] == {
+    "Authorization": "Token token"
+  }
+@
+
+
+\section{API keys}
+
+The API lets users manage their own API keys.
+We expose the same operations directly on the session object.
+<<[[StayawhileSession]] methods>>=
+def list_api_keys(self):
+  """Return the caller's API keys."""
+  return self._request("GET", "/api/api_keys")
+
+
+def create_api_key(self, label=None):
+  """Create a new API key."""
+  if label is None:
+    return self._request("POST", "/api/api_keys")
+  return self._request("POST", "/api/api_keys",
+                       payload={"label": label})
+
+
+def revoke_api_key(self, api_key_id):
+  """Revoke the API key with identifier [[api_key_id]]."""
+  return self._request("DELETE", f"/api/api_keys/{api_key_id}")
+@
+
+We can verify both the method and, when present, the posted label.
+<<test functions>>=
+def test_api_key_requests():
+  fake_http = FakeHTTPSession([
+    FakeResponse(json_data=[{"id": 1}]),
+    FakeResponse(json_data={"id": 2, "label": "Exam"}),
+    FakeResponse(status_code=204),
+  ])
+  sa = kthutils.stayawhile.StayawhileSession(
+      api_key="token",
+      session=fake_http)
+
+  assert sa.list_api_keys() == [{"id": 1}]
+  assert sa.create_api_key("Exam") == {"id": 2, "label": "Exam"}
+  assert sa.revoke_api_key("2") is None
+
+  assert fake_http.requests[1]["json"] == {"label": "Exam"}
+  assert fake_http.requests[2]["method"] == "DELETE"
+@
+
+
+\section{Bookings}
+
+Teachers can list, upload, and clear bookings for a queue, while any user can
+inspect their own booking.
+<<[[StayawhileSession]] methods>>=
+def list_bookings(self, queue):
+  """Return the bookings for [[queue]]."""
+  return self._request("GET", self._queue_path(queue, "bookings"))
+
+
+def upsert_bookings(self, queue, bookings):
+  """Upload or update [[bookings]] for [[queue]]."""
+  return self._request("POST",
+                       self._queue_path(queue, "bookings"),
+                       payload=bookings)
+
+
+def clear_bookings(self, queue):
+  """Delete all bookings for [[queue]]."""
+  return self._request("DELETE", self._queue_path(queue, "bookings"))
+
+
+def get_my_booking(self, queue):
+  """Return the caller's booking for [[queue]]."""
+  return self._request("GET", self._queue_path(queue, "my_booking"))
+@
+
+The upload endpoint expects a JSON array.
+The CLI should accept either a file path or standard input so that shell pipes
+ remain convenient.
+<<helper functions>>=
+def load_json_input(source):
+  """Load JSON from [[source]], or stdin when [[source]] is [[-]]."""
+  if source == "-":
+    return json.load(sys.stdin)
+
+  with open(source, encoding="utf-8") as input_file:
+    return json.load(input_file)
+@
+
+Let's verify that the bookings endpoints map to the documented requests.
+<<test functions>>=
+def test_booking_requests():
+  fake_http = FakeHTTPSession([
+    FakeResponse(json_data=[{"ugkthid": "u1abc123"}]),
+    FakeResponse(json_data={"updated": 1}),
+    FakeResponse(status_code=204),
+    FakeResponse(json_data={"slot_time": "2026-03-01T10:00:00Z"}),
+  ])
+  sa = kthutils.stayawhile.StayawhileSession(
+      api_key="token",
+      session=fake_http)
+  bookings = [{"ugkthid": "u1abc123",
+               "slot_time": "2026-03-01T10:00:00Z"}]
+
+  assert sa.list_bookings("Queue") == [{"ugkthid": "u1abc123"}]
+  assert sa.upsert_bookings("Queue", bookings) == {"updated": 1}
+  assert sa.clear_bookings("Queue") is None
+  assert sa.get_my_booking("Queue") == {
+    "slot_time": "2026-03-01T10:00:00Z"
+  }
+
+  assert fake_http.requests[1]["json"] == bookings
+  assert fake_http.requests[2]["method"] == "DELETE"
+@
+
+We can also verify that the JSON loader accepts files.
+<<test functions>>=
+def test_load_json_input(tmp_path):
+  bookings_file = tmp_path / "bookings.json"
+  bookings_file.write_text('[{"ugkthid": "u1abc123"}]')
+
+  assert kthutils.stayawhile.load_json_input(str(bookings_file)) == [
+    {"ugkthid": "u1abc123"}
+  ]
+@
+
+
+\section{Teaching assistants}
+
+Teachers can add or remove queue assistants by username.
+<<[[StayawhileSession]] methods>>=
+def add_assistant(self, queue, username):
+  """Add [[username]] as assistant for [[queue]]."""
+  return self._request("POST",
+                       self._queue_path(queue, "assistants"),
+                       payload={"username": username})
+
+
+def remove_assistant(self, queue, username):
+  """Remove [[username]] as assistant for [[queue]]."""
+  return self._request(
+      "DELETE",
+      self._queue_path(queue, f"assistants/{urllib.parse.quote(username)}"))
+@
+
+This is a small endpoint family, but it is worth checking that usernames land
+in the expected place.
+<<test functions>>=
+def test_assistant_requests():
+  fake_http = FakeHTTPSession([
+    FakeResponse(json_data={"username": "abcde"}),
+    FakeResponse(status_code=204),
+  ])
+  sa = kthutils.stayawhile.StayawhileSession(
+      api_key="token",
+      session=fake_http)
+
+  assert sa.add_assistant("Queue", "abcde") == {"username": "abcde"}
+  assert sa.remove_assistant("Queue", "abcde") is None
+
+  assert fake_http.requests[0]["json"] == {"username": "abcde"}
+  assert fake_http.requests[1]["url"].endswith("/assistants/abcde")
+@
+
+
+\section{Logs and help history}
+
+The API provides two teacher-facing logs and one student-facing help-history
+endpoint.
+The log endpoints share the same optional date-range filtering, while the
+interaction log also accepts a type filter.
+<<[[StayawhileSession]] methods>>=
+def get_interaction_log(self,
+                        queue,
+                        from_date=None,
+                        until=None,
+                        interaction_type=None):
+  """Return interaction log entries for [[queue]]."""
+  params = {}
+  if from_date is not None:
+    params["from"] = from_date
+  if until is not None:
+    params["until"] = until
+  if interaction_type is not None:
+    params["type"] = interaction_type
+
+  return self._request("GET",
+                       self._queue_path(queue, "interaction_log"),
+                       params=params)
+
+
+def get_queue_log(self, queue, from_date=None, until=None):
+  """Return queue log entries for [[queue]]."""
+  params = {}
+  if from_date is not None:
+    params["from"] = from_date
+  if until is not None:
+    params["until"] = until
+
+  return self._request("GET",
+                       self._queue_path(queue, "queue_log"),
+                       params=params)
+
+
+def get_my_help_history(self):
+  """Return the caller's help history."""
+  return self._request("GET", "/api/my_help_history")
+@
+
+We test the query parameters here because that is the only real moving part.
+<<test functions>>=
+def test_log_requests_and_filters():
+  fake_http = FakeHTTPSession([
+    FakeResponse(json_data=[{"help": True}]),
+    FakeResponse(json_data=[{"queue_length": 3}]),
+    FakeResponse(json_data=[{"queue": "Queue"}]),
+  ])
+  sa = kthutils.stayawhile.StayawhileSession(
+      api_key="token",
+      session=fake_http)
+
+  assert sa.get_interaction_log(
+      "Queue",
+      from_date="2026-01-01",
+      until="2026-03-27",
+      interaction_type="help") == [{"help": True}]
+  assert sa.get_queue_log(
+      "Queue",
+      from_date="2026-01-01",
+      until="2026-03-27") == [{"queue_length": 3}]
+  assert sa.get_my_help_history() == [{"queue": "Queue"}]
+
+  assert fake_http.requests[0]["params"] == {
+    "from": "2026-01-01",
+    "until": "2026-03-27",
+    "type": "help",
+  }
+  assert fake_http.requests[1]["params"] == {
+    "from": "2026-01-01",
+    "until": "2026-03-27",
+  }
+@
+
+
+\section{The CLI}
+
+The CLI mirrors the API structure.
+This keeps the subcommands close to the documented endpoints.
+<<set up cli>>=
+cli = typer.Typer(name="stayawhile",
+                  help="Interacts with the Stay A While queue API")
+api_keys_cli = typer.Typer(name="api-keys",
+                           help="Manage Stay A While API keys")
+bookings_cli = typer.Typer(name="bookings",
+                           help="Manage queue bookings")
+booking_cli = typer.Typer(name="booking",
+                          help="Inspect the caller's booking")
+assistants_cli = typer.Typer(name="assistants",
+                             help="Manage queue assistants")
+log_cli = typer.Typer(name="log",
+                      help="Read Stay A While logs")
+history_cli = typer.Typer(name="history",
+                          help="Read the caller's help history")
+
+cli.add_typer(api_keys_cli)
+cli.add_typer(bookings_cli)
+cli.add_typer(booking_cli)
+cli.add_typer(assistants_cli)
+cli.add_typer(log_cli)
+cli.add_typer(history_cli)
+
+<<option and argument definitions>>
+<<command definitions>>
+@
+
+The CLI prints JSON so that it can be piped directly into tools such as
+[[jq]].
+<<helper functions>>=
+def print_json(data):
+  """Print [[data]] as formatted JSON."""
+  print(json.dumps(data, indent=2))
+@
+
+We start with the shared arguments and options.
+<<option and argument definitions>>=
+queue_arg = typer.Argument(help="Queue name as shown in Stay A While.")
+username_arg = typer.Argument(help="KTH login name, without @kth.se.")
+api_key_id_arg = typer.Argument(help="Identifier of the API key to revoke.")
+bookings_source_arg = typer.Argument(
+    help="JSON file with bookings, or - to read JSON from stdin.")
+label_arg = typer.Argument(help="Optional label for the new API key.")
+from_opt = typer.Option("--from",
+                        help="Filter from this date, YYYY-MM-DD.")
+until_opt = typer.Option(help="Filter until this date, YYYY-MM-DD.")
+interaction_type_opt = typer.Option(help="Filter to help or present.")
+@
+
+Each command is just a thin wrapper around the corresponding session method.
+<<command definitions>>=
+@api_keys_cli.command(name="ls")
+def cli_list_api_keys():
+  """List the caller's API keys."""
+  print_json(get_session().list_api_keys())
+
+
+@api_keys_cli.command(name="create")
+def cli_create_api_key(label: Annotated[Optional[str], label_arg] = None):
+  """Create a new API key."""
+  print_json(get_session().create_api_key(label))
+
+
+@api_keys_cli.command(name="rm")
+def cli_revoke_api_key(api_key_id: Annotated[str, api_key_id_arg]):
+  """Revoke one API key."""
+  session = get_session()
+  session.revoke_api_key(api_key_id)
+  print_json({"revoked": api_key_id})
+
+
+@bookings_cli.command(name="ls")
+def cli_list_bookings(queue: Annotated[str, queue_arg]):
+  """List bookings for one queue."""
+  print_json(get_session().list_bookings(queue))
+
+
+@bookings_cli.command(name="upsert")
+def cli_upsert_bookings(queue: Annotated[str, queue_arg],
+                        source: Annotated[str, bookings_source_arg]):
+  """Upload bookings from a JSON document."""
+  session = get_session()
+  bookings = load_json_input(source)
+  result = session.upsert_bookings(queue, bookings)
+  if result is None:
+    result = {"queue": queue, "uploaded": len(bookings)}
+  print_json(result)
+
+
+@bookings_cli.command(name="clear")
+def cli_clear_bookings(queue: Annotated[str, queue_arg]):
+  """Delete all bookings for one queue."""
+  session = get_session()
+  session.clear_bookings(queue)
+  print_json({"queue": queue, "cleared": True})
+
+
+@booking_cli.command(name="mine")
+def cli_my_booking(queue: Annotated[str, queue_arg]):
+  """Show the caller's own booking for one queue."""
+  print_json(get_session().get_my_booking(queue))
+
+
+@assistants_cli.command(name="add")
+def cli_add_assistant(queue: Annotated[str, queue_arg],
+                      username: Annotated[str, username_arg]):
+  """Add one assistant to a queue."""
+  print_json(get_session().add_assistant(queue, username))
+
+
+@assistants_cli.command(name="rm")
+def cli_remove_assistant(queue: Annotated[str, queue_arg],
+                         username: Annotated[str, username_arg]):
+  """Remove one assistant from a queue."""
+  session = get_session()
+  session.remove_assistant(queue, username)
+  print_json({"queue": queue, "removed": username})
+
+
+@log_cli.command(name="interactions")
+def cli_interaction_log(
+    queue: Annotated[str, queue_arg],
+    from_date: Annotated[Optional[str], from_opt] = None,
+    until: Annotated[Optional[str], until_opt] = None,
+    interaction_type: Annotated[Optional[str], interaction_type_opt] = None):
+  """Read the interaction log for one queue."""
+  print_json(get_session().get_interaction_log(
+      queue,
+      from_date=from_date,
+      until=until,
+      interaction_type=interaction_type))
+
+
+@log_cli.command(name="queue")
+def cli_queue_log(queue: Annotated[str, queue_arg],
+                  from_date: Annotated[Optional[str], from_opt] = None,
+                  until: Annotated[Optional[str], until_opt] = None):
+  """Read the queue log for one queue."""
+  print_json(get_session().get_queue_log(queue,
+                                         from_date=from_date,
+                                         until=until))
+
+
+@history_cli.command(name="mine")
+def cli_help_history():
+  """Read the caller's own help history."""
+  print_json(get_session().get_my_help_history())
+@
+
+The CLI tests should verify both the command hierarchy and the translation from
+arguments to API calls.
+<<test helpers>>=
+class FakeStayawhileSession:
+  def __init__(self):
+    self.calls = []
+
+  def list_api_keys(self):
+    self.calls.append(("list_api_keys",))
+    return [{"id": 1, "label": "X1"}]
+
+  def create_api_key(self, label=None):
+    self.calls.append(("create_api_key", label))
+    return {"label": label}
+
+  def revoke_api_key(self, api_key_id):
+    self.calls.append(("revoke_api_key", api_key_id))
+
+  def list_bookings(self, queue):
+    self.calls.append(("list_bookings", queue))
+    return [{"queue": queue}]
+
+  def upsert_bookings(self, queue, bookings):
+    self.calls.append(("upsert_bookings", queue, bookings))
+    return {"updated": len(bookings)}
+
+  def clear_bookings(self, queue):
+    self.calls.append(("clear_bookings", queue))
+
+  def get_my_booking(self, queue):
+    self.calls.append(("get_my_booking", queue))
+    return {"queue": queue}
+
+  def add_assistant(self, queue, username):
+    self.calls.append(("add_assistant", queue, username))
+    return {"queue": queue, "username": username}
+
+  def remove_assistant(self, queue, username):
+    self.calls.append(("remove_assistant", queue, username))
+
+  def get_interaction_log(self,
+                          queue,
+                          from_date=None,
+                          until=None,
+                          interaction_type=None):
+    self.calls.append(("get_interaction_log",
+                       queue,
+                       from_date,
+                       until,
+                       interaction_type))
+    return [{"queue": queue}]
+
+  def get_queue_log(self, queue, from_date=None, until=None):
+    self.calls.append(("get_queue_log", queue, from_date, until))
+    return [{"queue": queue}]
+
+  def get_my_help_history(self):
+    self.calls.append(("get_my_help_history",))
+    return [{"queue": "Queue"}]
+@
+
+<<test functions>>=
+def test_stayawhile_help():
+  result = runner.invoke(kthutils.stayawhile.cli, ["--help"])
+  assert result.exit_code == 0
+  assert "stayawhile" in result.stdout
+  assert "api-keys" in result.stdout
+  assert "bookings" in result.stdout
+  assert "assistants" in result.stdout
+  assert "history" in result.stdout
+
+
+def test_cli_lists_api_keys(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli, ["api-keys", "ls"])
+
+  assert result.exit_code == 0
+  assert json.loads(result.stdout) == [{"id": 1, "label": "X1"}]
+  assert fake.calls == [("list_api_keys",)]
+
+
+def test_cli_upserts_bookings(monkeypatch, tmp_path):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+  bookings_file = tmp_path / "bookings.json"
+  bookings_file.write_text(
+      '[{"ugkthid": "u1abc123", "slot_time": "2026-03-01T10:00:00Z"}]')
+
+  result = runner.invoke(
+      kthutils.stayawhile.cli,
+      ["bookings", "upsert", "Queue", str(bookings_file)])
+
+  assert result.exit_code == 0
+  assert fake.calls == [(
+    "upsert_bookings",
+    "Queue",
+    [{"ugkthid": "u1abc123", "slot_time": "2026-03-01T10:00:00Z"}],
+  )]
+  assert json.loads(result.stdout) == {"updated": 1}
+
+
+def test_cli_reads_interaction_log(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(
+      kthutils.stayawhile.cli,
+      ["log", "interactions", "Queue",
+       "--from", "2026-01-01",
+       "--until", "2026-03-27",
+       "--interaction-type", "help"])
+
+  assert result.exit_code == 0
+  assert fake.calls == [(
+    "get_interaction_log",
+    "Queue",
+    "2026-01-01",
+    "2026-03-27",
+    "help",
+  )]
+
+
+def test_cli_reads_help_history(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli, ["history", "mine"])
+
+  assert result.exit_code == 0
+  assert fake.calls == [("get_my_help_history",)]
+  assert json.loads(result.stdout) == [{"queue": "Queue"}]
+@

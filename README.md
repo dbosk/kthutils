@@ -13,6 +13,9 @@ provides the following modules:
   - kthutils.forms  
     Read forms data (CSV) from KTH Forms.
 
+  - kthutils.stayawhile  
+    Access the Stay A While queue API.
+
 We also provide a command-line interface for the modules. This means
 that the functionality can be accessed through both Python and the
 shell.

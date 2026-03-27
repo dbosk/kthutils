@@ -57,6 +57,7 @@ def test_cli_subcommands():
   assert "participants" in result.stdout
   assert "forms" in result.stdout
   assert "iprange" in result.stdout
+  assert "stayawhile" in result.stdout
 @
 
 Now we can start to add the modules.
@@ -126,6 +127,22 @@ def test_forms_command():
   result = runner.invoke(kthutils.cli.cli, ["forms", "--help"])
   assert result.exit_code == 0
   assert "forms" in result.stdout
+@
+
+We also add the [[stayawhile]] module.
+<<import subcommand modules>>=
+import kthutils.stayawhile
+<<add subcommand typers to cli>>=
+cli.add_typer(kthutils.stayawhile.cli)
+@
+
+We want to test that the [[stayawhile]] subcommand is registered.
+<<test functions>>=
+def test_stayawhile_command():
+  """Test that the stayawhile command shows help"""
+  result = runner.invoke(kthutils.cli.cli, ["stayawhile", "--help"])
+  assert result.exit_code == 0
+  assert "stayawhile" in result.stdout
 @
 
 
@@ -246,4 +263,3 @@ sys.exit(1)
 <<credential imports>>=
 import logging
 import sys
-
