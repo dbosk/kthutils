@@ -178,20 +178,39 @@ def test_get_base_url_defaults(monkeypatch):
 
 \section{Common request handling}
 
-All API calls share the same JSON decoding logic, but not the same
-authentication mechanism.
-We therefore centralise them in a request helper that can choose between the
-shared browser session and token authentication.
+The API uses two authentication mechanisms: a long-lived API key
+(stored locally) and a session token obtained from the OAuth2 login flow.
+The session token lives inside a [[userdata]] cookie that the server sets
+after the OAuth2 callback; the API expects it in an
+[[Authorization: Token]] header, not as a cookie.
+
+We reuse the LADOK session because it already holds SSO cookies for
+[[login.ug.kth.se]].
+Visiting the Stay A While [[/login]] page triggers an OAuth2 flow that
+completes automatically (no password prompt) when those cookies are
+present.
+After the redirect chain finishes, we read the JWT from the
+[[userdata]] cookie.
+
+If the SSO session has expired, [[/login]] redirects to
+[[login.ug.kth.se]] and a login form is shown.
+We therefore add a [[UGlogin]] handler whose
+[[login_trigger_url]] is the base URL suffixed with [[/login]]
+(not the bare base URL).
+This ensures the handler intercepts the redirect to the login page when
+we visit [[/login]], but does \emph{not} match raw~403 responses from
+API endpoints (whose URLs start with the base URL, not [[/login]]).
 <<[[StayawhileSession]] constructor>>=
 self.api_key = api_key if api_key is not None else find_api_key()
 self.base_url = (base_url or get_base_url()).rstrip("/")
 self.__session = session or ladok3.session.session
+self.__session_token = None
 if session is None:
   _, credentials = ladok3.cli.load_credentials()
   self.__session.add_handler(
       weblogin.kth.UGlogin(credentials["username"],
                            credentials["password"],
-                           self.base_url))
+                           self.base_url + "/login"))
 <<imports>>=
 import requests
 @
@@ -220,10 +239,40 @@ def _queue_path(self, queue, suffix):
 import urllib.parse
 @
 
-The request helper keeps the public methods small and uniform.
-Token-authenticated endpoints ask for the API key lazily so that callers can
-still use the browser-authenticated endpoints without configuring a token.
-It returns parsed JSON when possible and otherwise falls back to plain text.
+We obtain the session token lazily rather than in the constructor
+because the session object is shared across CLI tools and may be
+created before the user has authenticated.
+Deferring the OAuth2 flow to the first API call also avoids
+unnecessary network traffic when only API-key endpoints are used.
+<<[[StayawhileSession]] methods>>=
+def _get_session_token(self):
+  """Log in via OAuth2 and return the JWT from the userdata cookie."""
+  if self.__session_token:
+    return self.__session_token
+
+  self.__session.get(self.base_url + "/login")
+  userdata = self.__session.cookies.get(
+      "userdata", domain=urllib.parse.urlparse(self.base_url).hostname)
+  if not userdata:
+    raise RuntimeError("login to Stay A While failed: no userdata cookie")
+  data = json.loads(urllib.parse.unquote(userdata))
+  self.__session_token = data["token"]
+  return self.__session_token
+@
+
+Every API endpoint requires an [[Authorization: Token]] header, but
+the token source differs: queue endpoints use the long-lived API key
+(managed by the user), while management endpoints (API keys,
+assistants) use the session JWT from the OAuth2 login.
+The [[use_api_key]] flag lets each public method select the right
+source without duplicating the request and response-parsing logic.
+
+Because the session object is long-lived (shared across CLI tools),
+the JWT may expire between calls.
+When a session-token request returns~403, we clear the cached token
+and retry once so that the OAuth2 flow re-authenticates transparently.
+API-key requests are not retried because a~403 there indicates a
+genuinely revoked key.
 <<[[StayawhileSession]] methods>>=
 def _request(self,
              method,
@@ -232,9 +281,11 @@ def _request(self,
              params=None,
              payload=None,
              use_api_key=False):
-  headers = None
   if use_api_key:
-    headers = {"Authorization": f"Token {self.require_api_key()}"}
+    token = self.require_api_key()
+  else:
+    token = self._get_session_token()
+  headers = {"Authorization": f"Token {token}"}
 
   response = self.__session.request(
       method,
@@ -242,6 +293,19 @@ def _request(self,
       headers=headers,
       params=params,
       json=payload)
+
+  if (response.status_code == 403
+      and not use_api_key):
+    self.__session_token = None
+    token = self._get_session_token()
+    headers = {"Authorization": f"Token {token}"}
+    response = self.__session.request(
+        method,
+        f"{self.base_url}{path}",
+        headers=headers,
+        params=params,
+        json=payload)
+
   response.raise_for_status()
 
   if response.status_code == 204:
@@ -282,14 +346,34 @@ class FakeResponse:
     return self._json_data
 
 
+class FakeCookieJar:
+  def __init__(self):
+    self._cookies = {}
+
+  def set(self, name, value, domain=""):
+    self._cookies[(domain, name)] = value
+
+  def get(self, name, domain=None):
+    if domain:
+      return self._cookies.get((domain, name))
+    for (d, n), v in self._cookies.items():
+      if n == name:
+        return v
+    return None
+
+
 class FakeHTTPSession:
   def __init__(self, responses=None):
     self.responses = list(responses or [FakeResponse(json_data={})])
     self.requests = []
     self.handlers = []
+    self.cookies = FakeCookieJar()
 
   def add_handler(self, handler):
     self.handlers.append(handler)
+
+  def get(self, url, **kwargs):
+    return self.request("GET", url, **kwargs)
 
   def request(self,
               method,
@@ -323,10 +407,10 @@ def test_default_session_uses_shared_browser_session(monkeypatch):
   fake_http = FakeHTTPSession()
 
   class FakeUGlogin:
-    def __init__(self, username, password, base_url):
+    def __init__(self, username, password, login_trigger_url):
       self.username = username
       self.password = password
-      self.base_url = base_url
+      self.login_trigger_url = login_trigger_url
 
   monkeypatch.setattr(kthutils.stayawhile.ladok3.session,
                       "session",
@@ -345,7 +429,7 @@ def test_default_session_uses_shared_browser_session(monkeypatch):
 
   assert sa._StayawhileSession__session is fake_http
   assert len(fake_http.handlers) == 1
-  assert fake_http.handlers[0].base_url == "https://example.invalid"
+  assert fake_http.handlers[0].login_trigger_url == "https://example.invalid/login"
 
 
 def test_queue_paths_are_url_encoded():
@@ -368,9 +452,10 @@ def test_queue_paths_are_url_encoded():
 \section{API keys}
 
 The API lets users manage their own API keys.
-Those endpoints rely on the ordinary KTH login session rather than the
-separate Stay A While API token.
-We therefore send them through the shared authenticated browser session.
+Those endpoints authenticate with the OAuth2 session token rather than
+the long-lived API key.
+Calling [[_request]] without [[use_api_key]] triggers the OAuth2 login
+(if needed) and attaches the resulting JWT.
 <<[[StayawhileSession]] methods>>=
 def list_api_keys(self):
   """Return the caller's API keys."""
@@ -390,14 +475,22 @@ def revoke_api_key(self, api_key_id):
   return self._request("DELETE", f"/api/api_keys/{api_key_id}")
 @
 
-We can verify both the method and, when present, the posted label.
+The API-key management endpoints use the session token, not the
+long-lived API key.
+The first request is the OAuth2 login to obtain the session token; the
+remaining three carry that token in the [[Authorization]] header.
+We also check the posted label for the create call.
 <<test functions>>=
 def test_api_key_requests():
   fake_http = FakeHTTPSession([
+    FakeResponse(json_data={}),
     FakeResponse(json_data=[{"id": 1}]),
     FakeResponse(json_data={"id": 2, "label": "Exam"}),
     FakeResponse(status_code=204),
   ])
+  fake_http.cookies.set("userdata",
+      '{"token":"session-jwt"}',
+      domain="queue.eecs.kth.se")
   sa = kthutils.stayawhile.StayawhileSession(
       api_key="token",
       session=fake_http)
@@ -406,11 +499,44 @@ def test_api_key_requests():
   assert sa.create_api_key("Exam") == {"id": 2, "label": "Exam"}
   assert sa.revoke_api_key("2") is None
 
-  assert fake_http.requests[0]["headers"] is None
-  assert fake_http.requests[1]["json"] == {"label": "Exam"}
-  assert fake_http.requests[1]["headers"] is None
-  assert fake_http.requests[2]["method"] == "DELETE"
-  assert fake_http.requests[2]["headers"] is None
+  assert fake_http.requests[0]["url"].endswith("/login")
+  session_auth = {"Authorization": "Token session-jwt"}
+  assert fake_http.requests[1]["headers"] == session_auth
+  assert fake_http.requests[2]["json"] == {"label": "Exam"}
+  assert fake_http.requests[2]["headers"] == session_auth
+  assert fake_http.requests[3]["method"] == "DELETE"
+  assert fake_http.requests[3]["headers"] == session_auth
+
+
+def test_expired_session_token_triggers_reauth():
+  fake_http = FakeHTTPSession([
+    FakeResponse(json_data={}),
+    FakeResponse(json_data=[{"id": 1}]),
+    FakeResponse(status_code=403),
+    FakeResponse(json_data={}),
+    FakeResponse(json_data=[{"id": 2}]),
+  ])
+  fake_http.cookies.set("userdata",
+      '{"token":"fresh-jwt"}',
+      domain="queue.eecs.kth.se")
+  sa = kthutils.stayawhile.StayawhileSession(
+      api_key="token",
+      session=fake_http)
+
+  assert sa.list_api_keys() == [{"id": 1}]
+  assert sa.list_api_keys() == [{"id": 2}]
+
+  assert fake_http.requests[0]["url"].endswith("/login")
+  assert fake_http.requests[1]["headers"] == {
+    "Authorization": "Token fresh-jwt"
+  }
+  assert fake_http.requests[2]["headers"] == {
+    "Authorization": "Token fresh-jwt"
+  }
+  assert fake_http.requests[3]["url"].endswith("/login")
+  assert fake_http.requests[4]["headers"] == {
+    "Authorization": "Token fresh-jwt"
+  }
 @
 
 
