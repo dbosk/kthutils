@@ -486,6 +486,36 @@ class FakeHTTPSession:
     return self.responses.pop(0)
 @
 
+Several tests need to supply auth and login handlers.
+These fakes are identical across tests, so we define them once.
+<<test helpers>>=
+class FakeAuthHandler:
+  def __init__(self):
+    self.calls = 0
+
+  def authorization_headers(self, session, headers=None, refresh=False):
+    self.calls += 1
+    merged_headers = dict(headers or {})
+    merged_headers["Authorization"] = "Token session-jwt"
+    return merged_headers
+
+  def __eq__(self, other):
+    return type(self) is type(other)
+
+
+class FakeUGlogin:
+  def __init__(self, username, password, login_trigger_url):
+    self.username = username
+    self.password = password
+    self.login_trigger_url = login_trigger_url
+
+  def __eq__(self, other):
+    return (type(self) is type(other)
+            and self.username == other.username
+            and self.password == other.password
+            and self.login_trigger_url == other.login_trigger_url)
+@
+
 <<test functions>>=
 def test_find_api_key_returns_none_when_not_configured(monkeypatch):
   monkeypatch.delenv("STAYAWHILE_API_KEY", raising=False)
@@ -689,31 +719,6 @@ and we only need to verify that those headers are forwarded.
 We also check the posted label for the create call.
 <<test functions>>=
 def test_api_key_requests():
-  class FakeAuthHandler:
-    def __init__(self):
-      self.calls = 0
-
-    def authorization_headers(self, session, headers=None, refresh=False):
-      self.calls += 1
-      merged_headers = dict(headers or {})
-      merged_headers["Authorization"] = "Token session-jwt"
-      return merged_headers
-
-    def __eq__(self, other):
-      return type(self) is type(other)
-
-  class FakeUGlogin:
-    def __init__(self, username, password, login_trigger_url):
-      self.username = username
-      self.password = password
-      self.login_trigger_url = login_trigger_url
-
-    def __eq__(self, other):
-      return (type(self) is type(other)
-              and self.username == other.username
-              and self.password == other.password
-              and self.login_trigger_url == other.login_trigger_url)
-
   fake_http = FakeHTTPSession([
     FakeResponse(json_data=[{"id": 1}]),
     FakeResponse(json_data={"id": 2,
@@ -749,24 +754,36 @@ def test_api_key_requests():
 
 \section{Identity, queues, and presence}
 
-The remaining documented metadata endpoints split into three groups.
+The remaining documented metadata endpoints split into three groups that
+illustrate all three authentication modes in [[_request]].
+
+\subsection{Caller identity}
+
 [[/api/user]] identifies the current caller and still uses the browser-backed
-session token.
-[[/api/queues]] is public and should therefore avoid any authentication side
-effects.
-The teacher-facing queue metadata and presence endpoints continue to use the
-long-lived API key.
+session token---the same mechanism as the API-key management endpoints.
 <<[[StayawhileSession]] methods>>=
 def get_user(self):
   """Return the identity of the current caller."""
   return self._request("GET", "/api/user")
+@
 
+\subsection{Public queue listing}
 
+[[/api/queues]] is public and should work without triggering a browser login at
+all, so we pass [[use_auth=False]].
+<<[[StayawhileSession]] methods>>=
 def list_queues(self):
   """Return all public queues."""
   return self._request("GET", "/api/queues", use_auth=False)
+@
 
+\subsection{Teacher-facing metadata and presence}
 
+The teacher-facing queue metadata, presence, and filtered-queue endpoints
+continue to use the long-lived API key.
+The check-in endpoint uses all three HTTP methods: GET for the current list,
+POST to check in, and DELETE to check out.
+<<[[StayawhileSession]] methods>>=
 def list_my_queues(self):
   """Return queues where the caller is a teacher."""
   return self._request("GET", "/api/queues/filtered", use_api_key=True)
@@ -804,31 +821,6 @@ These endpoints are simple, but they cover all three authentication modes.
 That makes them a good regression test for the routing inside [[_request]].
 <<test functions>>=
 def test_identity_queue_and_presence_requests():
-  class FakeAuthHandler:
-    def __init__(self):
-      self.calls = 0
-
-    def authorization_headers(self, session, headers=None, refresh=False):
-      self.calls += 1
-      merged_headers = dict(headers or {})
-      merged_headers["Authorization"] = "Token session-jwt"
-      return merged_headers
-
-    def __eq__(self, other):
-      return type(self) is type(other)
-
-  class FakeUGlogin:
-    def __init__(self, username, password, login_trigger_url):
-      self.username = username
-      self.password = password
-      self.login_trigger_url = login_trigger_url
-
-    def __eq__(self, other):
-      return (type(self) is type(other)
-              and self.username == other.username
-              and self.password == other.password
-              and self.login_trigger_url == other.login_trigger_url)
-
   fake_http = FakeHTTPSession([
     FakeResponse(json_data={"username": "alice", "ugkthid": "u1alice"}),
     FakeResponse(json_data=[{"name": "Queue"}]),
@@ -872,8 +864,12 @@ def test_identity_queue_and_presence_requests():
 
 The statistics endpoints share one queue path prefix and differ only in the
 suffix.
-The session statistics endpoint optionally adds a date suffix instead of using
-query parameters, so we keep that path construction in one method.
+
+\subsection{Session statistics}
+
+Unlike the other statistics endpoints, session statistics optionally append a
+date to the URL path (rather than using a query parameter) to restrict results
+to a single day.
 <<[[StayawhileSession]] methods>>=
 def get_session_stats(self, queue, date=None):
   """Return session statistics for [[queue]]."""
@@ -883,8 +879,13 @@ def get_session_stats(self, queue, date=None):
   return self._request("GET",
                        self._queue_path(queue, suffix),
                        use_api_key=True)
+@
 
+\subsection{Assistant and interaction statistics}
 
+The remaining two statistics endpoints are plain GET requests with no optional
+parameters.
+<<[[StayawhileSession]] methods>>=
 def get_assistant_stats(self, queue):
   """Return assistant statistics for [[queue]]."""
   return self._request("GET",
@@ -937,9 +938,11 @@ def test_statistics_requests():
 
 Teachers can list, upload, and clear bookings for a queue, while any user can
 inspect their own booking.
-The clear endpoint accepts optional [[from]] and [[until]] date parameters
-(YYYY-MM-DD) so that a teacher can remove bookings for a specific date range
-instead of wiping the entire queue.
+Clearing all bookings is rarely intended---a teacher usually wants to remove
+one day's bookings (for instance, after cancelling a lab session) without
+affecting future dates.
+The clear endpoint therefore accepts optional [[from]] and [[until]] date
+parameters (YYYY-MM-DD) that restrict deletion to a specific date range.
 <<[[StayawhileSession]] methods>>=
 def list_bookings(self, queue):
   """Return the bookings for [[queue]]."""
@@ -991,31 +994,6 @@ def load_json_input(source):
 Let's verify that the bookings endpoints map to the documented requests.
 <<test functions>>=
 def test_booking_requests():
-  class FakeAuthHandler:
-    def __init__(self):
-      self.calls = 0
-
-    def authorization_headers(self, session, headers=None, refresh=False):
-      self.calls += 1
-      merged_headers = dict(headers or {})
-      merged_headers["Authorization"] = "Token session-jwt"
-      return merged_headers
-
-    def __eq__(self, other):
-      return type(self) is type(other)
-
-  class FakeUGlogin:
-    def __init__(self, username, password, login_trigger_url):
-      self.username = username
-      self.password = password
-      self.login_trigger_url = login_trigger_url
-
-    def __eq__(self, other):
-      return (type(self) is type(other)
-              and self.username == other.username
-              and self.password == other.password
-              and self.login_trigger_url == other.login_trigger_url)
-
   fake_http = FakeHTTPSession([
     FakeResponse(json_data=[{"ugkthid": "u1abc123"}]),
     FakeResponse(json_data={"updated": 1}),
@@ -1031,7 +1009,7 @@ def test_booking_requests():
       uglogin_handler=uglogin_handler,
       auth_handler=auth_handler)
   bookings = [{"ugkthid": "u1abc123",
-                "slot_time": "2026-03-01T10:00:00Z"}]
+               "slot_time": "2026-03-01T10:00:00Z"}]
 
   assert sa.list_bookings("Queue") == [{"ugkthid": "u1abc123"}]
   assert sa.upsert_bookings("Queue", bookings) == {"updated": 1}
@@ -3234,7 +3212,7 @@ def test_cli_views_current_queue(monkeypatch):
      "joined_at", "booking_time", "helper_name", "help_started_at"],
     ["", "Grace Hopper", "student1", "help",
      "2026-03-01 10:00", "", "Ada Lovelace",
-      "2026-03-01 10:00"],
+     "2026-03-01 10:00"],
     ["", "Ada Lovelace", "present1", "present",
      "2026-03-01 10:05", "", "", ""],
   ]
