@@ -937,6 +937,9 @@ def test_statistics_requests():
 
 Teachers can list, upload, and clear bookings for a queue, while any user can
 inspect their own booking.
+The clear endpoint accepts optional [[from]] and [[until]] date parameters
+(YYYY-MM-DD) so that a teacher can remove bookings for a specific date range
+instead of wiping the entire queue.
 <<[[StayawhileSession]] methods>>=
 def list_bookings(self, queue):
   """Return the bookings for [[queue]]."""
@@ -953,10 +956,16 @@ def upsert_bookings(self, queue, bookings):
                        use_api_key=True)
 
 
-def clear_bookings(self, queue):
-  """Delete all bookings for [[queue]]."""
+def clear_bookings(self, queue, from_date=None, until=None):
+  """Delete bookings for [[queue]], optionally filtered by date."""
+  params = {}
+  if from_date is not None:
+    params["from"] = from_date
+  if until is not None:
+    params["until"] = until
   return self._request("DELETE",
                        self._queue_path(queue, "bookings"),
+                       params=params,
                        use_api_key=True)
 
 
@@ -1033,10 +1042,28 @@ def test_booking_requests():
 
   assert fake_http.requests[1]["json"] == bookings
   assert fake_http.requests[2]["method"] == "DELETE"
+  assert fake_http.requests[2]["params"] == {}
   assert fake_http.requests[3]["headers"] == {
     "Authorization": "Token session-jwt"
   }
   assert auth_handler.calls == 1
+
+
+def test_clear_bookings_passes_date_params():
+  fake_http = FakeHTTPSession([
+    FakeResponse(status_code=204),
+  ])
+  sa = kthutils.stayawhile.StayawhileSession(
+      api_key="token",
+      session=fake_http)
+
+  assert sa.clear_bookings("Queue",
+                           from_date="2026-04-06",
+                           until="2026-04-06") is None
+  assert fake_http.requests[0]["params"] == {
+    "from": "2026-04-06",
+    "until": "2026-04-06",
+  }
 
 
 def test_token_endpoint_requires_api_key(monkeypatch):
@@ -2187,10 +2214,16 @@ def cli_upsert_bookings(queue: Annotated[str, queue_arg],
 
 
 @bookings_cli.command(name="clear")
-def cli_clear_bookings(queue: Annotated[str, queue_arg]):
-  """Delete all bookings for one queue."""
+def cli_clear_bookings(queue: Annotated[str, queue_arg],
+                       from_date: Annotated[Optional[str],
+                                            from_opt] = None,
+                       until: Annotated[Optional[str],
+                                        until_opt] = None):
+  """Delete bookings for one queue."""
   try:
-    get_session().clear_bookings(queue)
+    get_session().clear_bookings(queue,
+                                from_date=from_date,
+                                until=until)
   except Exception as err:
     logging.error("booking clear failed for %s: %s", queue, err)
     raise typer.Exit(code=1)
@@ -2422,8 +2455,8 @@ class FakeStayawhileSession:
     self.calls.append(("upsert_bookings", queue, bookings))
     return {"updated": len(bookings)}
 
-  def clear_bookings(self, queue):
-    self.calls.append(("clear_bookings", queue))
+  def clear_bookings(self, queue, from_date=None, until=None):
+    self.calls.append(("clear_bookings", queue, from_date, until))
 
   def get_my_booking(self, queue):
     self.calls.append(("get_my_booking", queue))
@@ -2826,7 +2859,23 @@ def test_cli_clears_bookings_silently(monkeypatch):
                          ["bookings", "clear", "Queue"])
 
   assert result.exit_code == 0
-  assert fake.calls == [("clear_bookings", "Queue")]
+  assert fake.calls == [("clear_bookings", "Queue", None, None)]
+  assert result.stdout == ""
+
+
+def test_cli_clears_bookings_with_date_range(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["bookings", "clear", "Queue",
+                          "--from", "2026-04-06",
+                          "--until", "2026-04-06"])
+
+  assert result.exit_code == 0
+  assert fake.calls == [
+    ("clear_bookings", "Queue", "2026-04-06", "2026-04-06")
+  ]
   assert result.stdout == ""
 
 
@@ -2970,8 +3019,8 @@ def test_cli_booking_and_assistant_mutations_log_errors(monkeypatch, caplog,
       self.calls.append(("upsert_bookings", queue, bookings))
       raise RuntimeError("boom")
 
-    def clear_bookings(self, queue):
-      self.calls.append(("clear_bookings", queue))
+    def clear_bookings(self, queue, from_date=None, until=None):
+      self.calls.append(("clear_bookings", queue, from_date, until))
       raise RuntimeError("boom")
 
     def add_assistant(self, queue, username):
