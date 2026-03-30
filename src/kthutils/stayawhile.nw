@@ -11,6 +11,7 @@ second, a Typer CLI rooted at [[kthutils stayawhile]].
 We extract the Python module from the following root chunk.
 <<stayawhile.py>>=
 import json
+import logging
 import sys
 import typer
 try:
@@ -770,6 +771,13 @@ def list_teachers(self, queue):
                        use_api_key=True)
 
 
+def list_checked_in(self, queue):
+  """Return assistants currently checked in for [[queue]]."""
+  return self._request("GET",
+                       self._queue_path(queue, "checkin"),
+                       use_api_key=True)
+
+
 def checkin(self, queue):
   """Check the caller in as assistant for [[queue]]."""
   return self._request("POST",
@@ -818,6 +826,7 @@ def test_identity_queue_and_presence_requests():
     FakeResponse(json_data=[{"name": "Queue"}]),
     FakeResponse(json_data=[{"name": "Queue"}]),
     FakeResponse(json_data=[{"username": "teacher1"}]),
+    FakeResponse(json_data=[{"username": "teacher1"}]),
     FakeResponse(json_data={"checked_in": True}),
     FakeResponse(status_code=204),
   ])
@@ -834,6 +843,7 @@ def test_identity_queue_and_presence_requests():
   assert sa.list_queues() == [{"name": "Queue"}]
   assert sa.list_my_queues() == [{"name": "Queue"}]
   assert sa.list_teachers("Queue") == [{"username": "teacher1"}]
+  assert sa.list_checked_in("Queue") == [{"username": "teacher1"}]
   assert sa.checkin("Queue") == {"checked_in": True}
   assert sa.checkout("Queue") is None
 
@@ -844,8 +854,9 @@ def test_identity_queue_and_presence_requests():
   assert fake_http.requests[1]["headers"] is None
   assert fake_http.requests[2]["headers"] == {"Authorization": "Token token"}
   assert fake_http.requests[3]["headers"] == {"Authorization": "Token token"}
-  assert fake_http.requests[4]["method"] == "POST"
-  assert fake_http.requests[5]["method"] == "DELETE"
+  assert fake_http.requests[4]["headers"] == {"Authorization": "Token token"}
+  assert fake_http.requests[5]["method"] == "POST"
+  assert fake_http.requests[6]["method"] == "DELETE"
 @
 
 
@@ -1076,6 +1087,7 @@ endpoint and the username-specific removal path.
 def test_assistant_requests():
   fake_http = FakeHTTPSession([
     FakeResponse(json_data=[{"username": "abcde"}]),
+    FakeResponse(json_data=[{"username": "checkedin"}]),
     FakeResponse(json_data={"username": "abcde"}),
     FakeResponse(status_code=204),
   ])
@@ -1084,12 +1096,14 @@ def test_assistant_requests():
       session=fake_http)
 
   assert sa.list_assistants("Queue") == [{"username": "abcde"}]
+  assert sa.list_checked_in("Queue") == [{"username": "checkedin"}]
   assert sa.add_assistant("Queue", "abcde") == {"username": "abcde"}
   assert sa.remove_assistant("Queue", "abcde") is None
 
   assert fake_http.requests[0]["url"].endswith("/assistants")
-  assert fake_http.requests[1]["json"] == {"username": "abcde"}
-  assert fake_http.requests[2]["url"].endswith("/assistants/abcde")
+  assert fake_http.requests[1]["url"].endswith("/checkin")
+  assert fake_http.requests[2]["json"] == {"username": "abcde"}
+  assert fake_http.requests[3]["url"].endswith("/assistants/abcde")
 @
 
 
@@ -2192,6 +2206,12 @@ def cli_list_assistants(queue: Annotated[str, queue_arg]):
   print_records(get_session().list_assistants(queue), ASSISTANT_FIELDS)
 
 
+@assistants_cli.command(name="checked-in")
+def cli_list_checked_in(queue: Annotated[str, queue_arg]):
+  """List assistants currently checked in for one queue."""
+  print_records(get_session().list_checked_in(queue), ASSISTANT_FIELDS)
+
+
 @assistants_cli.command(name="rm")
 def cli_remove_assistant(queue: Annotated[str, queue_arg],
                          username: Annotated[str, username_arg]):
@@ -2253,20 +2273,21 @@ def cli_interaction_session_stats(queue: Annotated[str, queue_arg]):
 @cli.command(name="checkin")
 def cli_checkin(queue: Annotated[str, queue_arg]):
   """Check in as assistant for one queue."""
-  result = get_session().checkin(queue)
-  if result is None:
-    result = {"queue": queue, "checked_in": True}
-  print_json(result)
+  try:
+    get_session().checkin(queue)
+  except Exception as err:
+    logging.error("checkin failed for %s: %s", queue, err)
+    raise typer.Exit(code=1)
 
 
 @cli.command(name="checkout")
 def cli_checkout(queue: Annotated[str, queue_arg]):
   """Check out as assistant for one queue."""
-  session = get_session()
-  result = session.checkout(queue)
-  if result is None:
-    result = {"queue": queue, "checked_out": True}
-  print_json(result)
+  try:
+    get_session().checkout(queue)
+  except Exception as err:
+    logging.error("checkout failed for %s: %s", queue, err)
+    raise typer.Exit(code=1)
 
 
 @cli.command(name="view")
@@ -2371,6 +2392,10 @@ class FakeStayawhileSession:
   def list_assistants(self, queue):
     self.calls.append(("list_assistants", queue))
     return [{"username": "abcde"}]
+
+  def list_checked_in(self, queue):
+    self.calls.append(("list_checked_in", queue))
+    return [{"username": "checkedin"}]
 
   def add_assistant(self, queue, username):
     self.calls.append(("add_assistant", queue, username))
@@ -2754,6 +2779,21 @@ def test_cli_reads_interaction_session_stats(monkeypatch):
   }
 
 
+def test_cli_lists_checked_in_assistants(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["assistants", "checked-in", "Queue"])
+
+  assert result.exit_code == 0
+  assert fake.calls == [("list_checked_in", "Queue")]
+  assert parse_csv_output(result.stdout) == [
+    ["username"],
+    ["checkedin"],
+  ]
+
+
 def test_cli_checkin_and_checkout(monkeypatch):
   fake = FakeStayawhileSession()
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
@@ -2767,14 +2807,30 @@ def test_cli_checkin_and_checkout(monkeypatch):
     ("checkin", "Queue"),
     ("checkout", "Queue"),
   ]
-  assert json.loads(checkin.stdout) == {
-    "queue": "Queue",
-    "checked_in": True,
-  }
-  assert json.loads(checkout.stdout) == {
-    "queue": "Queue",
-    "checked_out": True,
-  }
+  assert checkin.stdout == ""
+  assert checkout.stdout == ""
+
+
+def test_cli_checkin_and_checkout_log_errors(monkeypatch, caplog):
+  class FailingSession(FakeStayawhileSession):
+    def checkin(self, queue):
+      self.calls.append(("checkin", queue))
+      raise RuntimeError("boom")
+
+    def checkout(self, queue):
+      self.calls.append(("checkout", queue))
+      raise RuntimeError("boom")
+
+  fake = FailingSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  checkin = runner.invoke(kthutils.stayawhile.cli, ["checkin", "Queue"])
+  checkout = runner.invoke(kthutils.stayawhile.cli, ["checkout", "Queue"])
+
+  assert checkin.exit_code == 1
+  assert checkout.exit_code == 1
+  assert "checkin failed for Queue: boom" in caplog.text
+  assert "checkout failed for Queue: boom" in caplog.text
 
 
 def test_cli_reads_interaction_log(monkeypatch):
