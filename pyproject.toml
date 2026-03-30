@@ -15,8 +15,8 @@ dependencies = [
   "rich>=13.3.2,<14.0",
   "openpyxl>=3.1.2,<4.0",
   "typing-extensions>=4.9.0,<5.0; python_version < '3.9'",
-  "ladok3 (>=5.13,<6.0)",
-  "weblogin (>=1.17,<2.0)"
+  "ladok3 (>=5.14,<6.0)",
+  "weblogin (>=1.19,<2.0)"
 ]
 
 [project.urls]
