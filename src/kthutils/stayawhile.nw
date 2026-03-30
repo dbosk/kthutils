@@ -66,6 +66,7 @@ import csv
 import datetime
 import json
 import pytest
+import types
 import typer.testing
 import kthutils.stayawhile
 
@@ -509,15 +510,16 @@ def test_default_session_uses_shared_browser_session(monkeypatch):
     def __init__(self, base_url):
       self.base_url = base_url
 
-  monkeypatch.setattr(kthutils.stayawhile.ladok3.session,
-                      "session",
-                      fake_http)
-  monkeypatch.setattr(kthutils.stayawhile.ladok3.cli,
-                      "load_credentials",
-                      lambda: (None, {
-                        "username": "alice",
-                        "password": "secret",
-                      }))
+  monkeypatch.setattr(
+      kthutils.stayawhile,
+      "ladok3",
+      types.SimpleNamespace(
+          session=types.SimpleNamespace(session=fake_http),
+          cli=types.SimpleNamespace(
+              load_credentials=lambda: (None, {
+                "username": "alice",
+                "password": "secret",
+              }))))
   monkeypatch.setattr(kthutils.stayawhile.weblogin.kth,
                       "UGlogin",
                       FakeUGlogin)
@@ -555,15 +557,16 @@ def test_default_session_reuses_equal_auth_handler(monkeypatch):
     def __eq__(self, other):
       return type(self) is type(other) and self.base_url == other.base_url
 
-  monkeypatch.setattr(kthutils.stayawhile.ladok3.session,
-                      "session",
-                      fake_http)
-  monkeypatch.setattr(kthutils.stayawhile.ladok3.cli,
-                      "load_credentials",
-                      lambda: (None, {
-                        "username": "alice",
-                        "password": "secret",
-                      }))
+  monkeypatch.setattr(
+      kthutils.stayawhile,
+      "ladok3",
+      types.SimpleNamespace(
+          session=types.SimpleNamespace(session=fake_http),
+          cli=types.SimpleNamespace(
+              load_credentials=lambda: (None, {
+                "username": "alice",
+                "password": "secret",
+              }))))
   monkeypatch.setattr(kthutils.stayawhile.weblogin.kth,
                       "UGlogin",
                       FakeUGlogin)
@@ -1906,6 +1909,18 @@ def print_inferred_records(data, *, show_ugkthid=False):
       return
 
   print_json(data, show_ugkthid=show_ugkthid)
+
+
+def extract_created_api_key(data):
+  """Return the newly created API key string from [[data]]."""
+  if not isinstance(data, dict):
+    raise ValueError(f"unexpected create-api-key response: {data!r}")
+
+  value = data.get("token")
+  if isinstance(value, str) and value:
+    return value
+
+  raise ValueError(f"create-api-key response lacks token: {data!r}")
 @
 
 Commands that return non-tabular data still use formatted JSON.
@@ -2124,15 +2139,21 @@ def cli_list_api_keys():
 @api_keys_cli.command(name="create")
 def cli_create_api_key(label: Annotated[Optional[str], label_arg] = None):
   """Create a new API key."""
-  print_json(get_session().create_api_key(label))
+  try:
+    print(extract_created_api_key(get_session().create_api_key(label)))
+  except Exception as err:
+    logging.error("api-key creation failed: %s", err)
+    raise typer.Exit(code=1)
 
 
 @api_keys_cli.command(name="rm")
 def cli_revoke_api_key(api_key_id: Annotated[str, api_key_id_arg]):
   """Revoke one API key."""
-  session = get_session()
-  session.revoke_api_key(api_key_id)
-  print_json({"revoked": api_key_id})
+  try:
+    get_session().revoke_api_key(api_key_id)
+  except Exception as err:
+    logging.error("api-key revoke failed for %s: %s", api_key_id, err)
+    raise typer.Exit(code=1)
 
 
 @bookings_cli.command(name="ls")
@@ -2361,7 +2382,7 @@ class FakeStayawhileSession:
 
   def create_api_key(self, label=None):
     self.calls.append(("create_api_key", label))
-    return {"label": label}
+    return {"label": label, "token": "secret-token"}
 
   def revoke_api_key(self, api_key_id):
     self.calls.append(("revoke_api_key", api_key_id))
@@ -2573,6 +2594,16 @@ def test_format_output_data_can_keep_ugkthid():
       show_ugkthid=True) == {"student_ugkthid": "u1abc123"}
 
 
+def test_extract_created_api_key_reads_token_field():
+  assert kthutils.stayawhile.extract_created_api_key(
+      {"token": "secret-token"}) == "secret-token"
+
+
+def test_extract_created_api_key_rejects_unusable_response():
+  with pytest.raises(ValueError, match="lacks token"):
+    kthutils.stayawhile.extract_created_api_key({"label": "Exam"})
+
+
 def test_stayawhile_help():
   result = runner.invoke(kthutils.stayawhile.cli, ["--help"])
   assert result.exit_code == 0
@@ -2626,6 +2657,52 @@ def test_cli_lists_api_keys(monkeypatch):
     ["1", "X1", "2026-03-27 14:38", "2026-04-01 09:15"],
   ]
   assert fake.calls == [("list_api_keys",)]
+
+
+def test_cli_creates_api_key_printing_only_key(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["api-keys", "create", "Exam"])
+
+  assert result.exit_code == 0
+  assert fake.calls == [("create_api_key", "Exam")]
+  assert result.stdout == "secret-token\n"
+
+
+def test_cli_revoke_api_key_is_silent_on_success(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli, ["api-keys", "rm", "2"])
+
+  assert result.exit_code == 0
+  assert fake.calls == [("revoke_api_key", "2")]
+  assert result.stdout == ""
+
+
+def test_cli_api_key_commands_log_errors(monkeypatch, caplog):
+  class FailingSession(FakeStayawhileSession):
+    def create_api_key(self, label=None):
+      self.calls.append(("create_api_key", label))
+      raise RuntimeError("boom")
+
+    def revoke_api_key(self, api_key_id):
+      self.calls.append(("revoke_api_key", api_key_id))
+      raise RuntimeError("boom")
+
+  fake = FailingSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  create = runner.invoke(kthutils.stayawhile.cli,
+                         ["api-keys", "create", "Exam"])
+  revoke = runner.invoke(kthutils.stayawhile.cli, ["api-keys", "rm", "2"])
+
+  assert create.exit_code == 1
+  assert revoke.exit_code == 1
+  assert "api-key creation failed: boom" in caplog.text
+  assert "api-key revoke failed for 2: boom" in caplog.text
 
 
 def test_cli_lists_bookings_without_ugkthid(monkeypatch):
