@@ -284,7 +284,7 @@ def session_token(self, session, refresh=False):
 
 
 def authorization_headers(self, session, headers=None, refresh=False):
-  """Return [[headers]] merged with a fresh Stay A While token."""
+  """Return headers merged with a fresh Stay A While token."""
   merged_headers = dict(headers or {})
   merged_headers["Authorization"] = \
       f"Token {self.session_token(session, refresh=refresh)}"
@@ -328,7 +328,7 @@ if self.__uglogin_handler is None and session is None:
       credentials["username"],
       credentials["password"],
       self.base_url + "/login")
-if self.__auth_handler is None and session is None:
+if self.__auth_handler is None:
   self.__auth_handler = StayawhileLogin(self.base_url)
 if self.__uglogin_handler is not None:
   self.__session.add_handler(self.__uglogin_handler)
