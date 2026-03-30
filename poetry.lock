@@ -499,14 +499,14 @@ testing = ["pytest (>=6)", "pytest-checkdocs (>=2.4)", "pytest-cov", "pytest-ena
 
 [[package]]
 name = "ladok3"
-version = "5.14"
+version = "5.15"
 description = "Python wrapper and CLI for the LADOK3 REST API."
 optional = false
 python-versions = "<4.0,>=3.8"
 groups = ["main"]
 files = [
-    {file = "ladok3-5.14-py3-none-any.whl", hash = "sha256:d6b1d1ac8c065771a7a02693293dc63926de1da4f8d32a3f262e906e95e2e0e9"},
-    {file = "ladok3-5.14.tar.gz", hash = "sha256:fea6dfd0a0d9f07a39d0c0127cb1db588c768ed9c05778368af97e9b86e37780"},
+    {file = "ladok3-5.15-py3-none-any.whl", hash = "sha256:554b0532da147ef81b18ad59e384081deb35124788f6db5ada68bedcf6704b4b"},
+    {file = "ladok3-5.15.tar.gz", hash = "sha256:7d25b95c5562decdac650044ab1e0b97d82d2cf213f90d092883dd91c520227e"},
 ]
 
 [package.dependencies]
@@ -517,7 +517,7 @@ cryptography = ">=41.0.3,<42.0.0"
 keyring = ">=24.2.0,<25.0.0"
 requests = ">=2.31.0,<3.0.0"
 urllib3 = ">=2.0"
-weblogin = ">=1.18,<2.0"
+weblogin = ">=1.19,<2.0"
 
 [[package]]
 name = "lxml"
@@ -1052,4 +1052,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.8,<4.0"
-content-hash = "371a3f896f4dc3a7f8ed614d73bb886e4af5e66c343e91c8f22cea507208945e"
+content-hash = "d933f2bdce036d2d3f9fac3d3e7216ad590c7eb8acbed0e59dbc8e770bb06b16"
