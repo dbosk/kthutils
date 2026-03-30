@@ -2255,19 +2255,19 @@ def cli_queue_log(queue: Annotated[str, queue_arg],
 def cli_session_stats(queue: Annotated[str, queue_arg],
                       date: Annotated[Optional[str], date_opt] = None):
   """Read session statistics for one queue."""
-  print_json(get_session().get_session_stats(queue, date=date))
+  print_inferred_records(get_session().get_session_stats(queue, date=date))
 
 
 @stats_cli.command(name="assistants")
 def cli_assistant_stats(queue: Annotated[str, queue_arg]):
   """Read assistant statistics for one queue."""
-  print_json(get_session().get_assistant_stats(queue))
+  print_inferred_records(get_session().get_assistant_stats(queue))
 
 
 @stats_cli.command(name="interactions")
 def cli_interaction_session_stats(queue: Annotated[str, queue_arg]):
   """Read interaction-session statistics for one queue."""
-  print_json(get_session().get_interaction_session_stats(queue))
+  print_inferred_records(get_session().get_interaction_session_stats(queue))
 
 
 @cli.command(name="checkin")
@@ -2742,11 +2742,10 @@ def test_cli_reads_session_stats(monkeypatch):
 
   assert result.exit_code == 0
   assert fake.calls == [("get_session_stats", "Queue", "2026-03-30")]
-  assert json.loads(result.stdout) == {
-    "queue": "Queue",
-    "date": "2026-03-30",
-    "sessions": 2,
-  }
+  assert parse_csv_output(result.stdout) == [
+    ["queue", "date", "sessions"],
+    ["Queue", "2026-03-30", "2"],
+  ]
 
 
 def test_cli_reads_assistant_stats(monkeypatch):
@@ -2758,10 +2757,10 @@ def test_cli_reads_assistant_stats(monkeypatch):
 
   assert result.exit_code == 0
   assert fake.calls == [("get_assistant_stats", "Queue")]
-  assert json.loads(result.stdout) == {
-    "queue": "Queue",
-    "assistants": 1,
-  }
+  assert parse_csv_output(result.stdout) == [
+    ["queue", "assistants"],
+    ["Queue", "1"],
+  ]
 
 
 def test_cli_reads_interaction_session_stats(monkeypatch):
@@ -2773,10 +2772,10 @@ def test_cli_reads_interaction_session_stats(monkeypatch):
 
   assert result.exit_code == 0
   assert fake.calls == [("get_interaction_session_stats", "Queue")]
-  assert json.loads(result.stdout) == {
-    "queue": "Queue",
-    "interaction_sessions": 3,
-  }
+  assert parse_csv_output(result.stdout) == [
+    ["queue", "interaction_sessions"],
+    ["Queue", "3"],
+  ]
 
 
 def test_cli_lists_checked_in_assistants(monkeypatch):
