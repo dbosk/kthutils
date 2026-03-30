@@ -716,7 +716,9 @@ def test_api_key_requests():
 
   fake_http = FakeHTTPSession([
     FakeResponse(json_data=[{"id": 1}]),
-    FakeResponse(json_data={"id": 2, "label": "Exam"}),
+    FakeResponse(json_data={"id": 2,
+                            "label": "Exam",
+                            "token": "secret-token"}),
     FakeResponse(status_code=204),
   ])
   auth_handler = FakeAuthHandler()
@@ -729,7 +731,10 @@ def test_api_key_requests():
       auth_handler=auth_handler)
 
   assert sa.list_api_keys() == [{"id": 1}]
-  assert sa.create_api_key("Exam") == {"id": 2, "label": "Exam"}
+  created = sa.create_api_key("Exam")
+  assert created["id"] == 2
+  assert created["label"] == "Exam"
+  assert created["token"] == "secret-token"
   assert sa.revoke_api_key("2") is None
 
   session_auth = {"Authorization": "Token session-jwt"}
@@ -1928,8 +1933,10 @@ Commands that return non-tabular data still use formatted JSON.
 TIMESTAMP_FIELDS = {
   "booking_time",
   "created",
+  "created_at",
   "ended_at",
   "expires",
+  "expires_at",
   "help_started_at",
   "joined_at",
   "slot_time",
@@ -2133,7 +2140,8 @@ def cli_user():
 def cli_list_api_keys():
   """List the caller's API keys."""
   print_records(get_session().list_api_keys(),
-                ["id", "label", "created", "expires"])
+                ["id", "label", "created_at", "expires_at"],
+                headers=["id", "label", "created", "expires"])
 
 
 @api_keys_cli.command(name="create")
@@ -2376,8 +2384,8 @@ class FakeStayawhileSession:
     return [{
       "id": 1,
       "label": "X1",
-      "created": "2026-03-27T14:38:00Z",
-      "expires": "2026-04-01T09:15:00Z",
+      "created_at": "2026-03-27T14:38:00Z",
+      "expires_at": "2026-04-01T09:15:00Z",
     }]
 
   def create_api_key(self, label=None):
