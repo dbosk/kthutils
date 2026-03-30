@@ -2177,20 +2177,23 @@ def cli_list_bookings(queue: Annotated[str, queue_arg],
 def cli_upsert_bookings(queue: Annotated[str, queue_arg],
                         source: Annotated[str, bookings_source_arg]):
   """Upload bookings from a JSON document."""
-  session = get_session()
-  bookings = load_json_input(source)
-  result = session.upsert_bookings(queue, bookings)
-  if result is None:
-    result = {"queue": queue, "uploaded": len(bookings)}
-  print_json(result)
+  try:
+    session = get_session()
+    bookings = load_json_input(source)
+    session.upsert_bookings(queue, bookings)
+  except Exception as err:
+    logging.error("booking upload failed for %s: %s", queue, err)
+    raise typer.Exit(code=1)
 
 
 @bookings_cli.command(name="clear")
 def cli_clear_bookings(queue: Annotated[str, queue_arg]):
   """Delete all bookings for one queue."""
-  session = get_session()
-  session.clear_bookings(queue)
-  print_json({"queue": queue, "cleared": True})
+  try:
+    get_session().clear_bookings(queue)
+  except Exception as err:
+    logging.error("booking clear failed for %s: %s", queue, err)
+    raise typer.Exit(code=1)
 
 
 @booking_cli.command(name="mine")
@@ -2226,7 +2229,14 @@ def cli_list_teachers(queue: Annotated[str, queue_arg]):
 def cli_add_assistant(queue: Annotated[str, queue_arg],
                       username: Annotated[str, username_arg]):
   """Add one assistant to a queue."""
-  print_json(get_session().add_assistant(queue, username))
+  try:
+    get_session().add_assistant(queue, username)
+  except Exception as err:
+    logging.error("assistant add failed for %s/%s: %s",
+                  queue,
+                  username,
+                  err)
+    raise typer.Exit(code=1)
 
 
 @assistants_cli.command(name="ls")
@@ -2245,9 +2255,14 @@ def cli_list_checked_in(queue: Annotated[str, queue_arg]):
 def cli_remove_assistant(queue: Annotated[str, queue_arg],
                          username: Annotated[str, username_arg]):
   """Remove one assistant from a queue."""
-  session = get_session()
-  session.remove_assistant(queue, username)
-  print_json({"queue": queue, "removed": username})
+  try:
+    get_session().remove_assistant(queue, username)
+  except Exception as err:
+    logging.error("assistant remove failed for %s/%s: %s",
+                  queue,
+                  username,
+                  err)
+    raise typer.Exit(code=1)
 
 
 @log_cli.command(name="interactions")
@@ -2800,7 +2815,19 @@ def test_cli_upserts_bookings(monkeypatch, tmp_path):
     "Queue",
     [{"ugkthid": "u1abc123", "slot_time": "2026-03-01T10:00:00Z"}],
   )]
-  assert json.loads(result.stdout) == {"updated": 1}
+  assert result.stdout == ""
+
+
+def test_cli_clears_bookings_silently(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["bookings", "clear", "Queue"])
+
+  assert result.exit_code == 0
+  assert fake.calls == [("clear_bookings", "Queue")]
+  assert result.stdout == ""
 
 
 def test_cli_lists_assistants(monkeypatch):
@@ -2815,6 +2842,25 @@ def test_cli_lists_assistants(monkeypatch):
     ["username"],
     ["abcde"],
   ]
+
+
+def test_cli_adds_and_removes_assistants_silently(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  add = runner.invoke(kthutils.stayawhile.cli,
+                      ["assistants", "add", "Queue", "abcde"])
+  remove = runner.invoke(kthutils.stayawhile.cli,
+                         ["assistants", "rm", "Queue", "abcde"])
+
+  assert add.exit_code == 0
+  assert remove.exit_code == 0
+  assert fake.calls == [
+    ("add_assistant", "Queue", "abcde"),
+    ("remove_assistant", "Queue", "abcde"),
+  ]
+  assert add.stdout == ""
+  assert remove.stdout == ""
 
 
 def test_cli_reads_session_stats(monkeypatch):
@@ -2915,6 +2961,51 @@ def test_cli_checkin_and_checkout_log_errors(monkeypatch, caplog):
   assert checkout.exit_code == 1
   assert "checkin failed for Queue: boom" in caplog.text
   assert "checkout failed for Queue: boom" in caplog.text
+
+
+def test_cli_booking_and_assistant_mutations_log_errors(monkeypatch, caplog,
+                                                        tmp_path):
+  class FailingSession(FakeStayawhileSession):
+    def upsert_bookings(self, queue, bookings):
+      self.calls.append(("upsert_bookings", queue, bookings))
+      raise RuntimeError("boom")
+
+    def clear_bookings(self, queue):
+      self.calls.append(("clear_bookings", queue))
+      raise RuntimeError("boom")
+
+    def add_assistant(self, queue, username):
+      self.calls.append(("add_assistant", queue, username))
+      raise RuntimeError("boom")
+
+    def remove_assistant(self, queue, username):
+      self.calls.append(("remove_assistant", queue, username))
+      raise RuntimeError("boom")
+
+  fake = FailingSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+  bookings_file = tmp_path / "bookings.json"
+  bookings_file.write_text(
+      '[{"ugkthid": "u1abc123", "slot_time": "2026-03-01T10:00:00Z"}]')
+
+  upsert = runner.invoke(kthutils.stayawhile.cli,
+                         ["bookings", "upsert", "Queue",
+                          str(bookings_file)])
+  clear = runner.invoke(kthutils.stayawhile.cli,
+                        ["bookings", "clear", "Queue"])
+  add = runner.invoke(kthutils.stayawhile.cli,
+                      ["assistants", "add", "Queue", "abcde"])
+  remove = runner.invoke(kthutils.stayawhile.cli,
+                         ["assistants", "rm", "Queue", "abcde"])
+
+  assert upsert.exit_code == 1
+  assert clear.exit_code == 1
+  assert add.exit_code == 1
+  assert remove.exit_code == 1
+  assert "booking upload failed for Queue: boom" in caplog.text
+  assert "booking clear failed for Queue: boom" in caplog.text
+  assert "assistant add failed for Queue/abcde: boom" in caplog.text
+  assert "assistant remove failed for Queue/abcde: boom" in caplog.text
 
 
 def test_cli_reads_interaction_log(monkeypatch):
