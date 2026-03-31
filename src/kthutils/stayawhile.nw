@@ -938,11 +938,16 @@ def test_statistics_requests():
 
 Teachers can list, upload, and clear bookings for a queue, while any user can
 inspect their own booking.
+The booking payload now accepts either a [[u1...]] KTH id or a plain username
+in the [[ugkthid]] field, and [[entry_type]] remains optional with
+[["present"]] as the documented default.
 Clearing all bookings is rarely intended---a teacher usually wants to remove
 one day's bookings (for instance, after cancelling a lab session) without
 affecting future dates.
 The clear endpoint therefore accepts optional [[from]] and [[until]] date
 parameters (YYYY-MM-DD) that restrict deletion to a specific date range.
+When the server reports how many future bookings it removed, we pass that JSON
+response through unchanged.
 <<[[StayawhileSession]] methods>>=
 def list_bookings(self, queue):
   """Return the bookings for [[queue]]."""
@@ -997,7 +1002,7 @@ def test_booking_requests():
   fake_http = FakeHTTPSession([
     FakeResponse(json_data=[{"ugkthid": "u1abc123"}]),
     FakeResponse(json_data={"updated": 1}),
-    FakeResponse(status_code=204),
+    FakeResponse(json_data={"deleted": 3}),
     FakeResponse(json_data={"slot_time": "2026-03-01T10:00:00Z"}),
   ])
   auth_handler = FakeAuthHandler()
@@ -1013,7 +1018,7 @@ def test_booking_requests():
 
   assert sa.list_bookings("Queue") == [{"ugkthid": "u1abc123"}]
   assert sa.upsert_bookings("Queue", bookings) == {"updated": 1}
-  assert sa.clear_bookings("Queue") is None
+  assert sa.clear_bookings("Queue") == {"deleted": 3}
   assert sa.get_my_booking("Queue") == {
     "slot_time": "2026-03-01T10:00:00Z"
   }
@@ -1042,6 +1047,17 @@ def test_clear_bookings_passes_date_params():
     "from": "2026-04-06",
     "until": "2026-04-06",
   }
+
+
+def test_clear_bookings_can_return_deleted_count():
+  fake_http = FakeHTTPSession([
+    FakeResponse(json_data={"deleted": 2}),
+  ])
+  sa = kthutils.stayawhile.StayawhileSession(
+      api_key="token",
+      session=fake_http)
+
+  assert sa.clear_bookings("Queue") == {"deleted": 2}
 
 
 def test_token_endpoint_requires_api_key(monkeypatch):
@@ -1377,7 +1393,7 @@ def apply_booking_promotion(active_queue, bookings, now=None):
       continue
 
     entry_type = "help" if current.get("help") else "present"
-    booking_type = booking.get("entry_type", "")
+    booking_type = booking.get("entry_type") or "present"
     if entry_type != booking_type:
       warnings.append(
           f"{current.get('username', ugkthid)} booked for "
@@ -1572,8 +1588,8 @@ def test_queue_view_warnings_for_inconsistent_counts():
 
 The promotion helper is easier to test on its own than only through the final
 queue view.
-These cases pin down the timing window, the type check, and the stable sort
-rules among several promoted students.
+These cases pin down the timing window, the type check, the documented default
+[[entry_type]], and the stable sort rules among several promoted students.
 <<test functions>>=
 def test_apply_booking_promotion_without_bookings_keeps_order():
   queue, warnings = kthutils.stayawhile.apply_booking_promotion(
@@ -1674,6 +1690,27 @@ def test_apply_booking_promotion_warns_on_type_mismatch():
   assert [entry["username"] for entry in queue] == ["ada"]
   assert "booking_time" not in queue[0]
   assert warnings == ["ada booked for present but queued for help"]
+
+
+def test_apply_booking_promotion_defaults_missing_type_to_present():
+  queue, warnings = kthutils.stayawhile.apply_booking_promotion(
+      [{
+        "username": "ada",
+        "ugkthid": "u1ada",
+        "time": "2026-03-01T10:00:00Z",
+        "help": False,
+        "_event_index": 0,
+      }],
+      [{
+        "ugkthid": "u1ada",
+        "slot_time": "2026-03-01T10:03:00Z",
+      }],
+      now=datetime.datetime(2026, 3, 1, 10, 0,
+                            tzinfo=datetime.timezone.utc))
+
+  assert [entry["username"] for entry in queue] == ["ada"]
+  assert queue[0]["booking_time"] == "2026-03-01T10:03:00Z"
+  assert warnings == []
 
 
 def test_apply_booking_promotion_sorts_promoted_by_slot_then_join_time():
@@ -2073,9 +2110,13 @@ username_arg = typer.Argument(help="KTH login name, without @kth.se.")
 api_key_id_arg = typer.Argument(help="Identifier of the API key to revoke.")
 bookings_source_arg = typer.Argument(
     help=("JSON file with bookings, or - to read JSON from stdin. "
+          "Use ugkthid for either a u1... id or a plain username. "
+          "entry_type is optional and defaults to present. "
           "Example: "
           "[{\"ugkthid\":\"u1abc123\","
-          "\"slot_time\":\"2026-03-01T10:00:00Z\","
+          "\"slot_time\":\"2026-03-01T10:00:00Z\"},"
+          "{\"ugkthid\":\"alba\","
+          "\"slot_time\":\"2026-03-01T10:15:00Z\","
           "\"entry_type\":\"help\"}]."))
 label_arg = typer.Argument(help="Optional label for the new API key.")
 from_opt = typer.Option("--from",
@@ -2661,6 +2702,10 @@ def test_bookings_upsert_help_mentions_json_example():
 
   assert result.exit_code == 0
   assert "JSON file with bookings" in result.stdout
+  assert "plain" in result.stdout
+  assert "username" in result.stdout
+  assert "defaults to" in result.stdout
+  assert "present" in result.stdout
   assert "Example:" in result.stdout
   assert '"ugkthid":"u1abc123"' in result.stdout
 
