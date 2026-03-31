@@ -14,9 +14,15 @@ README.md: doc/abstract.tex
 	pandoc -o $@ $< -t gfm
 	${EDITOR} $@
 
-publish: all
+publish: publish-pypi publish-github
+
+.PHONY: publish-pypi publish-github
+
+publish-pypi:
 	poetry build
 	poetry publish
+
+publish-github:
 	git push
 	gh release create -t v${version} v${version} \
 		doc/kthutils.pdf \
