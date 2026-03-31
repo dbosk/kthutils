@@ -779,14 +779,22 @@ def list_queues(self):
 
 \subsection{Teacher-facing metadata and presence}
 
-The teacher-facing queue metadata, presence, and filtered-queue endpoints
-continue to use the long-lived API key.
-The check-in endpoint uses all three HTTP methods: GET for the current list,
-POST to check in, and DELETE to check out.
+The API documents [[/api/queues/mine]] for the queues where the current API-key
+owner is teacher, so we call that endpoint directly instead of reconstructing
+the result from identity data.
+Assistant presence has likewise moved from [[checkin]] to [[on_duty]].
+For now we only switch the read-side command to the documented [[GET on_duty]]
+endpoint; the write-side check-in and check-out commands stay on their current
+endpoint until the corresponding POST and DELETE semantics are confirmed.
+Queue locking lets a teacher prevent new students from joining while still
+serving those already in line.
+Unlocking also clears all TA check-ins, so assistants must re-check-in for
+the new session---a useful side-effect when transitioning between lab groups.
+The lock endpoint uses [[POST]] to lock and [[DELETE]] to unlock.
 <<[[StayawhileSession]] methods>>=
 def list_my_queues(self):
   """Return queues where the caller is a teacher."""
-  return self._request("GET", "/api/queues/filtered", use_api_key=True)
+  return self._request("GET", "/api/queues/mine", use_api_key=True)
 
 
 def list_teachers(self, queue):
@@ -797,9 +805,26 @@ def list_teachers(self, queue):
 
 
 def list_checked_in(self, queue):
-  """Return assistants currently checked in for [[queue]]."""
+  """Return assistants currently on duty for [[queue]]."""
   return self._request("GET",
-                       self._queue_path(queue, "checkin"),
+                       self._queue_path(queue, "on_duty"),
+                       use_api_key=True)
+
+
+def lock_queue(self, queue):
+  """Lock [[queue]] so new users cannot join it."""
+  return self._request("POST",
+                       self._queue_path(queue, "lock"),
+                       use_api_key=True)
+
+
+def unlock_queue(self, queue):
+  """Unlock [[queue]] so new users can join it.
+
+  Also clears all TA check-ins for the queue.
+  """
+  return self._request("DELETE",
+                       self._queue_path(queue, "lock"),
                        use_api_key=True)
 
 
@@ -815,6 +840,8 @@ def checkout(self, queue):
   return self._request("DELETE",
                        self._queue_path(queue, "checkin"),
                        use_api_key=True)
+
+
 @
 
 These endpoints are simple, but they cover all three authentication modes.
@@ -822,7 +849,11 @@ That makes them a good regression test for the routing inside [[_request]].
 <<test functions>>=
 def test_identity_queue_and_presence_requests():
   fake_http = FakeHTTPSession([
-    FakeResponse(json_data={"username": "alice", "ugkthid": "u1alice"}),
+    FakeResponse(json_data={
+      "username": "alice",
+      "ugkthid": "u1alice",
+      "teacher_in": ["Queue"],
+    }),
     FakeResponse(json_data=[{"name": "Queue"}]),
     FakeResponse(json_data=[{"name": "Queue"}]),
     FakeResponse(json_data=[{"username": "teacher1"}]),
@@ -839,7 +870,11 @@ def test_identity_queue_and_presence_requests():
       uglogin_handler=uglogin_handler,
       auth_handler=auth_handler)
 
-  assert sa.get_user() == {"username": "alice", "ugkthid": "u1alice"}
+  assert sa.get_user() == {
+    "username": "alice",
+    "ugkthid": "u1alice",
+    "teacher_in": ["Queue"],
+  }
   assert sa.list_queues() == [{"name": "Queue"}]
   assert sa.list_my_queues() == [{"name": "Queue"}]
   assert sa.list_teachers("Queue") == [{"username": "teacher1"}]
@@ -855,8 +890,33 @@ def test_identity_queue_and_presence_requests():
   assert fake_http.requests[2]["headers"] == {"Authorization": "Token token"}
   assert fake_http.requests[3]["headers"] == {"Authorization": "Token token"}
   assert fake_http.requests[4]["headers"] == {"Authorization": "Token token"}
+  assert fake_http.requests[2]["url"].endswith("/api/queues/mine")
+  assert fake_http.requests[3]["url"].endswith("/teachers")
+  assert fake_http.requests[4]["url"].endswith("/on_duty")
   assert fake_http.requests[5]["method"] == "POST"
+  assert fake_http.requests[5]["url"].endswith("/checkin")
   assert fake_http.requests[6]["method"] == "DELETE"
+  assert fake_http.requests[6]["url"].endswith("/checkin")
+
+
+def test_queue_lock_requests():
+  fake_http = FakeHTTPSession([
+    FakeResponse(status_code=204),
+    FakeResponse(status_code=204),
+  ])
+  sa = kthutils.stayawhile.StayawhileSession(
+      api_key="token",
+      session=fake_http)
+
+  sa.lock_queue("Queue Name")
+  sa.unlock_queue("Queue Name")
+
+  assert fake_http.requests[0]["method"] == "POST"
+  assert fake_http.requests[0]["url"].endswith("/Queue%20Name/lock")
+  assert fake_http.requests[0]["headers"] == {"Authorization": "Token token"}
+  assert fake_http.requests[1]["method"] == "DELETE"
+  assert fake_http.requests[1]["url"].endswith("/Queue%20Name/lock")
+  assert fake_http.requests[1]["headers"] == {"Authorization": "Token token"}
 @
 
 
@@ -937,12 +997,17 @@ def test_statistics_requests():
 \section{Bookings}
 
 Teachers can list, upload, and clear bookings for a queue, while any user can
-inspect their own booking.
+inspect their own booking for one queue.
+The booking payload now accepts either a [[u1...]] KTH id or a plain username
+in the [[ugkthid]] field, and [[entry_type]] remains optional with
+[["present"]] as the documented default.
 Clearing all bookings is rarely intended---a teacher usually wants to remove
 one day's bookings (for instance, after cancelling a lab session) without
 affecting future dates.
 The clear endpoint therefore accepts optional [[from]] and [[until]] date
 parameters (YYYY-MM-DD) that restrict deletion to a specific date range.
+When the server reports how many future bookings it removed, we pass that JSON
+response through unchanged.
 <<[[StayawhileSession]] methods>>=
 def list_bookings(self, queue):
   """Return the bookings for [[queue]]."""
@@ -976,6 +1041,8 @@ def get_my_booking(self, queue):
   """Return the caller's booking for [[queue]]."""
   return self._request("GET",
                        self._queue_path(queue, "my_booking"))
+
+
 @
 
 The upload endpoint expects a JSON array.
@@ -996,8 +1063,9 @@ Let's verify that the bookings endpoints map to the documented requests.
 def test_booking_requests():
   fake_http = FakeHTTPSession([
     FakeResponse(json_data=[{"ugkthid": "u1abc123"}]),
-    FakeResponse(json_data={"updated": 1}),
-    FakeResponse(status_code=204),
+    FakeResponse(json_data={"bookings": [{"ugkthid": "u1abc123"}],
+                            "skipped": []}),
+    FakeResponse(json_data={"deleted": 3}),
     FakeResponse(json_data={"slot_time": "2026-03-01T10:00:00Z"}),
   ])
   auth_handler = FakeAuthHandler()
@@ -1012,8 +1080,10 @@ def test_booking_requests():
                "slot_time": "2026-03-01T10:00:00Z"}]
 
   assert sa.list_bookings("Queue") == [{"ugkthid": "u1abc123"}]
-  assert sa.upsert_bookings("Queue", bookings) == {"updated": 1}
-  assert sa.clear_bookings("Queue") is None
+  assert sa.upsert_bookings("Queue", bookings) == {
+    "bookings": [{"ugkthid": "u1abc123"}], "skipped": []
+  }
+  assert sa.clear_bookings("Queue") == {"deleted": 3}
   assert sa.get_my_booking("Queue") == {
     "slot_time": "2026-03-01T10:00:00Z"
   }
@@ -1042,6 +1112,17 @@ def test_clear_bookings_passes_date_params():
     "from": "2026-04-06",
     "until": "2026-04-06",
   }
+
+
+def test_clear_bookings_can_return_deleted_count():
+  fake_http = FakeHTTPSession([
+    FakeResponse(json_data={"deleted": 2}),
+  ])
+  sa = kthutils.stayawhile.StayawhileSession(
+      api_key="token",
+      session=fake_http)
+
+  assert sa.clear_bookings("Queue") == {"deleted": 2}
 
 
 def test_token_endpoint_requires_api_key(monkeypatch):
@@ -1100,7 +1181,6 @@ endpoint and the username-specific removal path.
 def test_assistant_requests():
   fake_http = FakeHTTPSession([
     FakeResponse(json_data=[{"username": "abcde"}]),
-    FakeResponse(json_data=[{"username": "checkedin"}]),
     FakeResponse(json_data={"username": "abcde"}),
     FakeResponse(status_code=204),
   ])
@@ -1109,14 +1189,12 @@ def test_assistant_requests():
       session=fake_http)
 
   assert sa.list_assistants("Queue") == [{"username": "abcde"}]
-  assert sa.list_checked_in("Queue") == [{"username": "checkedin"}]
   assert sa.add_assistant("Queue", "abcde") == {"username": "abcde"}
   assert sa.remove_assistant("Queue", "abcde") is None
 
   assert fake_http.requests[0]["url"].endswith("/assistants")
-  assert fake_http.requests[1]["url"].endswith("/checkin")
-  assert fake_http.requests[2]["json"] == {"username": "abcde"}
-  assert fake_http.requests[3]["url"].endswith("/assistants/abcde")
+  assert fake_http.requests[1]["json"] == {"username": "abcde"}
+  assert fake_http.requests[2]["url"].endswith("/assistants/abcde")
 @
 
 
@@ -1377,7 +1455,7 @@ def apply_booking_promotion(active_queue, bookings, now=None):
       continue
 
     entry_type = "help" if current.get("help") else "present"
-    booking_type = booking.get("entry_type", "")
+    booking_type = booking.get("entry_type") or "present"
     if entry_type != booking_type:
       warnings.append(
           f"{current.get('username', ugkthid)} booked for "
@@ -1572,8 +1650,8 @@ def test_queue_view_warnings_for_inconsistent_counts():
 
 The promotion helper is easier to test on its own than only through the final
 queue view.
-These cases pin down the timing window, the type check, and the stable sort
-rules among several promoted students.
+These cases pin down the timing window, the type check, the documented default
+[[entry_type]], and the stable sort rules among several promoted students.
 <<test functions>>=
 def test_apply_booking_promotion_without_bookings_keeps_order():
   queue, warnings = kthutils.stayawhile.apply_booking_promotion(
@@ -1674,6 +1752,27 @@ def test_apply_booking_promotion_warns_on_type_mismatch():
   assert [entry["username"] for entry in queue] == ["ada"]
   assert "booking_time" not in queue[0]
   assert warnings == ["ada booked for present but queued for help"]
+
+
+def test_apply_booking_promotion_defaults_missing_type_to_present():
+  queue, warnings = kthutils.stayawhile.apply_booking_promotion(
+      [{
+        "username": "ada",
+        "ugkthid": "u1ada",
+        "time": "2026-03-01T10:00:00Z",
+        "help": False,
+        "_event_index": 0,
+      }],
+      [{
+        "ugkthid": "u1ada",
+        "slot_time": "2026-03-01T10:03:00Z",
+      }],
+      now=datetime.datetime(2026, 3, 1, 10, 0,
+                            tzinfo=datetime.timezone.utc))
+
+  assert [entry["username"] for entry in queue] == ["ada"]
+  assert queue[0]["booking_time"] == "2026-03-01T10:03:00Z"
+  assert warnings == []
 
 
 def test_apply_booking_promotion_sorts_promoted_by_slot_then_join_time():
@@ -2073,9 +2172,13 @@ username_arg = typer.Argument(help="KTH login name, without @kth.se.")
 api_key_id_arg = typer.Argument(help="Identifier of the API key to revoke.")
 bookings_source_arg = typer.Argument(
     help=("JSON file with bookings, or - to read JSON from stdin. "
+          "Use ugkthid for either a u1... id or a plain username. "
+          "entry_type is optional and defaults to present. "
           "Example: "
           "[{\"ugkthid\":\"u1abc123\","
-          "\"slot_time\":\"2026-03-01T10:00:00Z\","
+          "\"slot_time\":\"2026-03-01T10:00:00Z\"},"
+          "{\"ugkthid\":\"alba\","
+          "\"slot_time\":\"2026-03-01T10:15:00Z\","
           "\"entry_type\":\"help\"}]."))
 label_arg = typer.Argument(help="Optional label for the new API key.")
 from_opt = typer.Option("--from",
@@ -2230,6 +2333,26 @@ def cli_list_my_queues():
   print_inferred_records(get_session().list_my_queues())
 
 
+@queues_cli.command(name="lock")
+def cli_lock_queue(queue: Annotated[str, queue_arg]):
+  """Lock one queue so it cannot be joined."""
+  try:
+    get_session().lock_queue(queue)
+  except Exception as err:
+    logging.error("queue lock failed for %s: %s", queue, err)
+    raise typer.Exit(code=1)
+
+
+@queues_cli.command(name="unlock")
+def cli_unlock_queue(queue: Annotated[str, queue_arg]):
+  """Unlock one queue so it can be joined. Clears all TA check-ins."""
+  try:
+    get_session().unlock_queue(queue)
+  except Exception as err:
+    logging.error("queue unlock failed for %s: %s", queue, err)
+    raise typer.Exit(code=1)
+
+
 @teachers_cli.command(name="ls")
 def cli_list_teachers(queue: Annotated[str, queue_arg]):
   """List teachers for one queue."""
@@ -2256,9 +2379,9 @@ def cli_list_assistants(queue: Annotated[str, queue_arg]):
   print_records(get_session().list_assistants(queue), ASSISTANT_FIELDS)
 
 
-@assistants_cli.command(name="checked-in")
+@assistants_cli.command(name="on-duty")
 def cli_list_checked_in(queue: Annotated[str, queue_arg]):
-  """List assistants currently checked in for one queue."""
+  """List assistants currently on duty for one queue."""
   print_records(get_session().list_checked_in(queue), ASSISTANT_FIELDS)
 
 
@@ -2398,8 +2521,13 @@ class FakeStayawhileSession:
     self.calls.append(("list_my_queues",))
     return [{
       "name": "Queue",
-      "open": True,
     }]
+
+  def lock_queue(self, queue):
+    self.calls.append(("lock_queue", queue))
+
+  def unlock_queue(self, queue):
+    self.calls.append(("unlock_queue", queue))
 
   def list_teachers(self, queue):
     self.calls.append(("list_teachers", queue))
@@ -2655,12 +2783,24 @@ def test_stayawhile_help():
   assert "view" in result.stdout
 
 
+def test_queue_help_mentions_lock_and_unlock():
+  result = runner.invoke(kthutils.stayawhile.cli, ["queues", "--help"])
+
+  assert result.exit_code == 0
+  assert "lock" in result.stdout
+  assert "unlock" in result.stdout
+
+
 def test_bookings_upsert_help_mentions_json_example():
   result = runner.invoke(kthutils.stayawhile.cli,
                          ["bookings", "upsert", "--help"])
 
   assert result.exit_code == 0
   assert "JSON file with bookings" in result.stdout
+  assert "plain" in result.stdout
+  assert "username" in result.stdout
+  assert "defaults to" in result.stdout
+  assert "present" in result.stdout
   assert "Example:" in result.stdout
   assert '"ugkthid":"u1abc123"' in result.stdout
 
@@ -2789,9 +2929,27 @@ def test_cli_lists_teacher_queues(monkeypatch):
   assert result.exit_code == 0
   assert fake.calls == [("list_my_queues",)]
   assert parse_csv_output(result.stdout) == [
-    ["name", "open"],
-    ["Queue", "true"],
+    ["name"],
+    ["Queue"],
   ]
+
+
+def test_cli_locks_and_unlocks_queues(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  lock = runner.invoke(kthutils.stayawhile.cli, ["queues", "lock", "Queue"])
+  unlock = runner.invoke(kthutils.stayawhile.cli,
+                         ["queues", "unlock", "Queue"])
+
+  assert lock.exit_code == 0
+  assert unlock.exit_code == 0
+  assert fake.calls == [
+    ("lock_queue", "Queue"),
+    ("unlock_queue", "Queue"),
+  ]
+  assert lock.stdout == ""
+  assert unlock.stdout == ""
 
 
 def test_cli_lists_teachers(monkeypatch):
@@ -2855,6 +3013,33 @@ def test_cli_clears_bookings_with_date_range(monkeypatch):
     ("clear_bookings", "Queue", "2026-04-06", "2026-04-06")
   ]
   assert result.stdout == ""
+
+
+def test_cli_reads_my_booking_as_csv(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli, ["booking", "mine", "Q"])
+
+  assert result.exit_code == 0
+  assert parse_csv_output(result.stdout) == [
+    ["slot_time", "entry_type"],
+    ["2026-03-01 10:00", "help"],
+  ]
+
+
+def test_cli_reads_my_booking_with_ugkthid(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["booking", "mine", "Q", "--ugkthid"])
+
+  assert result.exit_code == 0
+  assert parse_csv_output(result.stdout) == [
+    ["ugkthid", "slot_time", "entry_type"],
+    ["u1abc123", "2026-03-01 10:00", "help"],
+  ]
 
 
 def test_cli_lists_assistants(monkeypatch):
@@ -2936,12 +3121,12 @@ def test_cli_reads_interaction_session_stats(monkeypatch):
   ]
 
 
-def test_cli_lists_checked_in_assistants(monkeypatch):
+def test_cli_lists_on_duty_assistants(monkeypatch):
   fake = FakeStayawhileSession()
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
 
   result = runner.invoke(kthutils.stayawhile.cli,
-                         ["assistants", "checked-in", "Queue"])
+                         ["assistants", "on-duty", "Queue"])
 
   assert result.exit_code == 0
   assert fake.calls == [("list_checked_in", "Queue")]
@@ -2988,6 +3173,29 @@ def test_cli_checkin_and_checkout_log_errors(monkeypatch, caplog):
   assert checkout.exit_code == 1
   assert "checkin failed for Queue: boom" in caplog.text
   assert "checkout failed for Queue: boom" in caplog.text
+
+
+def test_cli_queue_lock_commands_log_errors(monkeypatch, caplog):
+  class FailingSession(FakeStayawhileSession):
+    def lock_queue(self, queue):
+      self.calls.append(("lock_queue", queue))
+      raise RuntimeError("boom")
+
+    def unlock_queue(self, queue):
+      self.calls.append(("unlock_queue", queue))
+      raise RuntimeError("boom")
+
+  fake = FailingSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  lock = runner.invoke(kthutils.stayawhile.cli, ["queues", "lock", "Queue"])
+  unlock = runner.invoke(kthutils.stayawhile.cli,
+                         ["queues", "unlock", "Queue"])
+
+  assert lock.exit_code == 1
+  assert unlock.exit_code == 1
+  assert "queue lock failed for Queue: boom" in caplog.text
+  assert "queue unlock failed for Queue: boom" in caplog.text
 
 
 def test_cli_booking_and_assistant_mutations_log_errors(monkeypatch, caplog,
@@ -3121,33 +3329,6 @@ def test_cli_reads_help_history(monkeypatch):
     "10m",
     "Ada Lovelace",
   ]]
-
-
-def test_cli_reads_my_booking_as_csv(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
-
-  result = runner.invoke(kthutils.stayawhile.cli, ["booking", "mine", "Q"])
-
-  assert result.exit_code == 0
-  assert parse_csv_output(result.stdout) == [
-    ["slot_time", "entry_type"],
-    ["2026-03-01 10:00", "help"],
-  ]
-
-
-def test_cli_reads_my_booking_with_ugkthid(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
-
-  result = runner.invoke(kthutils.stayawhile.cli,
-                         ["booking", "mine", "Q", "--ugkthid"])
-
-  assert result.exit_code == 0
-  assert parse_csv_output(result.stdout) == [
-    ["ugkthid", "slot_time", "entry_type"],
-    ["u1abc123", "2026-03-01 10:00", "help"],
-  ]
 
 
 def test_cli_reads_queue_log_without_ugkthid(monkeypatch):
