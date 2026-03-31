@@ -786,8 +786,11 @@ Assistant presence has likewise moved from [[checkin]] to [[on_duty]].
 For now we only switch the read-side command to the documented [[GET on_duty]]
 endpoint; the write-side check-in and check-out commands stay on their current
 endpoint until the corresponding POST and DELETE semantics are confirmed.
-Queue locking remains a documented REST endpoint at [[/api/queues/:queue/lock]]
-using [[POST]] to lock and [[DELETE]] to unlock.
+Queue locking lets a teacher prevent new students from joining while still
+serving those already in line.
+Unlocking also clears all TA check-ins, so assistants must re-check-in for
+the new session---a useful side-effect when transitioning between lab groups.
+The lock endpoint uses [[POST]] to lock and [[DELETE]] to unlock.
 <<[[StayawhileSession]] methods>>=
 def list_my_queues(self):
   """Return queues where the caller is a teacher."""
@@ -816,7 +819,10 @@ def lock_queue(self, queue):
 
 
 def unlock_queue(self, queue):
-  """Unlock [[queue]] so new users can join it."""
+  """Unlock [[queue]] so new users can join it.
+
+  Also clears all TA check-ins for the queue.
+  """
   return self._request("DELETE",
                        self._queue_path(queue, "lock"),
                        use_api_key=True)
@@ -888,7 +894,9 @@ def test_identity_queue_and_presence_requests():
   assert fake_http.requests[3]["url"].endswith("/teachers")
   assert fake_http.requests[4]["url"].endswith("/on_duty")
   assert fake_http.requests[5]["method"] == "POST"
+  assert fake_http.requests[5]["url"].endswith("/checkin")
   assert fake_http.requests[6]["method"] == "DELETE"
+  assert fake_http.requests[6]["url"].endswith("/checkin")
 
 
 def test_queue_lock_requests():
@@ -1055,7 +1063,8 @@ Let's verify that the bookings endpoints map to the documented requests.
 def test_booking_requests():
   fake_http = FakeHTTPSession([
     FakeResponse(json_data=[{"ugkthid": "u1abc123"}]),
-    FakeResponse(json_data={"updated": 1}),
+    FakeResponse(json_data={"bookings": [{"ugkthid": "u1abc123"}],
+                            "skipped": []}),
     FakeResponse(json_data={"deleted": 3}),
     FakeResponse(json_data={"slot_time": "2026-03-01T10:00:00Z"}),
   ])
@@ -1071,7 +1080,9 @@ def test_booking_requests():
                "slot_time": "2026-03-01T10:00:00Z"}]
 
   assert sa.list_bookings("Queue") == [{"ugkthid": "u1abc123"}]
-  assert sa.upsert_bookings("Queue", bookings) == {"updated": 1}
+  assert sa.upsert_bookings("Queue", bookings) == {
+    "bookings": [{"ugkthid": "u1abc123"}], "skipped": []
+  }
   assert sa.clear_bookings("Queue") == {"deleted": 3}
   assert sa.get_my_booking("Queue") == {
     "slot_time": "2026-03-01T10:00:00Z"
@@ -1165,13 +1176,11 @@ def remove_assistant(self, queue, username):
 @
 
 This is a small endpoint family, but it is worth checking both the collection
-endpoint, the documented [[on_duty]] listing, and the username-specific
-removal path.
+endpoint and the username-specific removal path.
 <<test functions>>=
 def test_assistant_requests():
   fake_http = FakeHTTPSession([
     FakeResponse(json_data=[{"username": "abcde"}]),
-    FakeResponse(json_data=[{"username": "checkedin"}]),
     FakeResponse(json_data={"username": "abcde"}),
     FakeResponse(status_code=204),
   ])
@@ -1180,14 +1189,12 @@ def test_assistant_requests():
       session=fake_http)
 
   assert sa.list_assistants("Queue") == [{"username": "abcde"}]
-  assert sa.list_checked_in("Queue") == [{"username": "checkedin"}]
   assert sa.add_assistant("Queue", "abcde") == {"username": "abcde"}
   assert sa.remove_assistant("Queue", "abcde") is None
 
   assert fake_http.requests[0]["url"].endswith("/assistants")
-  assert fake_http.requests[1]["url"].endswith("/on_duty")
-  assert fake_http.requests[2]["json"] == {"username": "abcde"}
-  assert fake_http.requests[3]["url"].endswith("/assistants/abcde")
+  assert fake_http.requests[1]["json"] == {"username": "abcde"}
+  assert fake_http.requests[2]["url"].endswith("/assistants/abcde")
 @
 
 
@@ -2338,7 +2345,7 @@ def cli_lock_queue(queue: Annotated[str, queue_arg]):
 
 @queues_cli.command(name="unlock")
 def cli_unlock_queue(queue: Annotated[str, queue_arg]):
-  """Unlock one queue so it can be joined."""
+  """Unlock one queue so it can be joined. Clears all TA check-ins."""
   try:
     get_session().unlock_queue(queue)
   except Exception as err:
