@@ -1,0 +1,741 @@
+\chapter{OneDrive and SharePoint files}
+
+We want to read and write files stored in KTH's OneDrive and SharePoint
+sites. The first constraint is authentication: we do not want to require a
+separate Entra application registration or a client identifier just to move a
+file.
+
+The project already has a browser-like login stack through [[ladok3]] and
+[[weblogin]]. We therefore reuse that authenticated session and talk to
+SharePoint's classic REST endpoints instead of Microsoft Graph. This keeps the
+command line workflow close to what already works elsewhere in the package.
+
+
+\section{Code overview}
+
+This module becomes [[kthutils.onedrive]]. We add a small session wrapper,
+helpers for turning browser URLs into SharePoint REST paths, and two commands:
+[[get]] and [[put]].
+<<onedrive.py>>=
+import pathlib
+import typer
+try:
+  from typing import Annotated, Optional
+except ImportError:
+  from typing_extensions import Annotated, Optional
+
+<<imports>>
+<<constants>>
+<<classes>>
+<<functions>>
+
+cli = typer.Typer(name="onedrive",
+                  help="Read and write files in OneDrive and SharePoint")
+
+<<option and argument definitions>>
+<<command definitions>>
+
+def main():
+  cli()
+
+
+if __name__ == "__main__":
+  main()
+@
+
+We test the module through its Python API and through Typer's command runner.
+The tests avoid live network access by injecting fake sessions and fake login
+handlers.
+<<test onedrive.py>>=
+import pathlib
+import types
+import pytest
+import typer.testing
+import kthutils.onedrive
+
+runner = typer.testing.CliRunner()
+onedrive_cli = kthutils.onedrive.cli
+
+<<test setup>>
+<<test helpers>>
+<<test functions>>
+@
+
+<<test setup>>=
+copy_link_url = (
+    "https://kth-my.sharepoint.com/:w:/r/personal/annamam_ug_kth_se/"
+    "Documents/TCS/TCS%20Webpage%20updates/"
+    "Draft%20descriptions%20for%20research%20areas.docx"
+)
+site_file_url = (
+    "https://kth.sharepoint.com/sites/example/Shared%20Documents/"
+    "Plans/Exam%20memo.pdf"
+)
+@
+
+We also define fake HTTP responses and fake login handlers once since several
+tests reuse them.
+<<test helpers>>=
+class FakeResponse:
+  def __init__(self,
+               *,
+               json_data=None,
+               content=b"",
+               text="",
+               status_code=200,
+               headers=None):
+    self._json_data = json_data
+    self.content = content
+    self.text = text
+    self.status_code = status_code
+    self.headers = dict(headers or {})
+
+  def json(self):
+    if self._json_data is None:
+      raise ValueError()
+    return self._json_data
+
+  def raise_for_status(self):
+    if self.status_code >= 400:
+      raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class FakeHTTPSession:
+  def __init__(self, responses=None):
+    self.responses = list(responses or [FakeResponse()])
+    self.requests = []
+    self.handlers = []
+
+  def add_handler(self, handler):
+    if handler not in self.handlers:
+      self.handlers.append(handler)
+
+  def request(self,
+              method,
+              url,
+              *,
+              headers=None,
+              params=None,
+              json=None,
+              data=None):
+    self.requests.append({
+      "method": method,
+      "url": url,
+      "headers": headers,
+      "params": params,
+      "json": json,
+      "data": data,
+    })
+    return self.responses.pop(0)
+
+
+class FakeSAMLlogin:
+  def __init__(self, rerun_requests=False):
+    self.rerun_requests = rerun_requests
+
+  def __eq__(self, other):
+    return (type(self) is type(other)
+            and self.rerun_requests == other.rerun_requests)
+
+
+class FakeUGlogin:
+  def __init__(self,
+               username,
+               password,
+               login_trigger_url=None,
+               base_url=None,
+               rerun_requests=False):
+    self.username = username
+    self.password = password
+    self.login_trigger_url = login_trigger_url
+    self.base_url = base_url
+    self.rerun_requests = rerun_requests
+
+  def __eq__(self, other):
+    return (type(self) is type(other)
+            and self.username == other.username
+            and self.password == other.password
+            and self.login_trigger_url == other.login_trigger_url
+            and self.base_url == other.base_url
+            and self.rerun_requests == other.rerun_requests)
+@
+
+We can then verify that the module itself exposes the intended Typer subtree.
+<<test functions>>=
+def test_onedrive_help():
+  result = runner.invoke(onedrive_cli, ["--help"])
+  assert result.exit_code == 0
+  assert "onedrive" in result.stdout
+  assert "OneDrive and SharePoint" in result.stdout
+@
+
+
+\section{Resolving browser URLs}
+
+SharePoint's REST API does not work with the browser URLs directly. The REST
+endpoints want two pieces of information instead:
+
+\begin{description}
+\item[site URL] The site root used for [[_api/contextinfo]] and the REST base.
+\item[server-relative path] The file path starting at the SharePoint host,
+  such as [[/personal/user/Documents/file.txt]].
+\end{description}
+
+We bundle those two values in a small immutable object.
+<<classes>>=
+@dataclasses.dataclass(frozen=True)
+class SharePointLocation:
+  """Resolved SharePoint address for one file."""
+
+  site_url: str
+  server_relative_path: str
+
+  <<[[SharePointLocation]] methods>>
+@
+
+The local file name comes from the last path component. That is the right
+default for [[get]], because downloading to the remote file name mirrors common
+shell tools and avoids inventing yet another naming convention.
+<<[[SharePointLocation]] methods>>=
+@property
+def name(self):
+  """Return the file name part of the resolved path."""
+  return pathlib.PurePosixPath(self.server_relative_path).name
+@
+
+Uploads need the containing folder separately from the file name, since
+SharePoint's [[Files/add]] endpoint addresses the folder and the new file name
+independently.
+<<[[SharePointLocation]] methods>>=
+@property
+def folder_relative_path(self):
+  """Return the parent folder of the resolved file path."""
+  return str(pathlib.PurePosixPath(self.server_relative_path).parent)
+@
+
+We can verify the derived file and folder names without involving any HTTP at
+all.
+<<test functions>>=
+def test_sharepoint_location_splits_file_and_folder():
+  location = kthutils.onedrive.SharePointLocation(
+      site_url="https://kth-my.sharepoint.com/personal/annamam_ug_kth_se",
+      server_relative_path=(
+          "/personal/annamam_ug_kth_se/Documents/TCS/plan.docx"))
+
+  assert location.name == "plan.docx"
+  assert location.folder_relative_path == \
+      "/personal/annamam_ug_kth_se/Documents/TCS"
+@
+
+The main resolver accepts ordinary file URLs and the more verbose copy-link
+style URLs that Microsoft 365 places in the browser address bar.
+<<functions>>=
+def parse_sharepoint_url(url: str) -> SharePointLocation:
+  """Resolve a browser URL into SharePoint REST coordinates."""
+  parsed = urllib.parse.urlsplit(url)
+  if not parsed.scheme or not parsed.netloc:
+    raise ValueError(f"Unsupported OneDrive URL: {url}")
+
+  server_relative_path = _extract_server_relative_path(parsed.path)
+  if server_relative_path.endswith("/"):
+    raise ValueError("The URL must address one file, not a folder.")
+
+  return SharePointLocation(
+      site_url=_build_site_url(parsed, server_relative_path),
+      server_relative_path=server_relative_path)
+@
+
+We first normalise the path part of the browser URL. Copy links such as
+[[/:w:/r/personal/...]] contain an extra marker segment that should not reach
+the REST API, while direct file URLs already use the server-relative path.
+Classic [[Doc.aspx]] URLs do not reveal the file path, so we reject them with a
+clear instruction instead of guessing.
+<<functions>>=
+def _extract_server_relative_path(path: str) -> str:
+  """Return the server-relative file path embedded in ``path``."""
+  decoded_path = urllib.parse.unquote(path)
+  if decoded_path.lower().endswith("/doc.aspx"):
+    raise ValueError(
+        "Doc.aspx URLs do not expose the file path. Use a copy link or a "
+        "direct file URL instead.")
+
+  match = COPY_LINK_RE.match(decoded_path)
+  if match:
+    return match.group(1)
+
+  for prefix in SERVER_RELATIVE_PATH_PREFIXES:
+    if decoded_path.startswith(prefix):
+      return decoded_path
+
+  raise ValueError(f"Unsupported OneDrive URL path: {decoded_path}")
+@
+
+The site URL is the stable prefix that owns the document library. For personal
+OneDrive URLs we keep [[/personal/<user>]], while team sites keep
+[[/sites/<name>]] or [[/teams/<name>]]. The remaining path segments belong to
+the library and folders, not the site itself.
+<<functions>>=
+def _build_site_url(parsed, server_relative_path: str) -> str:
+  """Return the SharePoint site URL for ``server_relative_path``."""
+  parts = server_relative_path.lstrip("/").split("/")
+  if len(parts) < 2 or parts[0] not in SHAREPOINT_SITE_ROOTS:
+    raise ValueError(
+        f"Unsupported SharePoint path: {server_relative_path}")
+
+  site_path = f"/{parts[0]}/{parts[1]}"
+  return urllib.parse.urlunsplit((parsed.scheme,
+                                  parsed.netloc,
+                                  site_path,
+                                  "",
+                                  ""))
+@
+
+These constants capture the supported URL shapes in one place.
+<<constants>>=
+COPY_LINK_RE = re.compile(r"^/:[^:]+:/[a-z](/.*)$", re.IGNORECASE)
+SERVER_RELATIVE_PATH_PREFIXES = (
+    "/personal/",
+    "/sites/",
+    "/teams/",
+)
+SHAREPOINT_SITE_ROOTS = ("personal", "sites", "teams")
+@
+
+Parsing is easy to get subtly wrong, so we verify the supported cases directly.
+<<test functions>>=
+def test_parse_sharepoint_copy_link():
+  location = kthutils.onedrive.parse_sharepoint_url(copy_link_url)
+
+  assert location.site_url == \
+      "https://kth-my.sharepoint.com/personal/annamam_ug_kth_se"
+  assert location.server_relative_path == (
+      "/personal/annamam_ug_kth_se/Documents/TCS/"
+      "TCS Webpage updates/"
+      "Draft descriptions for research areas.docx")
+
+
+def test_parse_sharepoint_site_url():
+  location = kthutils.onedrive.parse_sharepoint_url(site_file_url)
+
+  assert location.site_url == "https://kth.sharepoint.com/sites/example"
+  assert location.server_relative_path == \
+      "/sites/example/Shared Documents/Plans/Exam memo.pdf"
+
+
+def test_parse_doc_aspx_url_requires_copy_link():
+  with pytest.raises(ValueError,
+                     match="Doc.aspx URLs do not expose the file path"):
+    kthutils.onedrive.parse_sharepoint_url(
+        "https://kth-my.sharepoint.com/personal/user/Doc.aspx?file=plan")
+@
+
+
+\section{SharePoint REST endpoints}
+
+The session methods call SharePoint's classic REST endpoints, which still work
+with cookie-based authentication. The tricky part is that those endpoints embed
+paths inside OData string literals, so single quotes inside names must be
+escaped.
+<<functions>>=
+def _escape_odata_string(value: str) -> str:
+  """Return ``value`` escaped for an OData string literal."""
+  return value.replace("'", "''")
+@
+
+For downloads we can address the exact file and ask for [[/$value]], which
+returns the file bytes rather than metadata.
+<<functions>>=
+def _download_url(location: SharePointLocation) -> str:
+  """Return the REST endpoint for downloading ``location``."""
+  path = _escape_odata_string(location.server_relative_path)
+  return (
+      f"{location.site_url}/_api/web/"
+      f"GetFileByServerRelativeUrl('{path}')/$value")
+@
+
+Uploads use the containing folder plus a file name. This lets SharePoint create
+the file when needed and overwrite it when requested.
+<<functions>>=
+def _upload_url(location: SharePointLocation, overwrite: bool) -> str:
+  """Return the REST endpoint for uploading to ``location``."""
+  folder = _escape_odata_string(location.folder_relative_path)
+  name = _escape_odata_string(location.name)
+  return (
+      f"{location.site_url}/_api/web/"
+      f"GetFolderByServerRelativeUrl('{folder}')/"
+      f"Files/add(url='{name}',overwrite={str(overwrite).lower()})")
+@
+
+Those URLs are pure string transformations, which makes them cheap and useful
+to test in isolation.
+<<test functions>>=
+def test_download_url_uses_server_relative_path():
+  location = kthutils.onedrive.parse_sharepoint_url(copy_link_url)
+
+  assert kthutils.onedrive._download_url(location) == (
+      "https://kth-my.sharepoint.com/personal/annamam_ug_kth_se/_api/"
+      "web/GetFileByServerRelativeUrl('"
+      "/personal/annamam_ug_kth_se/Documents/TCS/"
+      "TCS Webpage updates/"
+      "Draft descriptions for research areas.docx')/$value")
+
+
+def test_upload_url_uses_folder_and_file_name():
+  location = kthutils.onedrive.parse_sharepoint_url(site_file_url)
+
+  assert kthutils.onedrive._upload_url(location, overwrite=False) == (
+      "https://kth.sharepoint.com/sites/example/_api/web/"
+      "GetFolderByServerRelativeUrl('"
+      "/sites/example/Shared Documents/Plans')/"
+      "Files/add(url='Exam memo.pdf',overwrite=false)")
+@
+
+
+\section{Authenticated SharePoint access}
+
+We keep the HTTP logic in a dedicated session class. That class reuses the
+shared authenticated browser session from [[ladok3]] and adds only the extra
+KTH handlers that SharePoint needs.
+<<classes>>=
+class OneDriveSession:
+  """Read and write SharePoint files through the shared KTH session."""
+
+  def __init__(self,
+               session=None,
+               username: Optional[str] = None,
+               password: Optional[str] = None):
+    """Create a SharePoint-capable session."""
+    <<[[OneDriveSession]] constructor>>
+
+  <<[[OneDriveSession]] methods>>
+@
+
+If no explicit session is supplied, we adopt the shared [[ladok3]] browser
+session and load the KTH credentials for the [[UGlogin]] handler. Tests can
+inject their own session to stay deterministic.
+<<[[OneDriveSession]] constructor>>=
+if session is None:
+  session = ladok3.session.session
+if username is None or password is None:
+  if session is ladok3.session.session:
+    username, password = kthutils.credentials.get_credentials()
+
+self.__session = session
+self.__username = username
+self.__password = password
+@
+
+The imported modules live close to this class because they only make sense once
+we know that the module really is about SharePoint-backed web sessions.
+<<imports>>=
+import dataclasses
+import ladok3
+import kthutils.credentials
+import re
+import requests
+import urllib.parse
+import weblogin.kth
+@
+
+The shared session already knows how to handle KTH's Ladok SSO and Microsoft
+Authenticator pages. SharePoint adds one missing hop: the generic KTH SAML relay
+plus the [[UGlogin]] handler used by services behind [[login.ug.kth.se]].
+
+We attach those handlers lazily per site. That keeps the constructor simple and
+lets the same session talk to both personal OneDrive hosts and ordinary
+SharePoint sites.
+<<[[OneDriveSession]] methods>>=
+def _ensure_login_handlers(self, location: SharePointLocation):
+  """Attach the KTH web-login handlers needed for ``location``."""
+  if self.__username is None or self.__password is None:
+    return
+
+  self.__session.add_handler(weblogin.kth.SAMLlogin(rerun_requests=True))
+  self.__session.add_handler(
+      weblogin.kth.UGlogin(self.__username,
+                           self.__password,
+                           login_trigger_url=location.site_url,
+                           base_url=location.site_url,
+                           rerun_requests=True))
+@
+
+We can verify both the shared-session reuse and the duplicate suppression using
+fake handlers that mimic the equality behaviour of the real ones.
+<<test functions>>=
+def test_default_session_uses_shared_browser_session(monkeypatch):
+  fake_http = FakeHTTPSession([FakeResponse(content=b"plan")])
+
+  monkeypatch.setattr(
+      kthutils.onedrive,
+      "ladok3",
+      types.SimpleNamespace(session=types.SimpleNamespace(session=fake_http)))
+  monkeypatch.setattr(kthutils.onedrive.kthutils.credentials,
+                      "get_credentials",
+                      lambda: ("alice", "secret"))
+  monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
+                      "SAMLlogin",
+                      FakeSAMLlogin)
+  monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
+                      "UGlogin",
+                      FakeUGlogin)
+
+  session = kthutils.onedrive.OneDriveSession()
+
+  assert session.get_by_url(copy_link_url) == b"plan"
+  assert session._OneDriveSession__session is fake_http
+  assert len(fake_http.handlers) == 2
+  assert fake_http.handlers[0].rerun_requests is True
+  assert fake_http.handlers[1].base_url == \
+      "https://kth-my.sharepoint.com/personal/annamam_ug_kth_se"
+
+
+def test_default_session_reuses_equal_handlers(monkeypatch):
+  fake_http = FakeHTTPSession([
+      FakeResponse(content=b"one"),
+      FakeResponse(content=b"two"),
+  ])
+
+  monkeypatch.setattr(
+      kthutils.onedrive,
+      "ladok3",
+      types.SimpleNamespace(session=types.SimpleNamespace(session=fake_http)))
+  monkeypatch.setattr(kthutils.onedrive.kthutils.credentials,
+                      "get_credentials",
+                      lambda: ("alice", "secret"))
+  monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
+                      "SAMLlogin",
+                      FakeSAMLlogin)
+  monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
+                      "UGlogin",
+                      FakeUGlogin)
+
+  first = kthutils.onedrive.OneDriveSession()
+  second = kthutils.onedrive.OneDriveSession()
+
+  assert first.get_by_url(copy_link_url) == b"one"
+  assert second.get_by_url(copy_link_url) == b"two"
+  assert len(fake_http.handlers) == 2
+@
+
+SharePoint requires a form digest for write requests. The digest comes from the
+site's [[contextinfo]] endpoint and is short-lived, so we fetch it on demand for
+each upload.
+<<constants>>=
+FORM_DIGEST_ACCEPT = "application/json;odata=verbose"
+@
+
+<<[[OneDriveSession]] methods>>=
+def _get_form_digest(self, location: SharePointLocation) -> str:
+  """Fetch the SharePoint form digest for ``location.site_url``."""
+  response = self.__session.request(
+      "POST",
+      f"{location.site_url}/_api/contextinfo",
+      headers={"Accept": FORM_DIGEST_ACCEPT})
+  response.raise_for_status()
+  payload = response.json()
+  try:
+    return payload["d"]["GetContextWebInformation"]["FormDigestValue"]
+  except KeyError as exc:
+    raise ValueError("SharePoint did not return a form digest") from exc
+@
+
+The read path is deliberately small: resolve the browser URL, ensure login
+handlers are present, request the file bytes, and raise an error on HTTP
+failure.
+<<[[OneDriveSession]] methods>>=
+def get_by_url(self, url: str) -> bytes:
+  """Download the file addressed by ``url``."""
+  location = parse_sharepoint_url(url)
+  self._ensure_login_handlers(location)
+  response = self.__session.request("GET", _download_url(location))
+  response.raise_for_status()
+  return response.content
+@
+
+For writes we follow the same outline, but insert the form-digest step and send
+the raw bytes as the POST body.
+<<[[OneDriveSession]] methods>>=
+def put_by_url(self,
+               url: str,
+               data: bytes,
+               overwrite: bool = True) -> None:
+  """Upload ``data`` to the file addressed by ``url``."""
+  location = parse_sharepoint_url(url)
+  self._ensure_login_handlers(location)
+  digest = self._get_form_digest(location)
+  response = self.__session.request(
+      "POST",
+      _upload_url(location, overwrite),
+      headers={"X-RequestDigest": digest},
+      data=data)
+  response.raise_for_status()
+@
+
+These tests verify the exact REST requests sent for downloads and uploads.
+<<test functions>>=
+def test_get_by_url_requests_sharepoint_value_endpoint(monkeypatch):
+  fake_http = FakeHTTPSession([FakeResponse(content=b"report")])
+  session = kthutils.onedrive.OneDriveSession(session=fake_http,
+                                              username="alice",
+                                              password="secret")
+
+  monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
+                      "SAMLlogin",
+                      FakeSAMLlogin)
+  monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
+                      "UGlogin",
+                      FakeUGlogin)
+
+  assert session.get_by_url(copy_link_url) == b"report"
+  assert fake_http.requests == [{
+      "method": "GET",
+      "url": (
+          "https://kth-my.sharepoint.com/personal/annamam_ug_kth_se/_api/"
+          "web/GetFileByServerRelativeUrl('"
+          "/personal/annamam_ug_kth_se/Documents/TCS/"
+          "TCS Webpage updates/"
+          "Draft descriptions for research areas.docx')/$value"),
+      "headers": None,
+      "params": None,
+      "json": None,
+      "data": None,
+  }]
+
+
+def test_put_by_url_requests_digest_then_upload(monkeypatch):
+  fake_http = FakeHTTPSession([
+      FakeResponse(json_data={
+          "d": {
+              "GetContextWebInformation": {
+                  "FormDigestValue": "digest-value"
+              }
+          }
+      }),
+      FakeResponse(),
+  ])
+  session = kthutils.onedrive.OneDriveSession(session=fake_http,
+                                              username="alice",
+                                              password="secret")
+
+  monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
+                      "SAMLlogin",
+                      FakeSAMLlogin)
+  monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
+                      "UGlogin",
+                      FakeUGlogin)
+
+  session.put_by_url(site_file_url, b"payload", overwrite=False)
+
+  assert fake_http.requests == [{
+      "method": "POST",
+      "url": "https://kth.sharepoint.com/sites/example/_api/contextinfo",
+      "headers": {"Accept": "application/json;odata=verbose"},
+      "params": None,
+      "json": None,
+      "data": None,
+  }, {
+      "method": "POST",
+      "url": (
+          "https://kth.sharepoint.com/sites/example/_api/web/"
+          "GetFolderByServerRelativeUrl('"
+          "/sites/example/Shared Documents/Plans')/"
+          "Files/add(url='Exam memo.pdf',overwrite=false)"),
+      "headers": {"X-RequestDigest": "digest-value"},
+      "params": None,
+      "json": None,
+      "data": b"payload",
+  }]
+@
+
+
+\section{The command-line interface}
+
+The CLI just bridges local files and the session object above. We keep it thin
+so the real behaviour stays testable through ordinary Python methods.
+<<option and argument definitions>>=
+url_arg = typer.Argument(help="SharePoint or OneDrive browser URL to a file.")
+output_arg = typer.Argument(help="Local output path. Defaults to the remote "
+                                 "file name.")
+local_path_arg = typer.Argument(help="Local file to upload.",
+                                exists=True,
+                                dir_okay=False,
+                                readable=True,
+                                resolve_path=True)
+overwrite_opt = typer.Option("--overwrite/--no-overwrite",
+                             help="Replace an existing remote file.")
+@
+
+The [[get]] command stores the file in the current directory when no explicit
+output path is provided. That makes the common case concise while still letting
+callers choose another local path when needed.
+<<command definitions>>=
+@cli.command(name="get")
+def cli_get(url: Annotated[str, url_arg],
+            output: Annotated[Optional[pathlib.Path], output_arg] = None):
+  """Download a file from OneDrive or SharePoint."""
+  location = parse_sharepoint_url(url)
+  if output is None:
+    output = pathlib.Path(location.name)
+  output.write_bytes(OneDriveSession().get_by_url(url))
+@
+
+For [[put]] the caller already has the local file, so the command only needs to
+read its bytes and forward them together with the remote URL.
+<<command definitions>>=
+@cli.command(name="put")
+def cli_put(local_path: Annotated[pathlib.Path, local_path_arg],
+            url: Annotated[str, url_arg],
+            overwrite: Annotated[bool, overwrite_opt] = True):
+  """Upload a local file to OneDrive or SharePoint."""
+  OneDriveSession().put_by_url(url,
+                               local_path.read_bytes(),
+                               overwrite=overwrite)
+@
+
+The CLI tests only need a fake session object because the parsing and HTTP
+construction are already covered above.
+<<test functions>>=
+def test_cli_get_uses_remote_name_by_default(monkeypatch, tmp_path):
+  class FakeOneDriveSession:
+    def get_by_url(self, url):
+      assert url == copy_link_url
+      return b"downloaded"
+
+  monkeypatch.setattr(kthutils.onedrive,
+                      "OneDriveSession",
+                      lambda: FakeOneDriveSession())
+  monkeypatch.chdir(tmp_path)
+
+  result = runner.invoke(onedrive_cli, ["get", copy_link_url])
+
+  assert result.exit_code == 0
+  assert (tmp_path / "Draft descriptions for research areas.docx").read_bytes() \
+      == b"downloaded"
+
+
+def test_cli_put_reads_local_file(monkeypatch, tmp_path):
+  uploaded = {}
+  local_path = tmp_path / "memo.txt"
+  local_path.write_bytes(b"hello")
+
+  class FakeOneDriveSession:
+    def put_by_url(self, url, data, overwrite=True):
+      uploaded["url"] = url
+      uploaded["data"] = data
+      uploaded["overwrite"] = overwrite
+
+  monkeypatch.setattr(kthutils.onedrive,
+                      "OneDriveSession",
+                      lambda: FakeOneDriveSession())
+
+  result = runner.invoke(onedrive_cli,
+                         ["put", str(local_path), site_file_url,
+                          "--no-overwrite"])
+
+  assert result.exit_code == 0
+  assert uploaded == {
+      "url": site_file_url,
+      "data": b"hello",
+      "overwrite": False,
+  }
+@

@@ -57,6 +57,7 @@ def test_cli_subcommands():
   assert "participants" in result.stdout
   assert "forms" in result.stdout
   assert "iprange" in result.stdout
+  assert "onedrive" in result.stdout
   assert "stayawhile" in result.stdout
 @
 
@@ -143,6 +144,22 @@ def test_stayawhile_command():
   result = runner.invoke(kthutils.cli.cli, ["stayawhile", "--help"])
   assert result.exit_code == 0
   assert "stayawhile" in result.stdout
+@
+
+We also add the [[onedrive]] module.
+<<import subcommand modules>>=
+import kthutils.onedrive
+<<add subcommand typers to cli>>=
+cli.add_typer(kthutils.onedrive.cli)
+@
+
+We want to test that the [[onedrive]] subcommand is registered.
+<<test functions>>=
+def test_onedrive_command():
+  """Test that the onedrive command shows help"""
+  result = runner.invoke(kthutils.cli.cli, ["onedrive", "--help"])
+  assert result.exit_code == 0
+  assert "onedrive" in result.stdout
 @
 
 
