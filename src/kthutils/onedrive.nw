@@ -533,25 +533,9 @@ import weblogin.kth
 @
 
 We reuse the package's normal logging configuration, but keep a module logger so
-that the OneDrive commands can emit focused debug messages when asked.
+that the global CLI verbosity flags can expose focused OneDrive diagnostics.
 <<constants>>=
 logger = logging.getLogger(__name__)
-@
-
-The main CLI already decides the log format, but OneDrive troubleshooting is
-local to this module. A small helper lets [[get]] and [[put]] opt into debug
-messages without changing unrelated commands.
-<<functions>>=
-def enable_debug_logging(enabled: bool):
-  """Enable focused debug logging for the OneDrive commands."""
-  if not enabled:
-    return
-
-  if not logging.getLogger().handlers:
-    logging.basicConfig(format="kthutils: %(levelname)s: %(message)s")
-
-  logger.setLevel(logging.DEBUG)
-  logger.debug("Enabled OneDrive debug logging")
 @
 
 The shared session already knows how to handle KTH's Ladok SSO and Microsoft
@@ -828,9 +812,6 @@ local_path_arg = typer.Argument(help="Local file to upload.",
                                 dir_okay=False,
                                 readable=True,
                                 resolve_path=True)
-debug_opt = typer.Option("--debug",
-                         help="Enable debug logging for OneDrive auth and "
-                              "requests.")
 overwrite_opt = typer.Option("--overwrite/--no-overwrite",
                              help="Replace an existing remote file.")
 @
@@ -841,10 +822,8 @@ callers choose another local path when needed.
 <<command definitions>>=
 @cli.command(name="get")
 def cli_get(url: Annotated[str, url_arg],
-            output: Annotated[Optional[pathlib.Path], output_arg] = None,
-            debug: Annotated[bool, debug_opt] = False):
+            output: Annotated[Optional[pathlib.Path], output_arg] = None):
   """Download a file from OneDrive or SharePoint."""
-  enable_debug_logging(debug)
   location = parse_sharepoint_url(url)
   if output is None:
     output = pathlib.Path(location.name)
@@ -858,10 +837,8 @@ read its bytes and forward them together with the remote URL.
 @cli.command(name="put")
 def cli_put(local_path: Annotated[pathlib.Path, local_path_arg],
             url: Annotated[str, url_arg],
-            debug: Annotated[bool, debug_opt] = False,
             overwrite: Annotated[bool, overwrite_opt] = True):
   """Upload a local file to OneDrive or SharePoint."""
-  enable_debug_logging(debug)
   logger.debug("Reading local upload payload from %s", local_path)
   OneDriveSession().put_by_url(url,
                                local_path.read_bytes(),
@@ -877,9 +854,6 @@ def test_cli_get_uses_remote_name_by_default(monkeypatch, tmp_path):
       assert url == copy_link_url
       return b"downloaded"
 
-  monkeypatch.setattr(kthutils.onedrive,
-                      "enable_debug_logging",
-                      lambda enabled: None)
   monkeypatch.setattr(kthutils.onedrive,
                       "OneDriveSession",
                       lambda: FakeOneDriveSession())
@@ -904,9 +878,6 @@ def test_cli_put_reads_local_file(monkeypatch, tmp_path):
       uploaded["overwrite"] = overwrite
 
   monkeypatch.setattr(kthutils.onedrive,
-                      "enable_debug_logging",
-                      lambda enabled: None)
-  monkeypatch.setattr(kthutils.onedrive,
                       "OneDriveSession",
                       lambda: FakeOneDriveSession())
 
@@ -920,48 +891,4 @@ def test_cli_put_reads_local_file(monkeypatch, tmp_path):
       "data": b"hello",
       "overwrite": False,
   }
-
-
-def test_cli_get_debug_flag_enables_logging(monkeypatch, tmp_path):
-  enabled = []
-
-  class FakeOneDriveSession:
-    def get_by_url(self, url):
-      return b"downloaded"
-
-  monkeypatch.setattr(kthutils.onedrive,
-                      "enable_debug_logging",
-                      lambda enabled_flag: enabled.append(enabled_flag))
-  monkeypatch.setattr(kthutils.onedrive,
-                      "OneDriveSession",
-                      lambda: FakeOneDriveSession())
-  monkeypatch.chdir(tmp_path)
-
-  result = runner.invoke(onedrive_cli, ["get", "--debug", copy_link_url])
-
-  assert result.exit_code == 0
-  assert enabled == [True]
-
-
-def test_cli_put_debug_flag_enables_logging(monkeypatch, tmp_path):
-  enabled = []
-  local_path = tmp_path / "memo.txt"
-  local_path.write_bytes(b"hello")
-
-  class FakeOneDriveSession:
-    def put_by_url(self, url, data, overwrite=True):
-      return None
-
-  monkeypatch.setattr(kthutils.onedrive,
-                      "enable_debug_logging",
-                      lambda enabled_flag: enabled.append(enabled_flag))
-  monkeypatch.setattr(kthutils.onedrive,
-                      "OneDriveSession",
-                      lambda: FakeOneDriveSession())
-
-  result = runner.invoke(onedrive_cli,
-                         ["put", "--debug", str(local_path), site_file_url])
-
-  assert result.exit_code == 0
-  assert enabled == [True]
 @
