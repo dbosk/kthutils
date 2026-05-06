@@ -15,8 +15,8 @@ the package.
 \section{Code overview}
 
 This module becomes [[kthutils.onedrive]]. We add a small session wrapper,
-helpers for turning browser URLs into SharePoint REST paths, and three
-commands: [[get]], [[ls]], and [[put]].
+helpers for turning browser URLs or server-relative paths into SharePoint REST
+paths, and three commands: [[get]], [[ls]], and [[put]].
 <<onedrive.py>>=
 import pathlib
 import typer
@@ -93,6 +93,13 @@ allitems_rootfolder_url = (
 allitems_root_url = (
     "https://kth.sharepoint.com/sites/example/Shared%20Documents/Forms/"
     "AllItems.aspx"
+)
+personal_file_path = (
+    "/personal/annamam_ug_kth_se/Documents/TCS/TCS%20Webpage%20updates/"
+    "Draft%20descriptions%20for%20research%20areas.docx"
+)
+personal_folder_path = (
+    "/personal/annamam_ug_kth_se/Documents/TCS/TCS%20Webpage%20updates/"
 )
 @
 
@@ -279,11 +286,85 @@ def test_sharepoint_location_splits_file_and_folder():
       "/personal/annamam_ug_kth_se/Documents"
 @
 
+Sometimes the caller already knows the server-relative SharePoint path and only
+needs a host URL in front of it. We therefore read a configurable base URL from
+the environment or the existing config store. Unlike a full browser URL, a
+server-relative path does not identify its SharePoint host by itself, so we
+raise a clear error when no base URL has been configured.
+<<functions>>=
+def get_base_url():
+  """Return the configured OneDrive base URL."""
+  try:
+    return os.environ["ONEDRIVE_BASE_URL"].rstrip("/")
+  except KeyError:
+    pass
+
+  try:
+    return typerconf.get(CONFIG_BASE_URL).rstrip("/")
+  except KeyError:
+    raise ValueError(
+         "missing OneDrive base URL; set ONEDRIVE_BASE_URL or run "
+         "kthutils config onedrive.base_url --set "
+         "https://kth-my.sharepoint.com")
+@
+
+<<constants>>=
+CONFIG_BASE_URL = "onedrive.base_url"
+@
+
+We only prepend that host when the input already starts with one of the
+SharePoint server-relative prefixes. Full URLs stay untouched, so explicit
+cross-host links and copy links behave exactly as before.
+<<functions>>=
+def _resolve_sharepoint_url(url: str) -> str:
+  """Return ``url`` as an absolute SharePoint URL when possible."""
+  parsed = urllib.parse.urlsplit(url)
+  if parsed.scheme and parsed.netloc:
+    return url
+
+  for prefix in SERVER_RELATIVE_PATH_PREFIXES:
+    if parsed.path.startswith(prefix):
+      path_url = urllib.parse.urlunsplit(("",
+                                          "",
+                                          parsed.path,
+                                          parsed.query,
+                                          parsed.fragment))
+      return get_base_url() + path_url
+
+  return url
+@
+
+Let's verify both the configuration lookup and the server-relative shorthand.
+<<test functions>>=
+def test_get_base_url_from_config(monkeypatch):
+  monkeypatch.delenv("ONEDRIVE_BASE_URL", raising=False)
+
+  def fake_get(key):
+    assert key == kthutils.onedrive.CONFIG_BASE_URL
+    return "https://example.sharepoint.com/"
+
+  monkeypatch.setattr(kthutils.onedrive.typerconf, "get", fake_get)
+  assert (kthutils.onedrive.get_base_url()
+          == "https://example.sharepoint.com")
+
+
+def test_get_base_url_requires_configuration(monkeypatch):
+  monkeypatch.delenv("ONEDRIVE_BASE_URL", raising=False)
+
+  def fake_get(_):
+    raise KeyError()
+
+  monkeypatch.setattr(kthutils.onedrive.typerconf, "get", fake_get)
+  with pytest.raises(ValueError, match="OneDrive base URL"):
+    kthutils.onedrive.get_base_url()
+@
+
 The main resolver accepts ordinary file URLs and the more verbose copy-link
 style URLs that Microsoft 365 places in the browser address bar.
 <<functions>>=
 def parse_sharepoint_url(url: str) -> SharePointLocation:
-  """Resolve a browser URL into SharePoint REST coordinates."""
+  """Resolve a SharePoint URL or server-relative path to REST coordinates."""
+  url = _resolve_sharepoint_url(url)
   parsed = urllib.parse.urlsplit(url)
   if not parsed.scheme or not parsed.netloc:
     raise ValueError(f"Unsupported OneDrive URL: {url}")
@@ -376,6 +457,20 @@ def test_parse_sharepoint_site_url():
       "/sites/example/Shared Documents/Plans/Exam memo.pdf"
 
 
+def test_parse_sharepoint_server_relative_path(monkeypatch):
+  monkeypatch.setattr(kthutils.onedrive,
+                      "get_base_url",
+                      lambda: "https://kth-my.sharepoint.com")
+  location = kthutils.onedrive.parse_sharepoint_url(personal_file_path)
+
+  assert location.site_url == \
+      "https://kth-my.sharepoint.com/personal/annamam_ug_kth_se"
+  assert location.server_relative_path == (
+      "/personal/annamam_ug_kth_se/Documents/TCS/"
+      "TCS Webpage updates/"
+      "Draft descriptions for research areas.docx")
+
+
 def test_parse_doc_aspx_url_requires_copy_link():
   with pytest.raises(ValueError,
                      match="Doc.aspx URLs do not expose the file path"):
@@ -391,7 +486,8 @@ separate parser so that the file-oriented [[get]] and [[put]] code keeps its
 existing stricter checks.
 <<functions>>=
 def parse_sharepoint_folder_url(url: str) -> SharePointLocation:
-  """Resolve a browser URL into SharePoint REST coordinates for a folder."""
+  """Resolve a SharePoint URL or server-relative folder path."""
+  url = _resolve_sharepoint_url(url)
   parsed = urllib.parse.urlsplit(url)
   if not parsed.scheme or not parsed.netloc:
     raise ValueError(f"Unsupported OneDrive URL: {url}")
@@ -467,6 +563,19 @@ def test_parse_sharepoint_folder_copy_link():
   assert location.site_url == "https://kth.sharepoint.com/sites/example"
   assert location.server_relative_path == \
       "/sites/example/Shared Documents/Plans"
+
+
+def test_parse_sharepoint_folder_server_relative_path(monkeypatch):
+  monkeypatch.setattr(kthutils.onedrive,
+                      "get_base_url",
+                      lambda: "https://kth-my.sharepoint.com")
+  location = kthutils.onedrive.parse_sharepoint_folder_url(
+      personal_folder_path)
+
+  assert location.site_url == \
+      "https://kth-my.sharepoint.com/personal/annamam_ug_kth_se"
+  assert location.server_relative_path == \
+      "/personal/annamam_ug_kth_se/Documents/TCS/TCS Webpage updates"
 
 
 def test_parse_sharepoint_allitems_id_url():
@@ -579,6 +688,7 @@ when that endpoint does not expose a forms-auth trigger.
 <<functions>>=
 def _login_trigger_url(url: str, location: SharePointLocation) -> str:
   """Return the best login trigger URL for ``location``."""
+  url = _resolve_sharepoint_url(url)
   for probe_url in (url, location.site_url):
     logger.debug("Probing SharePoint auth trigger via %s", probe_url)
     try:
@@ -679,6 +789,32 @@ def test_login_trigger_uses_sharepoint_forms_header(monkeypatch):
   }]
 
 
+def test_login_trigger_resolves_server_relative_path(monkeypatch):
+  calls = []
+
+  def fake_get(url, allow_redirects=False, timeout=None):
+    calls.append(url)
+    return FakeResponse(headers={
+        "X-Forms_Based_Auth_Required":
+            "https://kth-my.sharepoint.com/_forms/default.aspx?Source=%2f"
+            "personal%2fuser"
+    })
+
+  monkeypatch.setattr(kthutils.onedrive,
+                      "get_base_url",
+                      lambda: "https://kth-my.sharepoint.com")
+  monkeypatch.setattr(kthutils.onedrive.requests, "get", fake_get)
+
+  location = kthutils.onedrive.parse_sharepoint_url(personal_file_path)
+
+  assert (kthutils.onedrive._login_trigger_url(personal_file_path, location)
+          == "https://kth-my.sharepoint.com/_forms/default.aspx?Source=%2f"
+             "personal%2fuser")
+  assert calls == [
+      "https://kth-my.sharepoint.com" + personal_file_path,
+  ]
+
+
 def test_login_trigger_falls_back_to_site_url(monkeypatch):
   responses = [
       FakeResponse(),
@@ -746,8 +882,10 @@ import dataclasses
 import ladok3
 import kthutils.credentials
 import logging
+import os
 import re
 import requests
+import typerconf
 import urllib.parse
 import weblogin.kth
 import weblogin.microsoft
@@ -1046,12 +1184,12 @@ def _list_data_entry(row) -> tuple:
         "SharePoint list row did not contain the expected fields") from exc
 @
 
-Listing still begins by resolving the browser URL and ensuring the login
-handlers are available, but the actual data comes from SharePoint's list-view
-pipeline rather than the denied [[/Folders]] and [[/Files]] collections. The
-same [[RenderListDataAsStream]] endpoint also gives us the right forms-auth
-trigger, so [[UGlogin]] still bootstraps from the exact endpoint we will call
-next.
+Listing still begins by resolving the supplied SharePoint address and ensuring
+the login handlers are available, but the actual data comes from SharePoint's
+list-view pipeline rather than the denied [[/Folders]] and [[/Files]]
+collections. The same [[RenderListDataAsStream]] endpoint also gives us the
+right forms-auth trigger, so [[UGlogin]] still bootstraps from the exact
+endpoint we will call next.
 <<[[OneDriveSession]] methods>>=
 def list_by_url(self, url: str) -> list:
   """List the direct children of the folder addressed by ``url``."""
@@ -1080,9 +1218,9 @@ def list_by_url(self, url: str) -> list:
   return entries
 @
 
-The read path is deliberately small: resolve the browser URL, ensure login
-handlers are present, request the file bytes, and raise an error on HTTP
-failure.
+The read path is deliberately small: resolve the supplied URL or
+server-relative path, ensure login handlers are present, request the file
+bytes, and raise an error on HTTP failure.
 <<[[OneDriveSession]] methods>>=
 def get_by_url(self, url: str) -> bytes:
   """Download the file addressed by ``url``."""
@@ -1133,6 +1271,7 @@ def test_get_by_url_requests_sharepoint_value_endpoint(monkeypatch):
   session = kthutils.onedrive.OneDriveSession(session=fake_http,
                                               username="alice",
                                               password="secret")
+  probe_calls = []
 
   monkeypatch.setattr(kthutils.onedrive.weblogin.microsoft,
                       "MicrosoftLogin",
@@ -1143,14 +1282,21 @@ def test_get_by_url_requests_sharepoint_value_endpoint(monkeypatch):
   monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
                       "UGlogin",
                       FakeUGlogin)
-  monkeypatch.setattr(kthutils.onedrive.requests,
-                      "get",
-                      lambda *args, **kwargs: FakeResponse(headers={
-                          "X-Forms_Based_Auth_Required":
-                              "https://kth-my.sharepoint.com/_forms/default.aspx"
-                      }))
+  monkeypatch.setattr(kthutils.onedrive,
+                      "get_base_url",
+                      lambda: "https://kth-my.sharepoint.com")
 
-  assert session.get_by_url(copy_link_url) == b"report"
+  def fake_get(url, *args, **kwargs):
+    probe_calls.append(url)
+    return FakeResponse(headers={
+        "X-Forms_Based_Auth_Required":
+            "https://kth-my.sharepoint.com/_forms/default.aspx"
+    })
+
+  monkeypatch.setattr(kthutils.onedrive.requests, "get", fake_get)
+
+  assert session.get_by_url(personal_file_path) == b"report"
+  assert probe_calls == ["https://kth-my.sharepoint.com" + personal_file_path]
   assert fake_http.requests == [{
       "method": "GET",
       "url": (
@@ -1291,11 +1437,12 @@ def test_list_by_url_requests_sharepoint_list_view_endpoint(monkeypatch):
 
 The CLI just bridges local files, folder listings, and the session object
 above. We keep it thin so the real behaviour stays testable through ordinary
-Python methods.
+Python methods, and so path-only support automatically follows the Python API.
 <<option and argument definitions>>=
-url_arg = typer.Argument(help="SharePoint or OneDrive browser URL to a file.")
-folder_url_arg = typer.Argument(help="SharePoint or OneDrive browser URL to a "
-                                     "folder.")
+url_arg = typer.Argument(help="SharePoint URL or server-relative path to a "
+                              "file.")
+folder_url_arg = typer.Argument(help="SharePoint URL or server-relative path "
+                                     "to a folder.")
 output_arg = typer.Argument(help="Local output path. Defaults to the remote "
                                  "file name.")
 local_path_arg = typer.Argument(help="Local file to upload.",
@@ -1353,15 +1500,18 @@ construction are already covered above.
 def test_cli_get_uses_remote_name_by_default(monkeypatch, tmp_path):
   class FakeOneDriveSession:
     def get_by_url(self, url):
-      assert url == copy_link_url
+      assert url == personal_file_path
       return b"downloaded"
 
   monkeypatch.setattr(kthutils.onedrive,
                       "OneDriveSession",
                       lambda: FakeOneDriveSession())
+  monkeypatch.setattr(kthutils.onedrive,
+                      "get_base_url",
+                      lambda: "https://kth-my.sharepoint.com")
   monkeypatch.chdir(tmp_path)
 
-  result = runner.invoke(onedrive_cli, ["get", copy_link_url])
+  result = runner.invoke(onedrive_cli, ["get", personal_file_path])
 
   assert result.exit_code == 0
   assert (tmp_path / "Draft descriptions for research areas.docx").read_bytes() \
@@ -1382,14 +1532,17 @@ def test_cli_put_reads_local_file(monkeypatch, tmp_path):
   monkeypatch.setattr(kthutils.onedrive,
                       "OneDriveSession",
                       lambda: FakeOneDriveSession())
+  monkeypatch.setattr(kthutils.onedrive,
+                      "get_base_url",
+                      lambda: "https://kth-my.sharepoint.com")
 
   result = runner.invoke(onedrive_cli,
-                         ["put", str(local_path), site_file_url,
+                         ["put", str(local_path), personal_file_path,
                           "--no-overwrite"])
 
   assert result.exit_code == 0
   assert uploaded == {
-      "url": site_file_url,
+      "url": personal_file_path,
       "data": b"hello",
       "overwrite": False,
   }
@@ -1398,14 +1551,17 @@ def test_cli_put_reads_local_file(monkeypatch, tmp_path):
 def test_cli_ls_prints_type_and_name(monkeypatch):
   class FakeOneDriveSession:
     def list_by_url(self, url):
-      assert url == allitems_root_url
+      assert url == personal_folder_path
       return [("dir", "Plans"), ("file", "Exam memo.pdf")]
 
   monkeypatch.setattr(kthutils.onedrive,
                       "OneDriveSession",
                       lambda: FakeOneDriveSession())
+  monkeypatch.setattr(kthutils.onedrive,
+                      "get_base_url",
+                      lambda: "https://kth-my.sharepoint.com")
 
-  result = runner.invoke(onedrive_cli, ["ls", allitems_root_url])
+  result = runner.invoke(onedrive_cli, ["ls", personal_folder_path])
 
   assert result.exit_code == 0
   assert result.stdout == "dir\tPlans\nfile\tExam memo.pdf\n"
