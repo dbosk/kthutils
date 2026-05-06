@@ -1,21 +1,22 @@
 \chapter{OneDrive and SharePoint files}
 
 We want to read and write files stored in KTH's OneDrive and SharePoint
-sites. The first constraint is authentication: we do not want to require a
-separate Entra application registration or a client identifier just to move a
-file.
+sites, and to list the contents of folders. The first constraint is
+authentication: we do not want to require a separate Entra application
+registration or a client identifier just to move a file.
 
 The project already has a browser-like login stack through [[ladok3]] and
 [[weblogin]]. We therefore reuse that authenticated session and talk to
-SharePoint's classic REST endpoints instead of Microsoft Graph. This keeps the
-command line workflow close to what already works elsewhere in the package.
+SharePoint's classic REST and list-view endpoints instead of Microsoft Graph.
+This keeps the command line workflow close to what already works elsewhere in
+the package.
 
 
 \section{Code overview}
 
 This module becomes [[kthutils.onedrive]]. We add a small session wrapper,
-helpers for turning browser URLs into SharePoint REST paths, and two commands:
-[[get]] and [[put]].
+helpers for turning browser URLs into SharePoint REST paths, and three
+commands: [[get]], [[ls]], and [[put]].
 <<onedrive.py>>=
 import pathlib
 import typer
@@ -30,7 +31,8 @@ except ImportError:
 <<functions>>
 
 cli = typer.Typer(name="onedrive",
-                  help="Read and write files in OneDrive and SharePoint")
+                  help="Read, write, and list files in OneDrive and "
+                       "SharePoint")
 
 <<option and argument definitions>>
 <<command definitions>>
@@ -70,6 +72,27 @@ copy_link_url = (
 site_file_url = (
     "https://kth.sharepoint.com/sites/example/Shared%20Documents/"
     "Plans/Exam%20memo.pdf"
+)
+site_folder_url = (
+    "https://kth.sharepoint.com/sites/example/Shared%20Documents/Plans/"
+)
+copy_folder_url = (
+    "https://kth.sharepoint.com/:f:/r/sites/example/Shared%20Documents/"
+    "Plans?csf=1&web=1&e=folder"
+)
+allitems_id_url = (
+    "https://kth.sharepoint.com/sites/example/Shared%20Documents/Forms/"
+    "AllItems.aspx?id=%2Fsites%2Fexample%2FShared%20Documents%2FPlans"
+    "&viewid=123"
+)
+allitems_rootfolder_url = (
+    "https://kth.sharepoint.com/sites/example/Shared%20Documents/Forms/"
+    "AllItems.aspx?RootFolder=%2Fsites%2Fexample%2FShared%20Documents"
+    "%2FPlans&FolderCTID=0x012000"
+)
+allitems_root_url = (
+    "https://kth.sharepoint.com/sites/example/Shared%20Documents/Forms/"
+    "AllItems.aspx"
 )
 @
 
@@ -180,6 +203,7 @@ def test_onedrive_help():
   assert result.exit_code == 0
   assert "onedrive" in result.stdout
   assert "OneDrive and SharePoint" in result.stdout
+  assert "ls" in result.stdout
 @
 
 
@@ -198,7 +222,7 @@ We bundle those two values in a small immutable object.
 <<classes>>=
 @dataclasses.dataclass(frozen=True)
 class SharePointLocation:
-  """Resolved SharePoint address for one file."""
+  """Resolved SharePoint address for one file or folder."""
 
   site_url: str
   server_relative_path: str
@@ -226,6 +250,19 @@ def folder_relative_path(self):
   return str(pathlib.PurePosixPath(self.server_relative_path).parent)
 @
 
+Listings address the owning document library and then select one folder inside
+it. The library root is therefore the first three path components of the
+server-relative path.
+<<[[SharePointLocation]] methods>>=
+@property
+def library_relative_path(self):
+  """Return the document-library root for the resolved path."""
+  parts = self.server_relative_path.lstrip("/").split("/")
+  if len(parts) < 3:
+    raise ValueError("SharePoint path does not contain a document library")
+  return "/" + "/".join(parts[:3])
+@
+
 We can verify the derived file and folder names without involving any HTTP at
 all.
 <<test functions>>=
@@ -238,6 +275,8 @@ def test_sharepoint_location_splits_file_and_folder():
   assert location.name == "plan.docx"
   assert location.folder_relative_path == \
       "/personal/annamam_ug_kth_se/Documents/TCS"
+  assert location.library_relative_path == \
+      "/personal/annamam_ug_kth_se/Documents"
 @
 
 The main resolver accepts ordinary file URLs and the more verbose copy-link
@@ -305,6 +344,8 @@ def _build_site_url(parsed, server_relative_path: str) -> str:
 
 These constants capture the supported URL shapes in one place.
 <<constants>>=
+ALL_ITEMS_PATH_SUFFIX = "/Forms/AllItems.aspx"
+ALL_ITEMS_QUERY_KEYS = ("id", "RootFolder")
 COPY_LINK_RE = re.compile(r"^/:[^:]+:/[a-z](/.*)$", re.IGNORECASE)
 SERVER_RELATIVE_PATH_PREFIXES = (
     "/personal/",
@@ -342,13 +383,131 @@ def test_parse_doc_aspx_url_requires_copy_link():
         "https://kth-my.sharepoint.com/personal/user/Doc.aspx?file=plan")
 @
 
+Folder listings have to accept the ordinary SharePoint library view as well.
+Those URLs typically end in [[/Forms/AllItems.aspx]] and either encode the
+current folder in the [[id]] or [[RootFolder]] query parameter, or imply the
+library root when neither query parameter is present. We keep that logic in a
+separate parser so that the file-oriented [[get]] and [[put]] code keeps its
+existing stricter checks.
+<<functions>>=
+def parse_sharepoint_folder_url(url: str) -> SharePointLocation:
+  """Resolve a browser URL into SharePoint REST coordinates for a folder."""
+  parsed = urllib.parse.urlsplit(url)
+  if not parsed.scheme or not parsed.netloc:
+    raise ValueError(f"Unsupported OneDrive URL: {url}")
+
+  server_relative_path = _extract_folder_relative_path(parsed)
+  return SharePointLocation(
+      site_url=_build_site_url(parsed, server_relative_path),
+      server_relative_path=server_relative_path)
+@
+
+The browser sometimes exposes the folder path directly and sometimes hides it
+inside the [[AllItems.aspx]] query string. We normalise both cases to the same
+server-relative form so the REST code can stay agnostic about which browser URL
+shape the user pasted.
+<<functions>>=
+def _extract_folder_relative_path(parsed) -> str:
+  """Return the server-relative folder path embedded in ``parsed``."""
+  decoded_path = urllib.parse.unquote(parsed.path)
+  if decoded_path.lower().endswith("/doc.aspx"):
+    raise ValueError(
+        "Doc.aspx URLs do not expose the folder path. Use a copy link or a "
+        "direct folder URL instead.")
+
+  if decoded_path.lower().endswith(ALL_ITEMS_PATH_SUFFIX.lower()):
+    query = urllib.parse.parse_qs(parsed.query)
+    for key in ALL_ITEMS_QUERY_KEYS:
+      values = query.get(key)
+      if values:
+        return _normalise_folder_relative_path(values[-1])
+    return _normalise_folder_relative_path(
+        decoded_path[:-len(ALL_ITEMS_PATH_SUFFIX)])
+
+  return _normalise_folder_relative_path(
+      _extract_server_relative_path(parsed.path))
+@
+
+SharePoint query parameters sometimes hold the folder as an absolute URL and
+sometimes as a path. We also drop a trailing slash because the REST endpoints
+want the folder itself, not a path segment that looks like a child entry.
+<<functions>>=
+def _normalise_folder_relative_path(path: str) -> str:
+  """Return ``path`` as a normalised server-relative folder path."""
+  decoded_path = urllib.parse.unquote(path)
+  parsed = urllib.parse.urlsplit(decoded_path)
+  if parsed.scheme or parsed.netloc:
+    decoded_path = parsed.path
+  if decoded_path.lower().endswith(ALL_ITEMS_PATH_SUFFIX.lower()):
+    decoded_path = decoded_path[:-len(ALL_ITEMS_PATH_SUFFIX)]
+  if decoded_path.endswith("/") and decoded_path != "/":
+    decoded_path = decoded_path.rstrip("/")
+
+  for prefix in SERVER_RELATIVE_PATH_PREFIXES:
+    if decoded_path.startswith(prefix):
+      return decoded_path
+
+  raise ValueError(f"Unsupported OneDrive folder path: {decoded_path}")
+@
+
+Let's verify the folder-specific URL shapes directly, since they are different
+enough from file URLs that silent misparsing would be hard to spot later.
+<<test functions>>=
+def test_parse_sharepoint_folder_direct_url():
+  location = kthutils.onedrive.parse_sharepoint_folder_url(site_folder_url)
+
+  assert location.site_url == "https://kth.sharepoint.com/sites/example"
+  assert location.server_relative_path == \
+      "/sites/example/Shared Documents/Plans"
+
+
+def test_parse_sharepoint_folder_copy_link():
+  location = kthutils.onedrive.parse_sharepoint_folder_url(copy_folder_url)
+
+  assert location.site_url == "https://kth.sharepoint.com/sites/example"
+  assert location.server_relative_path == \
+      "/sites/example/Shared Documents/Plans"
+
+
+def test_parse_sharepoint_allitems_id_url():
+  location = kthutils.onedrive.parse_sharepoint_folder_url(allitems_id_url)
+
+  assert location.site_url == "https://kth.sharepoint.com/sites/example"
+  assert location.server_relative_path == \
+      "/sites/example/Shared Documents/Plans"
+
+
+def test_parse_sharepoint_allitems_rootfolder_url():
+  location = kthutils.onedrive.parse_sharepoint_folder_url(
+      allitems_rootfolder_url)
+
+  assert location.site_url == "https://kth.sharepoint.com/sites/example"
+  assert location.server_relative_path == \
+      "/sites/example/Shared Documents/Plans"
+
+
+def test_parse_sharepoint_allitems_root_url():
+  location = kthutils.onedrive.parse_sharepoint_folder_url(allitems_root_url)
+
+  assert location.site_url == "https://kth.sharepoint.com/sites/example"
+  assert location.server_relative_path == \
+      "/sites/example/Shared Documents"
+
+
+def test_parse_sharepoint_folder_doc_aspx_requires_copy_link():
+  with pytest.raises(ValueError,
+                     match="Doc.aspx URLs do not expose the folder path"):
+    kthutils.onedrive.parse_sharepoint_folder_url(
+        "https://kth.sharepoint.com/sites/example/Doc.aspx?id=%2Fplans")
+@
+
 
 \section{SharePoint REST endpoints}
 
-The session methods call SharePoint's classic REST endpoints, which still work
-with cookie-based authentication. The tricky part is that those endpoints embed
-paths inside OData string literals, so single quotes inside names must be
-escaped.
+The session methods use SharePoint's classic REST endpoints for file transfers
+and the list-view endpoint for folder listings, all with the same shared
+cookie-based authentication. The classic REST URLs embed paths inside OData
+string literals, so single quotes inside names must be escaped.
 <<functions>>=
 def _escape_odata_string(value: str) -> str:
   """Return ``value`` escaped for an OData string literal."""
@@ -379,12 +538,44 @@ def _upload_url(location: SharePointLocation, overwrite: bool) -> str:
       f"Files/add(url='{name}',overwrite={str(overwrite).lower()})")
 @
 
+Listings use a different SharePoint endpoint. Shared personal OneDrive folders
+can deny [[GetFolderByServerRelativeUrl(...)/Folders]] and [[.../Files]] even
+after authentication, while the browser still renders them through
+[[RenderListDataAsStream]]. We therefore ask the owning document library to
+render the target folder as a list view instead of calling the denied child
+collection endpoints directly.
+<<functions>>=
+def _render_list_data_url(location: SharePointLocation) -> str:
+  """Return the list-view endpoint for listing ``location``."""
+  list_url = urllib.parse.quote(
+      f"'{_escape_odata_string(location.library_relative_path)}'",
+      safe="")
+  return (
+      f"{location.site_url}/_api/web/"
+      f"GetList(@listUrl)/RenderListDataAsStream?@listUrl={list_url}")
+@
+
+<<functions>>=
+def _render_list_data_body(location: SharePointLocation) -> dict:
+  """Return the list-view request payload for listing ``location``."""
+  return {
+      "parameters": {
+          "RenderOptions": LIST_DATA_RENDER_OPTIONS,
+          "AddRequiredFields": True,
+          "FolderServerRelativeUrl": location.server_relative_path,
+      }
+  }
+@
+
 SharePoint does not always redirect unauthenticated users straight into the KTH
-login flow. For file requests it often returns [[403]] with an
-[[X-Forms_Based_Auth_Required]] header that points at the real entry page. If
-we keep retrying the plain site URL, [[UGlogin]] only sees the same forbidden
-response and recurses forever. We therefore probe the browser URL once and feed
-that trigger URL back into the login handler.
+login flow. It often returns [[403]] with an [[X-Forms_Based_Auth_Required]]
+header that points at the real entry page. That header can depend on the exact
+endpoint: a browser folder URL, the old [[/Folders]] endpoint, and
+[[RenderListDataAsStream]] for the same folder need not agree. If we keep
+retrying a broader site URL, or even the wrong browser URL, [[UGlogin]] only
+sees the same forbidden response and recurses forever. We therefore probe the
+actual SharePoint endpoint first and only fall back to [[location.site_url]]
+when that endpoint does not expose a forms-auth trigger.
 <<functions>>=
 def _login_trigger_url(url: str, location: SharePointLocation) -> str:
   """Return the best login trigger URL for ``location``."""
@@ -441,6 +632,22 @@ def test_upload_url_uses_folder_and_file_name():
       "GetFolderByServerRelativeUrl('"
       "/sites/example/Shared Documents/Plans')/"
       "Files/add(url='Exam memo.pdf',overwrite=false)")
+
+
+def test_render_list_data_request_uses_library_and_folder_paths():
+  location = kthutils.onedrive.parse_sharepoint_folder_url(site_folder_url)
+
+  assert kthutils.onedrive._render_list_data_url(location) == (
+      "https://kth.sharepoint.com/sites/example/_api/web/"
+      "GetList(@listUrl)/RenderListDataAsStream?@listUrl="
+      "%27%2Fsites%2Fexample%2FShared%20Documents%27")
+  assert kthutils.onedrive._render_list_data_body(location) == {
+      "parameters": {
+          "RenderOptions": 2,
+          "AddRequiredFields": True,
+          "FolderServerRelativeUrl": "/sites/example/Shared Documents/Plans",
+      }
+  }
 
 
 def test_login_trigger_uses_sharepoint_forms_header(monkeypatch):
@@ -560,8 +767,9 @@ existing handlers can drive), and the generic KTH SAML relay plus the
 
 We attach those handlers lazily per site. That keeps the constructor simple and
 lets the same session talk to both personal OneDrive hosts and ordinary
-SharePoint sites. The trigger URL comes from [[_login_trigger_url()]] so that
-SharePoint's forms-auth header can steer [[UGlogin]] into a real login page.
+SharePoint sites. The trigger URL comes from [[_login_trigger_url()]] using
+the exact SharePoint endpoint we are about to call, so the forms-auth header
+can steer [[UGlogin]] into a real login page.
 
 [[MicrosoftLogin]] is added first so it can intercept the Azure AD
 [[oauth2/authorize]] page before [[UGlogin]] sees it. Without that ordering,
@@ -581,6 +789,18 @@ forms-auth bootstrap goes through [[/_forms/default.aspx]] on the host
 root, never through the personal-site path itself. The SharePoint host
 root (for example [[https://kth-my.sharepoint.com]]) satisfies both
 conditions.
+
+The trigger URL is more specific than the host root, and sometimes more
+specific than the browser URL itself. SharePoint can hand out different
+forms-auth entry points for different file, folder, or REST endpoints, and
+[[UGlogin]] treats that trigger as part of its configuration. Because the
+underlying [[ladok3]] browser session is shared, a file download and a later
+folder listing on the same SharePoint host would otherwise accumulate two
+different [[UGlogin]] handlers with the same [[base_url]] but different trigger
+URLs. [[AutologinSession]] runs handlers in insertion order, so the stale one
+would keep claiming the host and bootstrapping the wrong page. We therefore
+refresh any existing SharePoint-scoped [[UGlogin]] for the same host root
+before adding the current one.
 <<[[OneDriveSession]] methods>>=
 def _ensure_login_handlers(self, url: str, location: SharePointLocation):
   """Attach the KTH web-login handlers needed for ``location``."""
@@ -596,15 +816,41 @@ def _ensure_login_handlers(self, url: str, location: SharePointLocation):
   logger.debug("Ensuring SharePoint login handlers for %s", location.site_url)
   logger.debug("UGlogin trigger URL is %s", login_trigger_url)
   logger.debug("UGlogin base URL is %s", site_host_root)
+  <<refresh SharePoint [[UGlogin]] handlers for this host>>
   self.__session.add_handler(
       weblogin.microsoft.MicrosoftLogin(domain_hint=AZURE_AD_DOMAIN_HINT))
   self.__session.add_handler(weblogin.kth.SAMLlogin(rerun_requests=True))
   self.__session.add_handler(
       weblogin.kth.UGlogin(self.__username,
                            self.__password,
-                           login_trigger_url=login_trigger_url,
-                           base_url=site_host_root,
-                           rerun_requests=True))
+                            login_trigger_url=login_trigger_url,
+                            base_url=site_host_root,
+                            rerun_requests=True))
+@
+
+We only want one SharePoint-scoped [[UGlogin]] per host root. The session API
+lets us append handlers, but not replace them, so we prune stale ones directly
+from the underlying handler list before we add the current configuration.
+<<refresh SharePoint [[UGlogin]] handlers for this host>>=
+handlers = getattr(self.__session, "_AutologinSession__handlers", None)
+if handlers is None:
+  handlers = getattr(self.__session, "handlers", None)
+if handlers is not None:
+  stale_handlers = []
+  for handler in handlers:
+    if not isinstance(handler, weblogin.kth.UGlogin):
+      continue
+    handler_base_url = getattr(handler, "base_url", None)
+    if handler_base_url is None:
+      handler_base_url = getattr(handler, "_UGlogin__base_url", None)
+    if handler_base_url == site_host_root:
+      stale_handlers.append(handler)
+  if stale_handlers:
+    logger.debug("Refreshing %s SharePoint UGlogin handler(s) for %s",
+                 len(stale_handlers),
+                 site_host_root)
+    handlers[:] = [handler for handler in handlers
+                   if handler not in stale_handlers]
 @
 
 KTH's federated domain in Azure AD is [[ug.kth.se]]; this is the value Azure
@@ -690,13 +936,73 @@ def test_default_session_reuses_equal_handlers(monkeypatch):
   assert first.get_by_url(copy_link_url) == b"one"
   assert second.get_by_url(copy_link_url) == b"two"
   assert len(fake_http.handlers) == 3
+
+
+def test_sharepoint_uglogin_refreshes_trigger_for_same_host(monkeypatch):
+  file_trigger = (
+      "https://kth.sharepoint.com/_forms/default.aspx?Source=%2fsites%2f"
+      "example%2fShared%20Documents%2fPlans%2fExam%20memo.pdf")
+  folder_trigger = (
+      "https://kth.sharepoint.com/_forms/default.aspx?Source=%2f_vti_bin"
+      "%2fclient.svc%2fweb%2fGetList(%40listUrl)%2fRenderListDataAsStream"
+      "%3f%40listUrl%3d%2527%252Fsites%252Fexample%252FShared%2520"
+      "Documents%2527")
+  folder_api_url = kthutils.onedrive._render_list_data_url(
+      kthutils.onedrive.parse_sharepoint_folder_url(site_folder_url))
+  probe_calls = []
+  fake_http = FakeHTTPSession([
+      FakeResponse(content=b"report"),
+      FakeResponse(json_data={"Row": []}),
+  ])
+
+  monkeypatch.setattr(kthutils.onedrive.weblogin.microsoft,
+                      "MicrosoftLogin",
+                      FakeMicrosoftLogin)
+  monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
+                      "SAMLlogin",
+                      FakeSAMLlogin)
+  monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
+                      "UGlogin",
+                      FakeUGlogin)
+
+  def fake_get(url, *args, **kwargs):
+    probe_calls.append(url)
+    if url == site_file_url:
+      return FakeResponse(headers={"X-Forms_Based_Auth_Required":
+                                   file_trigger})
+    if url == folder_api_url:
+      return FakeResponse(headers={"X-Forms_Based_Auth_Required":
+                                   folder_trigger})
+    raise AssertionError(f"Unexpected login-trigger probe for {url}")
+
+  monkeypatch.setattr(kthutils.onedrive.requests, "get", fake_get)
+
+  first = kthutils.onedrive.OneDriveSession(session=fake_http,
+                                            username="alice",
+                                            password="secret")
+  second = kthutils.onedrive.OneDriveSession(session=fake_http,
+                                             username="alice",
+                                             password="secret")
+
+  assert first.get_by_url(site_file_url) == b"report"
+  assert second.list_by_url(site_folder_url) == []
+  assert probe_calls == [site_file_url, folder_api_url]
+  assert len(fake_http.handlers) == 3
+  assert fake_http.handlers[2].login_trigger_url == folder_trigger
+  assert fake_http.handlers[2].base_url == "https://kth.sharepoint.com"
 @
 
-SharePoint requires a form digest for write requests. The digest comes from the
-site's [[contextinfo]] endpoint and is short-lived, so we fetch it on demand for
-each upload.
+SharePoint's write-side endpoints use verbose OData, while the list-view
+pipeline returns a smaller no-metadata JSON document. Its rows use
+[[FSObjType]] to distinguish files from folders.
 <<constants>>=
-FORM_DIGEST_ACCEPT = "application/json;odata=verbose"
+LIST_DATA_OBJECT_TYPES = {
+    "0": "file",
+    "1": "dir",
+}
+LIST_DATA_RENDER_OPTIONS = 2
+ODATA_NOMETADATA_ACCEPT = "application/json;odata=nometadata"
+ODATA_VERBOSE_ACCEPT = "application/json;odata=verbose"
 @
 
 <<[[OneDriveSession]] methods>>=
@@ -706,7 +1012,7 @@ def _get_form_digest(self, location: SharePointLocation) -> str:
   response = self.__session.request(
       "POST",
       f"{location.site_url}/_api/contextinfo",
-      headers={"Accept": FORM_DIGEST_ACCEPT})
+      headers={"Accept": ODATA_VERBOSE_ACCEPT})
   logger.debug("SharePoint form digest response status %s",
                response.status_code)
   response.raise_for_status()
@@ -714,7 +1020,64 @@ def _get_form_digest(self, location: SharePointLocation) -> str:
   try:
     return payload["d"]["GetContextWebInformation"]["FormDigestValue"]
   except KeyError as exc:
-    raise ValueError("SharePoint did not return a form digest") from exc
+   raise ValueError("SharePoint did not return a form digest") from exc
+@
+
+SharePoint's list-view endpoint returns rows directly at the top level. We keep
+the payload extraction and row classification in helpers so [[list_by_url()]]
+stays focused on the request and the final output order.
+<<functions>>=
+def _list_data_rows(payload) -> list:
+  """Return the rows from a SharePoint list-view payload."""
+  try:
+    return payload["Row"]
+  except KeyError as exc:
+    raise ValueError("SharePoint did not return list rows") from exc
+@
+
+<<functions>>=
+def _list_data_entry(row) -> tuple:
+  """Return one ``(kind, name)`` pair from a SharePoint list row."""
+  try:
+    return (LIST_DATA_OBJECT_TYPES[str(row["FSObjType"])],
+            row["FileLeafRef"])
+  except KeyError as exc:
+    raise ValueError(
+        "SharePoint list row did not contain the expected fields") from exc
+@
+
+Listing still begins by resolving the browser URL and ensuring the login
+handlers are available, but the actual data comes from SharePoint's list-view
+pipeline rather than the denied [[/Folders]] and [[/Files]] collections. The
+same [[RenderListDataAsStream]] endpoint also gives us the right forms-auth
+trigger, so [[UGlogin]] still bootstraps from the exact endpoint we will call
+next.
+<<[[OneDriveSession]] methods>>=
+def list_by_url(self, url: str) -> list:
+  """List the direct children of the folder addressed by ``url``."""
+  location = parse_sharepoint_folder_url(url)
+  list_data_url = _render_list_data_url(location)
+  logger.debug("Listing %s from %s",
+               location.server_relative_path,
+               location.site_url)
+  self._ensure_login_handlers(list_data_url, location)
+
+  response = self.__session.request(
+      "POST",
+      list_data_url,
+      headers={
+          "Accept": ODATA_NOMETADATA_ACCEPT,
+          "Content-Type": ODATA_NOMETADATA_ACCEPT,
+      },
+      json=_render_list_data_body(location))
+  logger.debug("SharePoint list-data response status %s for %s",
+               response.status_code,
+               location.server_relative_path)
+  response.raise_for_status()
+
+  entries = [_list_data_entry(row) for row in _list_data_rows(response.json())]
+  entries.sort(key=lambda entry: (entry[0], entry[1].casefold(), entry[1]))
+  return entries
 @
 
 The read path is deliberately small: resolve the browser URL, ensure login
@@ -855,15 +1218,84 @@ def test_put_by_url_requests_digest_then_upload(monkeypatch):
       "json": None,
       "data": b"payload",
   }]
+
+
+def test_list_by_url_requests_sharepoint_list_view_endpoint(monkeypatch):
+  fake_http = FakeHTTPSession([FakeResponse(json_data={
+      "Row": [
+          {"FSObjType": "1", "FileLeafRef": "Zeta"},
+          {"FSObjType": "1", "FileLeafRef": "alpha"},
+          {"FSObjType": "0", "FileLeafRef": "memo.txt"},
+          {"FSObjType": "0", "FileLeafRef": "Agenda.txt"},
+      ]
+  })])
+  session = kthutils.onedrive.OneDriveSession(session=fake_http,
+                                              username="alice",
+                                              password="secret")
+  location = kthutils.onedrive.parse_sharepoint_folder_url(site_folder_url)
+  list_data_url = kthutils.onedrive._render_list_data_url(location)
+  probe_calls = []
+
+  monkeypatch.setattr(kthutils.onedrive.weblogin.microsoft,
+                      "MicrosoftLogin",
+                      FakeMicrosoftLogin)
+  monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
+                      "SAMLlogin",
+                      FakeSAMLlogin)
+  monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
+                      "UGlogin",
+                      FakeUGlogin)
+
+  def fake_get(url, *args, **kwargs):
+    probe_calls.append(url)
+    if url == list_data_url:
+      return FakeResponse(headers={
+          "X-Forms_Based_Auth_Required":
+              "https://kth.sharepoint.com/_forms/default.aspx"
+      })
+    raise AssertionError(f"Unexpected login-trigger probe for {url}")
+
+  monkeypatch.setattr(kthutils.onedrive.requests, "get", fake_get)
+
+  assert session.list_by_url(site_folder_url) == [
+      ("dir", "alpha"),
+      ("dir", "Zeta"),
+      ("file", "Agenda.txt"),
+      ("file", "memo.txt"),
+  ]
+  assert probe_calls == [list_data_url]
+  assert fake_http.requests == [{
+      "method": "POST",
+      "url": (
+          "https://kth.sharepoint.com/sites/example/_api/web/"
+          "GetList(@listUrl)/RenderListDataAsStream?@listUrl="
+          "%27%2Fsites%2Fexample%2FShared%20Documents%27"),
+      "headers": {
+          "Accept": "application/json;odata=nometadata",
+          "Content-Type": "application/json;odata=nometadata",
+      },
+      "params": None,
+      "json": {
+          "parameters": {
+              "RenderOptions": 2,
+              "AddRequiredFields": True,
+              "FolderServerRelativeUrl": "/sites/example/Shared Documents/Plans",
+          }
+      },
+      "data": None,
+  }]
 @
 
 
 \section{The command-line interface}
 
-The CLI just bridges local files and the session object above. We keep it thin
-so the real behaviour stays testable through ordinary Python methods.
+The CLI just bridges local files, folder listings, and the session object
+above. We keep it thin so the real behaviour stays testable through ordinary
+Python methods.
 <<option and argument definitions>>=
 url_arg = typer.Argument(help="SharePoint or OneDrive browser URL to a file.")
+folder_url_arg = typer.Argument(help="SharePoint or OneDrive browser URL to a "
+                                     "folder.")
 output_arg = typer.Argument(help="Local output path. Defaults to the remote "
                                  "file name.")
 local_path_arg = typer.Argument(help="Local file to upload.",
@@ -888,6 +1320,17 @@ def cli_get(url: Annotated[str, url_arg],
     output = pathlib.Path(location.name)
   logger.debug("Writing downloaded file to %s", output)
   output.write_bytes(OneDriveSession().get_by_url(url))
+@
+
+The [[ls]] command is deliberately non-recursive. It prints one tab-separated
+line per child entry so the output stays readable to humans and easy to feed
+into shell tools.
+<<command definitions>>=
+@cli.command(name="ls")
+def cli_ls(url: Annotated[str, folder_url_arg]):
+  """List the direct contents of a OneDrive or SharePoint folder."""
+  for kind, name in OneDriveSession().list_by_url(url):
+    print(f"{kind}\t{name}")
 @
 
 For [[put]] the caller already has the local file, so the command only needs to
@@ -950,4 +1393,20 @@ def test_cli_put_reads_local_file(monkeypatch, tmp_path):
       "data": b"hello",
       "overwrite": False,
   }
+
+
+def test_cli_ls_prints_type_and_name(monkeypatch):
+  class FakeOneDriveSession:
+    def list_by_url(self, url):
+      assert url == allitems_root_url
+      return [("dir", "Plans"), ("file", "Exam memo.pdf")]
+
+  monkeypatch.setattr(kthutils.onedrive,
+                      "OneDriveSession",
+                      lambda: FakeOneDriveSession())
+
+  result = runner.invoke(onedrive_cli, ["ls", allitems_root_url])
+
+  assert result.exit_code == 0
+  assert result.stdout == "dir\tPlans\nfile\tExam memo.pdf\n"
 @
