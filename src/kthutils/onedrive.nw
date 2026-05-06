@@ -158,6 +158,19 @@ class FakeUGlogin:
             and self.login_trigger_url == other.login_trigger_url
             and self.base_url == other.base_url
             and self.rerun_requests == other.rerun_requests)
+
+
+class FakeMicrosoftLogin:
+  def __init__(self, domain_hint, tenant=None, hosts=None):
+    self.domain_hint = domain_hint
+    self.tenant = tenant
+    self.hosts = hosts
+
+  def __eq__(self, other):
+    return (type(self) is type(other)
+            and self.domain_hint == other.domain_hint
+            and self.tenant == other.tenant
+            and self.hosts == other.hosts)
 @
 
 We can then verify that the module itself exposes the intended Typer subtree.
@@ -530,6 +543,7 @@ import re
 import requests
 import urllib.parse
 import weblogin.kth
+import weblogin.microsoft
 @
 
 We reuse the package's normal logging configuration, but keep a module logger so
@@ -539,13 +553,34 @@ logger = logging.getLogger(__name__)
 @
 
 The shared session already knows how to handle KTH's Ladok SSO and Microsoft
-Authenticator pages. SharePoint adds one missing hop: the generic KTH SAML relay
-plus the [[UGlogin]] handler used by services behind [[login.ug.kth.se]].
+Authenticator pages. SharePoint adds two missing hops: the Azure AD federated
+sign-in screen (which Microsoft serves as a JavaScript page that none of the
+existing handlers can drive), and the generic KTH SAML relay plus the
+[[UGlogin]] handler used by services behind [[login.ug.kth.se]].
 
 We attach those handlers lazily per site. That keeps the constructor simple and
 lets the same session talk to both personal OneDrive hosts and ordinary
 SharePoint sites. The trigger URL comes from [[_login_trigger_url()]] so that
 SharePoint's forms-auth header can steer [[UGlogin]] into a real login page.
+
+[[MicrosoftLogin]] is added first so it can intercept the Azure AD
+[[oauth2/authorize]] page before [[UGlogin]] sees it. Without that ordering,
+[[UGlogin]] misclassifies the JavaScript sign-in page as \enquote{already
+authenticated}, replays the original failing request, and loops. The
+[[domain_hint]] points at KTH's federated domain so Azure AD redirects
+straight to [[login.ug.kth.se]] where [[SAMLlogin]] and [[UGlogin]] take over.
+
+[[UGlogin]] needs a [[base_url]] for two related checks. First,
+[[need_login]] only treats a 401/403 as our concern when the failing URL
+belongs to our service; without [[base_url]] it falls back to a substring
+check for [[kth.se]], which never matches SharePoint hosts such as
+[[kth-my.sharepoint.com]]. Second, on the final redirect to
+[[login.ug.kth.se]], [[need_login]] only claims the redirect when one of
+the URLs in [[response.history]] starts with [[base_url]]; SharePoint's
+forms-auth bootstrap goes through [[/_forms/default.aspx]] on the host
+root, never through the personal-site path itself. The SharePoint host
+root (for example [[https://kth-my.sharepoint.com]]) satisfies both
+conditions.
 <<[[OneDriveSession]] methods>>=
 def _ensure_login_handlers(self, url: str, location: SharePointLocation):
   """Attach the KTH web-login handlers needed for ``location``."""
@@ -556,15 +591,26 @@ def _ensure_login_handlers(self, url: str, location: SharePointLocation):
     return
 
   login_trigger_url = _login_trigger_url(url, location)
+  parsed_site = urllib.parse.urlsplit(location.site_url)
+  site_host_root = f"{parsed_site.scheme}://{parsed_site.netloc}"
   logger.debug("Ensuring SharePoint login handlers for %s", location.site_url)
   logger.debug("UGlogin trigger URL is %s", login_trigger_url)
+  logger.debug("UGlogin base URL is %s", site_host_root)
+  self.__session.add_handler(
+      weblogin.microsoft.MicrosoftLogin(domain_hint=AZURE_AD_DOMAIN_HINT))
   self.__session.add_handler(weblogin.kth.SAMLlogin(rerun_requests=True))
   self.__session.add_handler(
       weblogin.kth.UGlogin(self.__username,
                            self.__password,
                            login_trigger_url=login_trigger_url,
-                           base_url=location.site_url,
+                           base_url=site_host_root,
                            rerun_requests=True))
+@
+
+KTH's federated domain in Azure AD is [[ug.kth.se]]; this is the value Azure
+AD uses to look up the federated identity provider mapping.
+<<constants>>=
+AZURE_AD_DOMAIN_HINT = "ug.kth.se"
 @
 
 We can verify both the shared-session reuse and the duplicate suppression using
@@ -580,6 +626,9 @@ def test_default_session_uses_shared_browser_session(monkeypatch):
   monkeypatch.setattr(kthutils.onedrive.kthutils.credentials,
                       "get_credentials",
                       lambda: ("alice", "secret"))
+  monkeypatch.setattr(kthutils.onedrive.weblogin.microsoft,
+                      "MicrosoftLogin",
+                      FakeMicrosoftLogin)
   monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
                       "SAMLlogin",
                       FakeSAMLlogin)
@@ -597,12 +646,13 @@ def test_default_session_uses_shared_browser_session(monkeypatch):
 
   assert session.get_by_url(copy_link_url) == b"plan"
   assert session._OneDriveSession__session is fake_http
-  assert len(fake_http.handlers) == 2
-  assert fake_http.handlers[0].rerun_requests is True
-  assert fake_http.handlers[1].login_trigger_url == \
+  assert len(fake_http.handlers) == 3
+  assert fake_http.handlers[0].domain_hint == "ug.kth.se"
+  assert fake_http.handlers[1].rerun_requests is True
+  assert fake_http.handlers[2].login_trigger_url == \
       "https://kth-my.sharepoint.com/_forms/default.aspx"
-  assert fake_http.handlers[1].base_url == \
-      "https://kth-my.sharepoint.com/personal/annamam_ug_kth_se"
+  assert fake_http.handlers[2].base_url == \
+      "https://kth-my.sharepoint.com"
 
 
 def test_default_session_reuses_equal_handlers(monkeypatch):
@@ -618,6 +668,9 @@ def test_default_session_reuses_equal_handlers(monkeypatch):
   monkeypatch.setattr(kthutils.onedrive.kthutils.credentials,
                       "get_credentials",
                       lambda: ("alice", "secret"))
+  monkeypatch.setattr(kthutils.onedrive.weblogin.microsoft,
+                      "MicrosoftLogin",
+                      FakeMicrosoftLogin)
   monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
                       "SAMLlogin",
                       FakeSAMLlogin)
@@ -636,7 +689,7 @@ def test_default_session_reuses_equal_handlers(monkeypatch):
 
   assert first.get_by_url(copy_link_url) == b"one"
   assert second.get_by_url(copy_link_url) == b"two"
-  assert len(fake_http.handlers) == 2
+  assert len(fake_http.handlers) == 3
 @
 
 SharePoint requires a form digest for write requests. The digest comes from the
@@ -718,6 +771,9 @@ def test_get_by_url_requests_sharepoint_value_endpoint(monkeypatch):
                                               username="alice",
                                               password="secret")
 
+  monkeypatch.setattr(kthutils.onedrive.weblogin.microsoft,
+                      "MicrosoftLogin",
+                      FakeMicrosoftLogin)
   monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
                       "SAMLlogin",
                       FakeSAMLlogin)
@@ -762,6 +818,9 @@ def test_put_by_url_requests_digest_then_upload(monkeypatch):
                                               username="alice",
                                               password="secret")
 
+  monkeypatch.setattr(kthutils.onedrive.weblogin.microsoft,
+                      "MicrosoftLogin",
+                      FakeMicrosoftLogin)
   monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
                       "SAMLlogin",
                       FakeSAMLlogin)
