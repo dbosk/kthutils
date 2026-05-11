@@ -265,6 +265,18 @@ def test_onedrive_command():
   assert "onedrive" in result.stdout
 @
 
+The nested page-publishing subcommand is part of the public CLI surface too,
+so we verify that the top-level dispatcher exposes it correctly.
+<<test functions>>=
+def test_onedrive_page_publish_command():
+  """Test that the onedrive page publish command shows help"""
+  result = runner.invoke(kthutils.cli.cli,
+                         ["onedrive", "page", "publish", "--help"])
+  assert result.exit_code == 0
+  assert "publish" in result.stdout
+  assert "modern SharePoint page" in result.stdout
+@
+
 
 \section{Credentials: username and password}\label{Credentials}
 
