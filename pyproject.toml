@@ -42,6 +42,12 @@ exclude = [
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.2.0"
 
+[tool.pytest.ini_options]
+markers = [
+  "live: tests that use live external services (deselect with -m 'not live')",
+  "kth_live: live tests against KTH services",
+]
+
 [project.scripts]
 kthutils = "kthutils.cli:cli"
 

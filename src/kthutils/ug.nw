@@ -63,8 +63,14 @@ as we add methods to [[<<UG methods>>]].
 <<test ug.py>>=
 import kthutils.ug
 import os
+import pytest
 
 ug = kthutils.ug.UGsession()
+
+# Every test here drives a real UGsession against the KTH UG API, so the
+# whole module is a live test. Mark it so the default `-m "not live"` run
+# stays hermetic; run it with the `live`/`kth_live` Make targets.
+pytestmark = [pytest.mark.live, pytest.mark.kth_live]
 
 <<test functions>>
 @

@@ -298,6 +298,8 @@ import requests
 
 We can test this with a known form.
 <<test functions>>=
+@pytest.mark.live
+@pytest.mark.kth_live
 def test_get_data_by_url():
   data, content_type = forms.get_data_by_url(restlabb_url)
   assert content_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -327,6 +329,8 @@ We'll use the same form as before, this is the form for Restlabb 2023/2024.
 The first column is \enquote{Svarsdatum} and the second is \enquote{Kurs}.
 We do this test twice to catch any generators not converted to lists.
 <<test functions>>=
+@pytest.mark.live
+@pytest.mark.kth_live
 def test_get_csv_by_url():
   csvdata = forms.get_csv_by_url(restlabb_url)
   assert "Svarsdatum" in csvdata[0] and "Kurs" in csvdata[0]
@@ -434,6 +438,8 @@ We can then get the URL for the form from the configuration and use the
 
 Let's test this.
 <<test functions>>=
+@pytest.mark.live
+@pytest.mark.kth_live
 def test_cli_export_command():
   <<add restlabb form>>
   result = runner.invoke(forms_cli, [
@@ -468,6 +474,8 @@ csvdata = export(name)
 We can test this as well.
 We simply test that we get the correct data.
 <<test functions>>=
+@pytest.mark.live
+@pytest.mark.kth_live
 def test_export_function():
   <<add restlabb form>>
   csvdata = kthutils.forms.export("restlabb")
@@ -492,6 +500,8 @@ for row in csvdata:
 
 We can test this as well.
 <<test functions>>=
+@pytest.mark.live
+@pytest.mark.kth_live
 def test_export_delimiter():
   <<add restlabb form>>
   result = runner.invoke(forms_cli, [
@@ -589,12 +599,16 @@ We already did this above, but we need to do it again between each test here.
 This also means that we must readd the form each time, since we also add a new 
 config doing this.
 <<test functions>>=
+@pytest.mark.live
+@pytest.mark.kth_live
 def test_next_command():
   <<reset [[config.dirs]]>>
   <<add restlabb form>>
   <<add test form>>
   <<test the next command>>
 
+@pytest.mark.live
+@pytest.mark.kth_live
 def test_next_function():
   <<reset [[config.dirs]]>>
   <<add restlabb form>>

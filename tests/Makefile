@@ -12,9 +12,23 @@ TESTS=	$(shell ${find_tests})
 
 DEBUG=
 
+NONLIVE_MARK_EXPR=	-m "not live"
+LIVE_MARK_EXPR=		-m "live"
+
+# The default test run is hermetic: it deselects tests marked `live`, so it
+# never touches KTH or other external services. Use the `live`/`kth_live`
+# targets to run the end-to-end tests against the real services.
 .PHONY: all
 all: $(foreach files,${TESTS},$(shell echo ${files} | cut -d: -f1))
-	poetry run pytest $(if ${DEBUG},--pdb)
+	poetry run pytest ${NONLIVE_MARK_EXPR} $(if ${DEBUG},--pdb)
+
+.PHONY: live
+live: $(foreach files,${TESTS},$(shell echo ${files} | cut -d: -f1))
+	poetry run pytest ${LIVE_MARK_EXPR} $(if ${DEBUG},--pdb)
+
+.PHONY: kth_live
+kth_live: $(foreach files,${TESTS},$(shell echo ${files} | cut -d: -f1))
+	poetry run pytest -m "kth_live" $(if ${DEBUG},--pdb)
 
 $(foreach files,${TESTS},$(eval $(call def_target, ${files})))
 
