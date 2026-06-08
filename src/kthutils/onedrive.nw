@@ -84,7 +84,6 @@ onedrive_cli = kthutils.onedrive.cli
 <<file URL parsing tests>>
 <<folder URL parsing tests>>
 <<REST endpoint tests>>
-<<login trigger tests>>
 <<session setup tests>>
 <<transfer tests>>
 <<browsing tests>>
@@ -738,7 +737,8 @@ def _is_site_root_path(server_relative_path: Optional[str]) -> bool:
 def _location_label(location: SharePointLocation) -> str:
   """Return a readable label for ``location``."""
   if location.server_relative_path is None:
-    return urllib.parse.urlsplit(location.site_url).path.rstrip("/").split("/")[-1]
+    site_path = urllib.parse.urlsplit(location.site_url).path
+    return site_path.rstrip("/").split("/")[-1]
   return pathlib.PurePosixPath(location.server_relative_path).name
 @
 
@@ -1155,7 +1155,6 @@ import kthutils.credentials
 import logging
 import os
 import re
-import requests
 import typerconf
 import urllib.parse
 import weblogin.kth
@@ -1163,20 +1162,30 @@ import weblogin.microsoft
 @
 
 <<constants>>=
-LOGIN_TRIGGER_TIMEOUT = 15
 logger = logging.getLogger(__name__)
 AZURE_AD_DOMAIN_HINT = "ug.kth.se"
 @
 
 SharePoint needs the Azure AD federated sign-in hop, KTH's SAML relay, and a
-properly scoped [[UGlogin]] handler. We attach them lazily so the shared
-session can talk to both ordinary sites and personal OneDrive hosts.
+[[UGlogin]] handler scoped to the host we are about to call. We attach them
+lazily so the shared session can talk to both ordinary sites and personal
+OneDrive hosts.
 
-The [[UGlogin]] trigger URL comes from the exact SharePoint endpoint we are
-about to call. That matters because a file URL, a folder list URL, and a site
-root can each bootstrap forms authentication slightly differently.
+We only ever append handlers, never replace them. Each handler is configured
+identically for a given host, so [[add_handler]] --- which deduplicates by
+value equality --- keeps exactly one handler of each kind per host no matter
+how many operations run on the shared session. That is what makes this method
+safe to call repeatedly on the session shared with [[ladok3]]: it never
+mutates or evicts another module's handlers.
+
+Scoping [[UGlogin]] by [[base_url]] (the host root) rather than by a specific
+endpoint is what lets one handler serve every file, folder, and site-page
+request on that host. When SharePoint answers an unauthenticated REST call
+with a 403, [[UGlogin]] reads the bootstrap URL from the response's
+[[X-Forms_Based_Auth_Required]] header (weblogin~1.21), so we no longer probe
+each endpoint ourselves to discover a trigger URL.
 <<[[OneDriveSession]] methods>>=
-def _ensure_login_handlers(self, url: str, location: SharePointLocation):
+def _ensure_login_handlers(self, location: SharePointLocation):
   """Attach the KTH web-login handlers needed for ``location``."""
   if self.__username is None or self.__password is None:
     logger.debug("Skipping login handlers for %s because credentials are "
@@ -1184,47 +1193,18 @@ def _ensure_login_handlers(self, url: str, location: SharePointLocation):
                  location.site_url)
     return
 
-  login_trigger_url = _login_trigger_url(url, location)
   parsed_site = urllib.parse.urlsplit(location.site_url)
   site_host_root = f"{parsed_site.scheme}://{parsed_site.netloc}"
   logger.debug("Ensuring SharePoint login handlers for %s", location.site_url)
-  logger.debug("UGlogin trigger URL is %s", login_trigger_url)
   logger.debug("UGlogin base URL is %s", site_host_root)
-  <<refresh SharePoint [[UGlogin]] handlers for this host>>
   self.__session.add_handler(
       weblogin.microsoft.MicrosoftLogin(domain_hint=AZURE_AD_DOMAIN_HINT))
   self.__session.add_handler(weblogin.kth.SAMLlogin(rerun_requests=True))
   self.__session.add_handler(
       weblogin.kth.UGlogin(self.__username,
                            self.__password,
-                           login_trigger_url=login_trigger_url,
                            base_url=site_host_root,
                            rerun_requests=True))
-@
-
-The underlying session lets us append handlers but not replace them, so we
-remove stale SharePoint-scoped [[UGlogin]] instances for the same host root
-before we add the current configuration.
-<<refresh SharePoint [[UGlogin]] handlers for this host>>=
-handlers = getattr(self.__session, "_AutologinSession__handlers", None)
-if handlers is None:
-  handlers = getattr(self.__session, "handlers", None)
-if handlers is not None:
-  stale_handlers = []
-  for handler in handlers:
-    if not isinstance(handler, weblogin.kth.UGlogin):
-      continue
-    handler_base_url = getattr(handler, "base_url", None)
-    if handler_base_url is None:
-      handler_base_url = getattr(handler, "_UGlogin__base_url", None)
-    if handler_base_url == site_host_root:
-      stale_handlers.append(handler)
-  if stale_handlers:
-    logger.debug("Refreshing %s SharePoint UGlogin handler(s) for %s",
-                 len(stale_handlers),
-                 site_host_root)
-    handlers[:] = [handler for handler in handlers
-                   if handler not in stale_handlers]
 @
 
 Write-side SharePoint APIs require a form digest. We keep the extraction in
@@ -1247,121 +1227,8 @@ def _get_form_digest(self, location: SharePointLocation) -> str:
     raise ValueError("SharePoint did not return a form digest") from exc
 @
 
-We discover the most specific forms-auth trigger by probing the exact URL or
-REST endpoint we plan to call. That keeps [[UGlogin]] from looping on a stale
-or overly broad bootstrap page.
-<<functions>>=
-def _login_trigger_url(url: str, location: SharePointLocation) -> str:
-  """Return the best login trigger URL for ``location``."""
-  url = _resolve_sharepoint_url(url)
-  for probe_url in (url, location.site_url):
-    logger.debug("Probing SharePoint auth trigger via %s", probe_url)
-    try:
-      response = requests.get(probe_url,
-                              allow_redirects=False,
-                              timeout=LOGIN_TRIGGER_TIMEOUT)
-    except requests.RequestException as exc:
-      logger.debug("SharePoint auth trigger probe failed for %s: %s",
-                   probe_url,
-                   exc)
-      continue
-
-    trigger_url = response.headers.get("X-Forms_Based_Auth_Required")
-    logger.debug("SharePoint auth trigger probe status %s for %s",
-                 response.status_code,
-                 probe_url)
-    if trigger_url:
-      logger.debug("Using SharePoint forms-auth trigger %s", trigger_url)
-      return trigger_url
-
-  logger.debug("Falling back to site URL %s as auth trigger",
-               location.site_url)
-  return location.site_url
-@
-
-The default session wiring and the trigger refresh rules are both stateful, so
-we verify them through fake sessions and fake handlers.
-<<login trigger tests>>=
-def test_login_trigger_uses_sharepoint_forms_header(monkeypatch):
-  calls = []
-
-  def fake_get(url, allow_redirects=False, timeout=None):
-    calls.append({
-      "url": url,
-      "allow_redirects": allow_redirects,
-      "timeout": timeout,
-    })
-    return FakeResponse(headers={
-        "X-Forms_Based_Auth_Required":
-            "https://kth-my.sharepoint.com/_forms/default.aspx?Source=%2f"
-            "personal%2fuser"
-    })
-
-  monkeypatch.setattr(kthutils.onedrive.requests, "get", fake_get)
-
-  location = kthutils.onedrive.parse_sharepoint_url(copy_link_url)
-
-  assert kthutils.onedrive._login_trigger_url(copy_link_url, location) == (
-      "https://kth-my.sharepoint.com/_forms/default.aspx?Source=%2fpersonal"
-      "%2fuser")
-  assert calls == [{
-      "url": copy_link_url,
-      "allow_redirects": False,
-      "timeout": 15,
-  }]
-
-
-def test_login_trigger_resolves_server_relative_path(monkeypatch):
-  calls = []
-
-  def fake_get(url, allow_redirects=False, timeout=None):
-    calls.append(url)
-    return FakeResponse(headers={
-        "X-Forms_Based_Auth_Required":
-            "https://kth-my.sharepoint.com/_forms/default.aspx?Source=%2f"
-            "personal%2fuser"
-    })
-
-  monkeypatch.setattr(kthutils.onedrive,
-                      "get_base_url",
-                      lambda: "https://kth-my.sharepoint.com")
-  monkeypatch.setattr(kthutils.onedrive.requests, "get", fake_get)
-
-  location = kthutils.onedrive.parse_sharepoint_url(personal_file_path)
-
-  assert (kthutils.onedrive._login_trigger_url(personal_file_path, location)
-          == "https://kth-my.sharepoint.com/_forms/default.aspx?Source=%2f"
-             "personal%2fuser")
-  assert calls == [
-      "https://kth-my.sharepoint.com" + personal_file_path,
-  ]
-
-
-def test_login_trigger_falls_back_to_site_url(monkeypatch):
-  responses = [
-      FakeResponse(),
-      FakeResponse(headers={
-          "X-Forms_Based_Auth_Required":
-              "https://kth.sharepoint.com/_forms/default.aspx?Source=%2f"
-              "sites%2fexample"
-      }),
-  ]
-  calls = []
-
-  def fake_get(url, allow_redirects=False, timeout=None):
-    calls.append(url)
-    return responses.pop(0)
-
-  monkeypatch.setattr(kthutils.onedrive.requests, "get", fake_get)
-
-  location = kthutils.onedrive.parse_sharepoint_url(site_file_url)
-
-  assert kthutils.onedrive._login_trigger_url(site_file_url, location) == (
-      "https://kth.sharepoint.com/_forms/default.aspx?Source=%2fsites"
-      "%2fexample")
-  assert calls == [site_file_url, "https://kth.sharepoint.com/sites/example"]
-@
-
+The default session wiring is stateful, so we verify it through fake sessions
+and fake handlers.
 <<session setup tests>>=
 def test_default_session_uses_shared_browser_session(monkeypatch):
   fake_http = FakeHTTPSession([FakeResponse(content=b"plan")])
@@ -1382,12 +1249,6 @@ def test_default_session_uses_shared_browser_session(monkeypatch):
   monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
                       "UGlogin",
                       FakeUGlogin)
-  monkeypatch.setattr(kthutils.onedrive.requests,
-                      "get",
-                      lambda *args, **kwargs: FakeResponse(headers={
-                          "X-Forms_Based_Auth_Required":
-                              "https://kth-my.sharepoint.com/_forms/default.aspx"
-                      }))
 
   session = kthutils.onedrive.OneDriveSession()
 
@@ -1396,8 +1257,7 @@ def test_default_session_uses_shared_browser_session(monkeypatch):
   assert len(fake_http.handlers) == 3
   assert fake_http.handlers[0].domain_hint == "ug.kth.se"
   assert fake_http.handlers[1].rerun_requests is True
-  assert fake_http.handlers[2].login_trigger_url == \
-      "https://kth-my.sharepoint.com/_forms/default.aspx"
+  assert fake_http.handlers[2].login_trigger_url is None
   assert fake_http.handlers[2].base_url == \
       "https://kth-my.sharepoint.com"
 
@@ -1424,12 +1284,6 @@ def test_default_session_reuses_equal_handlers(monkeypatch):
   monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
                       "UGlogin",
                       FakeUGlogin)
-  monkeypatch.setattr(kthutils.onedrive.requests,
-                      "get",
-                      lambda *args, **kwargs: FakeResponse(headers={
-                          "X-Forms_Based_Auth_Required":
-                              "https://kth-my.sharepoint.com/_forms/default.aspx"
-                      }))
 
   first = kthutils.onedrive.OneDriveSession()
   second = kthutils.onedrive.OneDriveSession()
@@ -1439,18 +1293,14 @@ def test_default_session_reuses_equal_handlers(monkeypatch):
   assert len(fake_http.handlers) == 3
 
 
-def test_sharepoint_uglogin_refreshes_trigger_for_same_host(monkeypatch):
-  file_trigger = (
-      "https://kth.sharepoint.com/_forms/default.aspx?Source=%2fsites%2f"
-      "example%2fShared%20Documents%2fPlans%2fExam%20memo.pdf")
-  folder_trigger = (
-      "https://kth.sharepoint.com/_forms/default.aspx?Source=%2f_vti_bin"
-      "%2fclient.svc%2fweb%2fGetList(%40listUrl)%2fRenderListDataAsStream"
-      "%3f%40listUrl%3d%2527%252Fsites%252Fexample%252FShared%2520"
-      "Documents%2527")
-  folder_api_url = kthutils.onedrive._render_list_data_url(
-      kthutils.onedrive.parse_sharepoint_folder_url(site_folder_url))
-  probe_calls = []
+@
+
+Different operations on the same host (a file download, then a folder listing)
+must not accumulate handlers: the per-host [[UGlogin]] is configured
+identically each time, so [[add_handler]]'s value-dedup keeps a single stable
+handler set. This is the property that lets us drop the old eviction logic.
+<<session setup tests>>=
+def test_sharepoint_uglogin_is_stable_per_host(monkeypatch):
   fake_http = FakeHTTPSession([
       FakeResponse(content=b"report"),
       FakeResponse(json_data={"Row": []}),
@@ -1466,18 +1316,6 @@ def test_sharepoint_uglogin_refreshes_trigger_for_same_host(monkeypatch):
                       "UGlogin",
                       FakeUGlogin)
 
-  def fake_get(url, *args, **kwargs):
-    probe_calls.append(url)
-    if url == site_file_url:
-      return FakeResponse(headers={"X-Forms_Based_Auth_Required":
-                                   file_trigger})
-    if url == folder_api_url:
-      return FakeResponse(headers={"X-Forms_Based_Auth_Required":
-                                   folder_trigger})
-    raise AssertionError(f"Unexpected login-trigger probe for {url}")
-
-  monkeypatch.setattr(kthutils.onedrive.requests, "get", fake_get)
-
   first = kthutils.onedrive.OneDriveSession(session=fake_http,
                                             username="alice",
                                             password="secret")
@@ -1487,24 +1325,30 @@ def test_sharepoint_uglogin_refreshes_trigger_for_same_host(monkeypatch):
 
   assert first.get_by_url(site_file_url) == b"report"
   assert second.list_by_url(site_folder_url) == []
-  assert probe_calls == [site_file_url, folder_api_url]
   assert len(fake_http.handlers) == 3
-  assert fake_http.handlers[2].login_trigger_url == folder_trigger
   assert fake_http.handlers[2].base_url == "https://kth.sharepoint.com"
+  assert fake_http.handlers[2].login_trigger_url is None
 @
 
 The session exposes three layers of listing: a simple [[ls]] view, a detailed
 view for long listings and trees, and a site-root view that expands to the
 visible document libraries.
+
+We branch on whether the URL is a site root, not on how many libraries it
+happens to contain. A site root has no single folder to list, so [[ls]]
+always shows its document libraries as directories --- even a site with
+exactly one library. Deciding by library count instead would make a
+one-library site silently descend into that library, so the same command
+would behave differently from site to site; keying on the site root keeps
+[[ls]] consistent and matches the long and tree views, which also iterate
+libraries.
 <<[[OneDriveSession]] methods>>=
 def list_by_url(self, url: str) -> list:
   """List the direct children of the folder addressed by ``url``."""
-  locations = self.iter_folder_locations(url)
-  if not locations:
-    return []
-  if len(locations) > 1:
-    return [("dir", label) for label, _location in locations]
-  location = locations[0][1]
+  location = parse_sharepoint_folder_url(url)
+  if _is_site_root_path(location.server_relative_path):
+    return [("dir", label)
+            for label, _location in self.iter_folder_locations(url)]
   entries = [_list_data_entry(row)
              for row in _list_data_rows(self._render_list_data(location))]
   entries.sort(key=lambda entry: (entry[0], entry[1].casefold(), entry[1]))
@@ -1553,7 +1397,7 @@ def _render_list_data(self, location: SharePointLocation) -> dict:
   logger.debug("Listing %s from %s",
                location.server_relative_path,
                location.site_url)
-  self._ensure_login_handlers(list_data_url, location)
+  self._ensure_login_handlers(location)
   response = self.__session.request(
       "POST",
       list_data_url,
@@ -1578,7 +1422,7 @@ def _list_folder_items(self, location: SharePointLocation) -> list:
   folders_url = _folder_folders_url(location)
   logger.debug("Listing SharePoint folder details from %s",
                location.server_relative_path)
-  self._ensure_login_handlers(files_url, location)
+  self._ensure_login_handlers(location)
   files_response = self.__session.request(
       "GET",
       files_url,
@@ -1605,7 +1449,7 @@ are not useful in normal file workflows.
 def _get_document_libraries(self, location: SharePointLocation) -> list:
   """Return visible document libraries for the SharePoint site."""
   logger.debug("Discovering document libraries for %s", location.site_url)
-  self._ensure_login_handlers(location.site_url, location)
+  self._ensure_login_handlers(location)
   response = self.__session.request(
       "GET",
       _document_libraries_url(location),
@@ -1637,7 +1481,7 @@ def get_by_url(self, url: str) -> bytes:
   logger.debug("Downloading %s from %s",
                location.server_relative_path or location.file_id,
                location.site_url)
-  self._ensure_login_handlers(url, location)
+  self._ensure_login_handlers(location)
   response = self.__session.request("GET", _download_url(location))
   logger.debug("SharePoint download response status %s for %s",
                response.status_code,
@@ -1655,7 +1499,7 @@ def get_download_name_by_url(self, url: str) -> str:
   if location.server_relative_path is not None:
     return location.name
   metadata_url = _file_metadata_url(location)
-  self._ensure_login_handlers(url, location)
+  self._ensure_login_handlers(location)
   response = self.__session.request(
       "GET",
       metadata_url,
@@ -1690,7 +1534,7 @@ def put_by_url(self,
                location.site_url,
                overwrite,
                len(data))
-  self._ensure_login_handlers(url, location)
+  self._ensure_login_handlers(location)
   digest = self._get_form_digest(location)
   response = self.__session.request(
       "POST",
@@ -1715,7 +1559,7 @@ def publish_page_by_url(self,
   """Create or update and publish a modern SharePoint page."""
   location = parse_sharepoint_folder_url(url)
   page_name = _normalise_page_name(page_name)
-  self._ensure_login_handlers(location.site_url, location)
+  self._ensure_login_handlers(location)
   digest = self._get_form_digest(location)
   page_id = self._find_page_id(location, page_name, digest)
   status = "updated" if page_id is not None else "created"
@@ -2055,7 +1899,6 @@ def test_get_by_url_requests_sharepoint_value_endpoint(monkeypatch):
   session = kthutils.onedrive.OneDriveSession(session=fake_http,
                                               username="alice",
                                               password="secret")
-  probe_calls = []
 
   monkeypatch.setattr(kthutils.onedrive.weblogin.microsoft,
                       "MicrosoftLogin",
@@ -2070,17 +1913,7 @@ def test_get_by_url_requests_sharepoint_value_endpoint(monkeypatch):
                       "get_base_url",
                       lambda: "https://kth-my.sharepoint.com")
 
-  def fake_get(url, *args, **kwargs):
-    probe_calls.append(url)
-    return FakeResponse(headers={
-        "X-Forms_Based_Auth_Required":
-            "https://kth-my.sharepoint.com/_forms/default.aspx"
-    })
-
-  monkeypatch.setattr(kthutils.onedrive.requests, "get", fake_get)
-
   assert session.get_by_url(personal_file_path) == b"report"
-  assert probe_calls == ["https://kth-my.sharepoint.com" + personal_file_path]
   assert fake_http.requests == [{
       "method": "GET",
       "url": (
@@ -2120,12 +1953,6 @@ def test_put_by_url_requests_digest_then_upload(monkeypatch):
   monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
                       "UGlogin",
                       FakeUGlogin)
-  monkeypatch.setattr(kthutils.onedrive.requests,
-                      "get",
-                      lambda *args, **kwargs: FakeResponse(headers={
-                          "X-Forms_Based_Auth_Required":
-                              "https://kth.sharepoint.com/_forms/default.aspx"
-                      }))
 
   session.put_by_url(site_file_url, b"payload", overwrite=False)
 
@@ -2162,10 +1989,6 @@ def test_list_by_url_requests_sharepoint_list_view_endpoint(monkeypatch):
   session = kthutils.onedrive.OneDriveSession(session=fake_http,
                                               username="alice",
                                               password="secret")
-  location = kthutils.onedrive.parse_sharepoint_folder_url(site_folder_url)
-  list_data_url = kthutils.onedrive._render_list_data_url(location)
-  probe_calls = []
-
   monkeypatch.setattr(kthutils.onedrive.weblogin.microsoft,
                       "MicrosoftLogin",
                       FakeMicrosoftLogin)
@@ -2176,24 +1999,12 @@ def test_list_by_url_requests_sharepoint_list_view_endpoint(monkeypatch):
                       "UGlogin",
                       FakeUGlogin)
 
-  def fake_get(url, *args, **kwargs):
-    probe_calls.append(url)
-    if url == list_data_url:
-      return FakeResponse(headers={
-          "X-Forms_Based_Auth_Required":
-              "https://kth.sharepoint.com/_forms/default.aspx"
-      })
-    raise AssertionError(f"Unexpected login-trigger probe for {url}")
-
-  monkeypatch.setattr(kthutils.onedrive.requests, "get", fake_get)
-
   assert session.list_by_url(site_folder_url) == [
       ("dir", "alpha"),
       ("dir", "Zeta"),
       ("file", "Agenda.txt"),
       ("file", "memo.txt"),
   ]
-  assert probe_calls == [list_data_url]
   assert fake_http.requests == [{
       "method": "POST",
       "url": (
@@ -2258,12 +2069,6 @@ def test_list_by_url_returns_document_libraries_for_site_root(monkeypatch):
   monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
                       "UGlogin",
                       FakeUGlogin)
-  monkeypatch.setattr(kthutils.onedrive.requests,
-                      "get",
-                      lambda *args, **kwargs: FakeResponse(headers={
-                          "X-Forms_Based_Auth_Required":
-                              "https://kth.sharepoint.com/_forms/default.aspx"
-                      }))
 
   assert session.list_by_url("https://kth.sharepoint.com/sites/example") == [
       ("dir", "Project Files"),
@@ -2286,14 +2091,41 @@ def test_list_by_url_returns_empty_for_site_without_visible_libraries(monkeypatc
   monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
                       "UGlogin",
                       FakeUGlogin)
-  monkeypatch.setattr(kthutils.onedrive.requests,
-                      "get",
-                      lambda *args, **kwargs: FakeResponse(headers={
-                          "X-Forms_Based_Auth_Required":
-                              "https://kth.sharepoint.com/_forms/default.aspx"
-                      }))
 
   assert session.list_by_url("https://kth.sharepoint.com/sites/example") == []
+
+
+def test_list_by_url_lists_single_library_as_directory(monkeypatch):
+  fake_http = FakeHTTPSession([FakeResponse(json_data={
+      "d": {
+          "results": [
+              {
+                  "Title": "Shared Documents",
+                  "Hidden": False,
+                  "RootFolder": {
+                      "ServerRelativeUrl": "/sites/example/Shared Documents"
+                  },
+              },
+          ]
+      }
+  })])
+  session = kthutils.onedrive.OneDriveSession(session=fake_http,
+                                              username="alice",
+                                              password="secret")
+
+  monkeypatch.setattr(kthutils.onedrive.weblogin.microsoft,
+                      "MicrosoftLogin",
+                      FakeMicrosoftLogin)
+  monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
+                      "SAMLlogin",
+                      FakeSAMLlogin)
+  monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
+                      "UGlogin",
+                      FakeUGlogin)
+
+  assert session.list_by_url("https://kth.sharepoint.com/sites/example") == [
+      ("dir", "Shared Documents"),
+  ]
 
 
 def test_list_detailed_by_url_uses_folder_files_and_folders(monkeypatch):
@@ -2327,12 +2159,6 @@ def test_list_detailed_by_url_uses_folder_files_and_folders(monkeypatch):
   monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
                       "UGlogin",
                       FakeUGlogin)
-  monkeypatch.setattr(kthutils.onedrive.requests,
-                      "get",
-                      lambda *args, **kwargs: FakeResponse(headers={
-                          "X-Forms_Based_Auth_Required":
-                              "https://kth.sharepoint.com/_forms/default.aspx"
-                      }))
 
   listings = session.list_detailed_by_url(site_folder_url)
 
@@ -2376,12 +2202,6 @@ def test_get_download_name_by_url_uses_metadata_for_doc2_urls(monkeypatch):
   monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
                       "UGlogin",
                       FakeUGlogin)
-  monkeypatch.setattr(kthutils.onedrive.requests,
-                      "get",
-                      lambda *args, **kwargs: FakeResponse(headers={
-                          "X-Forms_Based_Auth_Required":
-                              "https://kth.sharepoint.com/_forms/default.aspx"
-                      }))
 
   assert session.get_download_name_by_url(doc2_url) == "Exam memo.pdf"
 
@@ -2426,12 +2246,6 @@ def test_publish_page_by_url_creates_and_publishes_page(monkeypatch):
   monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
                       "UGlogin",
                       FakeUGlogin)
-  monkeypatch.setattr(kthutils.onedrive.requests,
-                      "get",
-                      lambda *args, **kwargs: FakeResponse(headers={
-                          "X-Forms_Based_Auth_Required":
-                              "https://kth.sharepoint.com/_forms/default.aspx"
-                      }))
 
   page_url, status = session.publish_page_by_url(
       "https://kth.sharepoint.com/sites/example",
@@ -2535,12 +2349,6 @@ def test_publish_page_by_url_updates_existing_page(monkeypatch):
   monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
                       "UGlogin",
                       FakeUGlogin)
-  monkeypatch.setattr(kthutils.onedrive.requests,
-                      "get",
-                      lambda *args, **kwargs: FakeResponse(headers={
-                          "X-Forms_Based_Auth_Required":
-                              "https://kth.sharepoint.com/_forms/default.aspx"
-                      }))
 
   page_url, status = session.publish_page_by_url(
       "https://kth.sharepoint.com/sites/example",
