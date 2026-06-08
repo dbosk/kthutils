@@ -11,13 +11,18 @@ This way, we can let the CLI be very similar to the Python API.
 
 import logging
 import typer
+try:
+  from typing import Annotated
+except ImportError:
+  from typing_extensions import Annotated
 <<imports>>
 <<import subcommand modules>>
+<<logging helpers>>
 
 cli = typer.Typer(name="kthutils",
                   help="A collection of tools useful at KTH")
 
-logging.basicConfig(format="kthutils: %(levelname)s: %(message)s")
+<<configure logging from global options>>
 
 <<get username and password>>
 <<add subcommand typers to cli>>
@@ -28,6 +33,7 @@ if __name__ == "__main__":
 
 We want to test that the main CLI command works and shows help.
 <<test cli.py>>=
+import logging
 import pytest
 import typer.testing
 import kthutils.cli
@@ -44,6 +50,103 @@ def test_cli_help():
   assert result.exit_code == 0
   assert "kthutils" in result.stdout
   assert "A collection of tools useful at KTH" in result.stdout
+  assert "--verbose" in result.stdout
+  assert "--quiet" in result.stdout
+@
+
+We let [[-v]] and [[-q]] stack and offset each other because that gives one
+global rule for every subcommand. The user can ask for more detail without
+having to remember per-command debug flags, and they can cancel excess chatter
+again with [[-q]] if needed.
+<<logging helpers>>=
+LOG_FORMAT = "kthutils: %(levelname)s: %(message)s"
+
+verbose_opt = typer.Option("-v",
+                           "--verbose",
+                           count=True,
+                           help="Increase verbosity: -v=INFO, -vv=DEBUG, "
+                                "-vvv=all library debug")
+quiet_opt = typer.Option("-q",
+                         "--quiet",
+                         count=True,
+                         help="Decrease verbosity: -q=ERROR only, "
+                              "-qq=CRITICAL only, -qqq=silent")
+
+
+def get_logging_level(verbose: int = 0, quiet: int = 0) -> int:
+  """Return the root log level for ``verbose`` and ``quiet``."""
+  net_verbosity = verbose - quiet
+  if net_verbosity <= -3:
+    return logging.CRITICAL + 1
+  if net_verbosity == -2:
+    return logging.CRITICAL
+  if net_verbosity == -1:
+    return logging.ERROR
+  if net_verbosity == 0:
+    return logging.WARNING
+  if net_verbosity == 1:
+    return logging.INFO
+  if net_verbosity == 2:
+    return logging.DEBUG
+  return logging.NOTSET
+
+
+def configure_logging(verbose: int = 0, quiet: int = 0):
+  """Configure root logging for the current CLI invocation."""
+  level = get_logging_level(verbose, quiet)
+  logging.basicConfig(level=level, format=LOG_FORMAT)
+  logging.getLogger().setLevel(level)
+@
+
+We can verify the exact mapping without going through the whole CLI. This keeps
+the test focused on the verbosity policy itself, including the fully silent
+[[ -qqq ]] case from [[canvaslms]].
+<<test functions>>=
+@pytest.mark.parametrize(
+    ("verbose", "quiet", "expected"),
+    [
+        (0, 3, logging.CRITICAL + 1),
+        (0, 2, logging.CRITICAL),
+        (0, 1, logging.ERROR),
+        (0, 0, logging.WARNING),
+        (1, 0, logging.INFO),
+        (2, 0, logging.DEBUG),
+        (3, 0, logging.NOTSET),
+        (2, 1, logging.INFO),
+        (1, 2, logging.ERROR),
+    ])
+def test_get_logging_level(verbose, quiet, expected):
+  assert kthutils.cli.get_logging_level(verbose, quiet) == expected
+
+
+def test_configure_logging_sets_root_level(monkeypatch):
+  calls = []
+  root_logger = logging.getLogger()
+  original_level = root_logger.level
+
+  monkeypatch.setattr(kthutils.cli.logging,
+                      "basicConfig",
+                      lambda **kwargs: calls.append(kwargs))
+  try:
+    kthutils.cli.configure_logging(verbose=2, quiet=0)
+
+    assert calls == [{
+        "level": logging.DEBUG,
+        "format": "kthutils: %(levelname)s: %(message)s",
+    }]
+    assert root_logger.level == logging.DEBUG
+  finally:
+    root_logger.setLevel(original_level)
+@
+
+Once the helper exists, the root CLI only needs a callback that applies it
+before the selected subcommand runs.
+<<configure logging from global options>>=
+@cli.callback()
+def cli_callback(verbose: Annotated[int, verbose_opt] = 0,
+                 quiet: Annotated[int, quiet_opt] = 0):
+  """Configure global logging for the selected subcommand."""
+  configure_logging(verbose, quiet)
 @
 
 We also want to test that all the expected subcommands are registered.
@@ -57,6 +160,7 @@ def test_cli_subcommands():
   assert "participants" in result.stdout
   assert "forms" in result.stdout
   assert "iprange" in result.stdout
+  assert "onedrive" in result.stdout
   assert "stayawhile" in result.stdout
 @
 
@@ -143,6 +247,34 @@ def test_stayawhile_command():
   result = runner.invoke(kthutils.cli.cli, ["stayawhile", "--help"])
   assert result.exit_code == 0
   assert "stayawhile" in result.stdout
+@
+
+We also add the [[onedrive]] module.
+<<import subcommand modules>>=
+import kthutils.onedrive
+<<add subcommand typers to cli>>=
+cli.add_typer(kthutils.onedrive.cli)
+@
+
+We want to test that the [[onedrive]] subcommand is registered.
+<<test functions>>=
+def test_onedrive_command():
+  """Test that the onedrive command shows help"""
+  result = runner.invoke(kthutils.cli.cli, ["onedrive", "--help"])
+  assert result.exit_code == 0
+  assert "onedrive" in result.stdout
+@
+
+The nested page-publishing subcommand is part of the public CLI surface too,
+so we verify that the top-level dispatcher exposes it correctly.
+<<test functions>>=
+def test_onedrive_page_publish_command():
+  """Test that the onedrive page publish command shows help"""
+  result = runner.invoke(kthutils.cli.cli,
+                         ["onedrive", "page", "publish", "--help"])
+  assert result.exit_code == 0
+  assert "publish" in result.stdout
+  assert "modern SharePoint page" in result.stdout
 @
 
 
