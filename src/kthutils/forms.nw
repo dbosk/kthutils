@@ -921,14 +921,22 @@ The same for the student.
 kthutils config forms.rewriter.restlabb.substitutions.grader.column -s 11
 kthutils config forms.rewriter.restlabb.substitutions.grader.regex \
   -s "<<grader email regex>>"
-kthutils config forms.rewriter.restlabb.substitutions.student.column -s 2
-kthutils config forms.rewriter.restlabb.substitutions.student.regex \
-  -s "s/^.*?([A-Za-z0-9]+@kth.se).*$/\1/"
 @ The grader's address sits last on its line, so we anchor on a trailing
-space.  We reuse this for the lab week form, whose grader column is the
+space.
+We reuse this for the lab week form, whose grader column is the
 same kind of field.
 <<grader email regex>>=
 s/^.*?([A-Za-z0-9]+@kth.se).* $/\1/
+@
+
+The student is similar.
+However, we want to do two more rewrites:
+Sometimes the TA has added a space after the email, sometimes not.
+Sometimes the TA has added [[@ug.kth.se]] instead of just [[@kth.se]].
+<<restlabbsetup.sh>>=
+kthutils config forms.rewriter.restlabb.substitutions.student.column -s 2
+kthutils config forms.rewriter.restlabb.substitutions.student.regex \
+  -s "s/@ug.kth.se/@kth.se/; s/^.*?([A-Za-z0-9]+@kth.se).*$/\1/"
 @
 
 Also, we want to extract if the grader already put the result into Canvas or 
@@ -989,16 +997,54 @@ Here the TAs usually write something like ``Labb 3'' or ``Lab 3''.
 They might also write ``Labb 1\&2\&3'' or ``Lab 1-3''.
 
 We can match all kinds of variations of the word for labb as follows.
-We never want to get the group here, so we use a non-capturing group 
+We never want to get the group here, so we use a non-capturing group
 ([[(?:...)]]).
 <<lab spelling>>=
 .*[Ll]ab(?:b|oration)?
 @
 
+However, this spelling also matches the Excel labs:
+[[Excel labb 1-3]] contains [[labb]].
+Every regex in the list that matches contributes an alternative to the
+final result, so an Excel lab would come out as both
+[[Laboration [1-3]]] \emph{and} [[Excel labb [1-3]]].
+We want the dedicated Excel rewrites below to own those rows, so the
+generic lab rewrites must exclude anything mentioning Excel.
+We do that with an anchored negative lookahead:
+the anchor is essential, since without it the regex engine simply
+retries at the position \emph{after} the E in Excel, where the lookahead
+no longer sees the word and the match succeeds anyway.
+<<unless Excel>>=
+^(?!.*[Ee]xcel)
+@
+
 The range is rather straight forward.
 We can just take the range and put it in a regex [[[...]]].
+However, if there are spaces around the dash, we must remove them.
+We capture the two endpoints separately and rebuild the range in the
+replacement, instead of cleaning the spaces in a separate substitution
+first.
+The reason lies in how the rewriter collects results:
+every substitution list whose end result differs from the input
+contributes an alternative to the final regex group.
+A separate cleanup substitution fires regardless of whether the main
+rewrite does, so it leaks a half-rewritten alternative---for instance,
+this generic rewrite correctly refuses an Excel lab, but a preceding
+cleanup step would still turn [[Excel labb 1 - 3]] into
+[[Excel labb 1-3]] and pollute the result with it.
 <<regexes for labs>>=
--s 's/<<lab spelling>> *(\d-\d)\D*.*/Laboration..[\1]./' \
+-s '<<translate lab names>>' \
+<<translate lab names>>=
+s/<<unless Excel>><<lab spelling>> *(\d+) *- *(\d+)\D*.*/Laboration..[\1-\2]./
+@
+
+The case is similar for the Excel labs.
+But then we simply have Excel as a prefix and the word for the lab might be
+missing (so we use a non-capturing group for that).
+<<regexes for labs>>=
+-s '<<translate Excel lab names>>' \
+<<translate Excel lab names>>=
+s/Excel(?: ?<<lab spelling>>)? *(\d+) *- *(\d+)\D*.*/Excel labb [\1-\2]/
 @
 
 For the combined labs, we match the conjunctions.
@@ -1016,41 +1062,74 @@ The first will rewrite the lab part:
 The second will rewrite the conjunctions:
 all [[&]] to [[|]], that is the [[<<conjunctions>>]].
 <<regexes for labs>>=
--s '<<rewrite lab>>; <<rewrite conjunctions>>'
+-s '<<rewrite lab>>; <<rewrite conjunctions>>' \
+-s '<<rewrite Excel lab>>; <<rewrite conjunctions>>'
 @
 
 When we rewrite the lab, we want to capture any numbers and conjunctions.
+As above, the generic form must leave the Excel labs to the Excel form.
+Both forms must also leave the \emph{ranges} to the range rewrites above:
+since the conjunction group has [[*]], the pattern happily matches a
+range like [[1-3]] too---capturing just the [[1]] and swallowing the
+rest in [[\D*.*]], which leaks a bogus single-lab alternative.
+The negative lookahead [[(?! *-)]] after the capture refuses a number
+that is followed by a dash.
 <<rewrite lab>>=
-s/<<lab spelling>> *(\d+(?:<<conjunctions>>\d+)*)\D*.*/Laboration .(\1)./
+s/<<unless Excel>><<lab spelling>> *(\d+(?:<<conjunctions>>\d+)*)(?! *-)\D*.*/Laboration .(\1)./
+<<rewrite Excel lab>>=
+s/Excel(?: <<lab spelling>>)? *(\d+(?:<<conjunctions>>\d+)*)(?! *-)\D*.*/Excel labb (\1)/
 @
 
-When we rewrite the conjunctions, we simply want to replace them by the 
+When we rewrite the conjunctions, we simply want to replace them by the
 disjunction ([[|]]).
 However, since these conjunctions are for the lab numbers,
 we want to match---but not rewrite---the numbers as well.
 Otherwise we'll rewrite conjunctions in all kinds of settings.
+A student can have several conjunctions ([[1, 2 & 3]]), and every one of
+them must become a disjunction, so we need the [[g]] flag to replace all
+occurrences---just like in [[sed]].
+
+This substitution is a cleanup pass after [[<<rewrite lab>>]], and it
+must not fire on its own:
+if it rewrote [[Labb 1&2&3]] to [[Labb 1|2|3]] in an entry whose main
+rewrite didn't match (say, the Excel entry on a generic lab), that
+half-rewritten text would leak as an alternative into the result.
+The main rewrites wrap the captured numbers in parentheses, so we only
+rewrite conjunctions that sit inside a parenthesized group:
+the lookahead requires a closing parenthesis ahead, with no intervening
+parentheses.
 <<rewrite conjunctions>>=
-s/(?<=\d)<<conjunctions>>(?=\d)/|/
+s/(?<=\d)<<conjunctions>>(?=\d[^()]*\))/|/g
 @
 
 We note that the last pattern also captures single labs.
 Since the (non-capturing) group around the conjunctions has [[*]], we also 
 capture labs using no conjunctions.
 
-Finally, the last thing we want to do is to take the assignment and turn it 
-into the correct assignment group---that is, labs to LAB1 and project-related 
-assignments to LAB3.
+Finally, the last thing we want to do is to take the assignment and turn it
+into the correct assignment group---that is, labs to LAB1, project-related
+assignments to LAB3 and the Excel labs to KAL1.
+The lab regex needs the same Excel exclusion as the assignment names
+above; otherwise an Excel lab matches both and ends up in the ambiguous
+group [[(LAB1|KAL1)]].
+We use single quotes for that line, since [[!]] inside double quotes
+triggers history expansion when the line is pasted into an interactive
+shell.
+The Excel regex must consume the whole entry, [[.*]] at both ends:
+without the trailing [[.*]] only the prefix up to and including
+[[Excel]] is replaced, yielding results like [[KAL1 labb 1-3]] instead
+of [[KAL1]].
 <<restlabbsetup.sh>>=
 kthutils config forms.rewriter.restlabb.substitutions.assignment_group.column -s 5
 kthutils config forms.rewriter.restlabb.substitutions.assignment_group.regex \
   <<assignment group regexes>>
-@
 <<assignment group regexes>>=
--s "s/.*[Ll]ab(b|oration).*/LAB1/" \
+-s 's/<<unless Excel>>.*[Ll]ab(b|oration).*/LAB1/' \
 -s "s/.*[Pp]-?(upp(gift)?|UPP(GIFT)?|rojekt|ROJEKT).*/LAB3/" \
 -s "s/.*[Ss][Pp][Ee][Cc].*/LAB3/" \
 -s "s/.*[Gg](ransk|RANSK).*/LAB3/" \
--s "s/.*[Rr](edovisn|EDOVISN).*/LAB3/"
+-s "s/.*[Rr](edovisn|EDOVISN).*/LAB3/" \
+-s "s/.*[Ee]xcel.*/KAL1/"
 @
 
 \subsection{A rewriter for the lab week form}
@@ -1590,15 +1669,31 @@ for subst_pattern in subst_patterns:
   except ValueError as err:
     raise ValueError(f"{variable}.regex: {subst_pattern} is invalid: {err}")
 <<update [[regex_results]] with [[value]]>>
+@
+
+Since we mimic [[sed]], we should follow its semantics exactly.
+The user writes these patterns with their [[sed]] experience in mind, so
+any deviation turns into a surprise:
+[[re.sub]] replaces \emph{all} occurrences by default, whereas [[sed]]
+replaces only the \emph{first}---unless given the [[g]] flag.
+We therefore accept [[sed]]-style trailing flags
+([[s/match/replacement/flags]]) and translate them to [[re.sub]]'s
+arguments.
 <<functions>>=
 def substitute(subst_pattern, data):
   """
-  Takes a substitution pattern `subst_pattern` (`s/match/replacement/`) and
-  returns the result of applying it to `data`.
+  Takes a substitution pattern `subst_pattern`
+  (`s/match/replacement/flags`) and returns the result of applying it to
+  `data`.
+
+  Follows sed semantics: without the `g` flag only the first occurrence
+  is replaced, with `g` all occurrences are. The `i` flag makes the
+  match case insensitive.
   """
-  <<check that [[subst_pattern]] is value, raise [[ValueError]] if not>>
-  <<break out [[pattern]] and [[replacement]] from [[subst_pattern]]>>
-  return re.sub(pattern, replacement, data)
+  <<check that [[subst_pattern]] is valid, raise [[ValueError]] if not>>
+  <<break out [[pattern]], [[replacement]] and [[flags]]>>
+  <<translate [[flags]] into [[count]] and [[re_flags]]>>
+  return re.sub(pattern, replacement, data, count=count, flags=re_flags)
 <<imports>>=
 import re
 @
@@ -1609,26 +1704,58 @@ def test_substitute():
   # Basic substitution
   result = kthutils.forms.substitute("s/test/result/", "test data")
   assert result == "result data"
-  
+
   # No match
   result = kthutils.forms.substitute("s/xyz/abc/", "test data")
   assert result == "test data"
-  
+
   # Different separator
   result = kthutils.forms.substitute("s|test|result|", "test data")
   assert result == "result data"
-  
+
   # Regex pattern
   result = kthutils.forms.substitute("s/[0-9]+/NUM/", "test 123 data")
   assert result == "test NUM data"
-  
+
   # Capture groups
   result = kthutils.forms.substitute(r"s/([A-Z]+)([0-9]+)/\2-\1/", "ABC123")
   assert result == "123-ABC"
-  
+
   # Test invalid pattern raises ValueError
   try:
     kthutils.forms.substitute("invalid", "data")
+    assert False, "Should have raised ValueError"
+  except ValueError:
+    pass
+
+  # Missing final separator raises ValueError, not unpacking crash
+  try:
+    kthutils.forms.substitute("s/match/replacement", "data")
+    assert False, "Should have raised ValueError"
+  except ValueError:
+    pass
+@
+
+Let's also verify that the flags follow [[sed]]'s semantics:
+without [[g]] only the first occurrence is replaced, with [[g]] all of
+them, [[i]] matches case insensitively and anything else is rejected.
+<<test functions>>=
+def test_substitute_flags():
+  # Without g: first occurrence only, as in sed
+  result = kthutils.forms.substitute("s/a/X/", "aaa")
+  assert result == "Xaa"
+
+  # With g: all occurrences
+  result = kthutils.forms.substitute("s/a/X/g", "aaa")
+  assert result == "XXX"
+
+  # With i: case-insensitive match
+  result = kthutils.forms.substitute("s/abc/x/i", "ABC def")
+  assert result == "x def"
+
+  # Unknown flags raise ValueError
+  try:
+    kthutils.forms.substitute("s/a/b/q", "aaa")
     assert False, "Should have raised ValueError"
   except ValueError:
     pass
@@ -1684,18 +1811,52 @@ Instinctively, we can do this by splitting on [[;]].
 However, the user is likely to use [[;]] in the regexes, so we need to be 
 careful.
 
-The syntax of a substitution pattern is [[s/match/replacement/]].
+The syntax of a substitution pattern is [[s/match/replacement/flags]],
+where the flags are optional.
 We can use any character as the separator, but [[/]] is the most common.
-We assume that the use will use a character that will \emph{not be in the 
+We assume that the use will use a character that will \emph{not be in the
 pattern}, to avoid having to escape it in the pattern.
 This assumption allows us to ignore looking for escaped separators.
-<<check that [[subst_pattern]] is value, raise [[ValueError]] if not>>=
-if subst_pattern[0] != "s" and subst_pattern.count(subst_pattern[1]) < 3:
+
+A valid pattern must both start with [[s]] and contain at least three
+separators.
+Consequently, we reject it as soon as either condition fails---note the
+[[or]]; with [[and]] a malformed pattern like [[s/match/replacement]]
+(missing the final separator) would slip through the check only to crash
+on the unpacking below with a much less helpful error message.
+<<check that [[subst_pattern]] is valid, raise [[ValueError]] if not>>=
+if subst_pattern[0] != "s" or subst_pattern.count(subst_pattern[1]) < 3:
   subst_char = subst_pattern[1]
   raise ValueError(f"'{subst_pattern}' is invalid: must be of form "
                    f"'s{subst_char}match{subst_char}replacement{subst_char}'")
-<<break out [[pattern]] and [[replacement]] from [[subst_pattern]]>>=
-_, pattern, replacement, _ = subst_pattern.split(subst_pattern[1])
+@
+
+Since the flags come after the final separator, splitting on the
+separator still yields exactly four parts:
+the flags are simply the last part, which is the empty string when no
+flags are given.
+For example, [[s/a/b/g]] splits into [[['s', 'a', 'b', 'g']]] and
+[[s/a/b/]] splits into [[['s', 'a', 'b', '']]].
+<<break out [[pattern]], [[replacement]] and [[flags]]>>=
+_, pattern, replacement, flags = subst_pattern.split(subst_pattern[1])
+@
+
+Now we can translate the flags to [[re.sub]]'s arguments.
+[[re.sub]] counts the other way around compared to [[sed]]:
+its [[count]] argument gives the \emph{maximum number} of substitutions,
+where zero means unlimited.
+So [[sed]]'s default (first occurrence only) is [[count=1]] and the
+[[g]] flag is [[count=0]].
+The [[i]] flag maps directly to [[re.IGNORECASE]].
+We reject unknown flags loudly rather than silently ignoring them:
+a silently dropped flag would make the pattern behave differently from
+[[sed]] without giving the user any hint as to why.
+<<translate [[flags]] into [[count]] and [[re_flags]]>>=
+if invalid_flags := set(flags) - set("gi"):
+  raise ValueError(f"unknown flags '{''.join(sorted(invalid_flags))}': "
+                   f"only 'g' and 'i' are supported")
+count = 0 if "g" in flags else 1
+re_flags = re.IGNORECASE if "i" in flags else 0
 @
 
 \label{ParseSubstPatterns}%
@@ -1709,7 +1870,7 @@ def parse_subst_pattern(subst_pattern: str) -> List[str]:
   """
   Parses a substitution pattern `subst_pattern`, for example
 
-    `s/match/replacement/; s/match/replacement/; ...`
+    `s/match/replacement/g; s/match/replacement/; ...`
 
   and returns a list of the patterns.
   """
@@ -1719,7 +1880,9 @@ def parse_subst_pattern(subst_pattern: str) -> List[str]:
     subst_char = pattern.group(1)
     match = pattern.group(2)
     replacement = pattern.group(3)
-    patterns.append(f"s{subst_char}{match}{subst_char}{replacement}{subst_char}")
+    flags = pattern.group(4)
+    patterns.append(f"s{subst_char}{match}{subst_char}"
+                    f"{replacement}{subst_char}{flags}")
   return patterns
 @
 
@@ -1747,18 +1910,47 @@ def test_parse_subst_pattern():
   assert patterns == ["s/.*test.*/result/", "s/foo/bar/"]
 @
 
+The flags must survive parsing, and---more importantly---a flagged
+pattern must not swallow the pattern that follows it.
+The last test is the exact pattern that triggered this requirement:
+without the flags group in the regex, it parsed as a \emph{single}
+pattern stretching to the last separator of the second one.
+<<test functions>>=
+def test_parse_subst_pattern_flags():
+  # Flags are kept in the parsed pattern
+  patterns = kthutils.forms.parse_subst_pattern("s/a/b/g; s/c/d/")
+  assert patterns == ["s/a/b/g", "s/c/d/"]
+
+  # A flagged pattern must not swallow the following pattern
+  patterns = kthutils.forms.parse_subst_pattern(
+    r"s/(?<=\d+) *- *(?=\d+)/-/g;"
+    r" s/.*[Ll]ab(?:b|oration)? *(\d+-\d+)\D*.*/Laboration..[\1]./")
+  assert patterns == [
+    r"s/(?<=\d+) *- *(?=\d+)/-/g",
+    r"s/.*[Ll]ab(?:b|oration)? *(\d+-\d+)\D*.*/Laboration..[\1]./",
+  ]
+@
+
 Let's look at the details of the regex.
 <<let [[regex]] be the regex for finding substitution patterns>>=
-regex = r"s(.)(.*?)(?<!\\)\1(.*?)(?<!\\)\1(?:; *|$)"
+regex = r"s(.)(.*?)(?<!\\)\1(.*?)(?<!\\)\1([a-zA-Z]*)(?:; *|$)"
 @ The important details are the following:
 \begin{itemize}
-  \item Use a non-greedy match ([[.*?]], the [[?]] has this effect) for the 
+  \item Use a non-greedy match ([[.*?]], the [[?]] has this effect) for the
   match and replacement.
   If not, we'll match from the first into the second (or last) pattern.
-  \item We use a negative lookbehind assertion ([[(?<!\\)]]) to ensure that the 
+  \item We use a negative lookbehind assertion ([[(?<!\\)]]) to ensure that the
   separator isn't escaped.
   This is to avoid matching on [[\/]] and the like.
-  \item We use a non-capturing group for the separator and the end of the 
-  pattern ([[(?:; *|$)]]) to ensure that we match on either the separator 
+  \item We capture the optional trailing flags ([[([a-zA-Z]*)]]) between
+  the closing separator and the end of the pattern.
+  This group is essential even though [[substitute]] validates the flags
+  later:
+  without it, a flagged pattern like [[s/a/b/g; s/c/d/]] has no match for
+  \enquote{closing separator directly followed by [[;]]}, so the
+  non-greedy replacement group extends \emph{past} the [[;]] and swallows
+  the following pattern whole.
+  \item We use a non-capturing group for the separator and the end of the
+  pattern ([[(?:; *|$)]]) to ensure that we match on either the separator
   ([[;]]) or the end of the string.
 \end{itemize}
