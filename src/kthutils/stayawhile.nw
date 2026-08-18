@@ -9,7 +9,7 @@ first, a class, [[StayawhileSession]], that wraps the HTTP API;
 second, a Typer CLI rooted at [[kthutils stayawhile]].
 
 We extract the Python module from the following root chunk.
-<<stayawhile.py>>=
+<<[[stayawhile.py]]>>=
 import json
 import logging
 import sys
@@ -61,7 +61,7 @@ if __name__ == "__main__":
 @
 
 We also extract unit tests from this file.
-<<test stayawhile.py>>=
+<<[[test_stayawhile.py]]>>=
 import csv
 import datetime
 import json

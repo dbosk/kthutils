@@ -22,7 +22,7 @@ This module becomes [[kthutils.onedrive]]. We keep the structure simple: a
 small immutable address object, one session wrapper around the shared KTH
 browser session, a set of URL and REST helpers, and a Typer subtree for the
 user-facing commands.
-<<onedrive.py>>=
+<<[[onedrive.py]]>>=
 """OneDrive and SharePoint helpers for KTH.
 
 SharePoint URL parsing, library discovery, and page-publishing flow adapt
@@ -66,7 +66,7 @@ if __name__ == "__main__":
 The tests exercise the pure string transformations directly and inject fake
 HTTP sessions for the stateful parts. That keeps the suite fast and lets the
 module stay fully testable without live SharePoint access.
-<<test onedrive.py>>=
+<<[[test_onedrive.py]]>>=
 import pathlib
 import types
 import pytest

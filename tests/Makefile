@@ -1,11 +1,15 @@
+# Test chunks are named after the file they produce, wrapped in the noweb
+# [[...]] quoting that makefiles/noweb.mk expects: <<[[test_forms.py]]>>.
+# The brackets make noweave escape the underscore, so the chunk name can be
+# the literal filename and no name mangling is needed here.
 define find_tests
-find ../src -type f | xargs grep "<<test [^.]*\.py>>" | \
-	sed -En "s/^(.*):.*<<test ([^.]*).py>>.*/test_\2.py:\1/p" | sort -u
+find ../src -type f -name '*.nw' | xargs grep "<<\[\[test_[^.]*\.py\]\]>>" | \
+	sed -En "s/^(.*):.*<<\[\[(test_[^.]*\.py)\]\]>>.*/\2:\1/p" | sort -u
 endef
 
 define def_target
 $(shell echo $1 | cut -d: -f1): $(shell echo $1 | cut -d: -f2)
-	notangle ${NOTANGLEFLAGS.py} "-R$$(shell echo $$@ | sed 's/_/ /')" $$^ > $$@
+	$${NOTANGLE.py}
 endef
 
 TESTS=	$(shell ${find_tests})

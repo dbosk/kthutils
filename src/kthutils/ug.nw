@@ -9,7 +9,7 @@ We provide two interfaces:
 First, a class, [[UGsession]], through which we interact with the UG system 
 through Python.
 Second, a CLI, [[cli]], using Typer.
-<<ug.py>>=
+<<[[ug.py]]>>=
 import cachetools as ct
 import functools as ft
 import json
@@ -60,7 +60,7 @@ Without that slash, we get a 404 instead of what we expect.
 We provide tests for the class.
 We create a [[ug]] object and will add test functions to [[<<test functions>>]] 
 as we add methods to [[<<UG methods>>]].
-<<test ug.py>>=
+<<[[test_ug.py]]>>=
 import kthutils.ug
 import os
 import pytest

@@ -41,7 +41,7 @@ We want to provide a command that takes arguments and options and passes those
 to a shell script.
 Since we only provide one command, we must provide a function [[add_command]] 
 that we can use to add the command to any provided [[Typer]] instance [[cli]].
-<<iprange.py>>=
+<<[[iprange.py]]>>=
 import typer
 try:
   from typing import Annotated, List
@@ -72,7 +72,7 @@ prints the IP ranges for them.
 Now this is done the easiest with a shell script.
 However, we want to be able to run it from this Python command-line utility 
 too.
-The main script is provided below as [[<<iprange.sh>>]].
+The main script is provided below as [[<<[[iprange.sh]]>>]].
 We'll simply call it from our Python-implemented subommand.
 <<add the [[iprange]] command to [[cli]]>>=
 @cli.command()
@@ -145,7 +145,7 @@ that generates a list of addresses for the given lab rooms.
 We want to get the intervals, that is, the first and last address in a range 
 that spans the lab room.
 This way we can easily enter them in Canvas.
-<<iprange.sh>>=
+<<[[iprange.sh]]>>=
 #!/bin/bash
 # Author: Daniel Bosk <dbosk@kth.se>
 # License: MIT

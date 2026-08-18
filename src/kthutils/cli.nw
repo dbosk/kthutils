@@ -6,7 +6,7 @@ The CLI will be command based, similar to Git.
 
 We will use Typer to provide the CLI.
 This way, we can let the CLI be very similar to the Python API.
-<<cli.py>>=
+<<[[cli.py]]>>=
 """The CLI of kthutils"""
 
 import logging
@@ -32,7 +32,7 @@ if __name__ == "__main__":
 @
 
 We want to test that the main CLI command works and shows help.
-<<test cli.py>>=
+<<[[test_cli.py]]>>=
 import logging
 import pytest
 import typer.testing
@@ -312,7 +312,7 @@ def test_config_command():
 Now each subcommand can check for the username and password in the config or in 
 the environment.
 For simplicity, they can use the following function.
-<<credentials.py>>=
+<<[[credentials.py]]>>=
 <<credential imports>>
 
 def get_credentials():
