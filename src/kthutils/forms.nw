@@ -798,7 +798,7 @@ We want to keep the rewriters for the forms for different years in case we ever
 need to look back at them.
 So we have a version variable that we can increment when we change the 
 rewriter.
-<<constants>>=
+<<restlabb constants>>=
 RESTLABB_YEAR=26/27
 LABWEEK_YEAR=2026
 RESTLABB_REWRITER=forms.rewriter.restlabb${RESTLABB_YEAR}
@@ -809,6 +809,7 @@ The first line clears the entire restlabb configuration, we do this in case we
 re-run these lines when we've updated the config, but we still want it to be on 
 the same year.
 <<[[restlabbsetup.sh]]>>=
+<<restlabb constants>>
 kthutils config ${RESTLABB_REWRITER} -s ""
 @
 
