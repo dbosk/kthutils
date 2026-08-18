@@ -794,10 +794,23 @@ outlined above.
 We'll write a shell script [[<<[[restlabbsetup.sh]]>>]] that can be used to
 set the configuration.
 
+We want to keep the rewriters for the forms for different years in case we ever 
+need to look back at them.
+So we have a version variable that we can increment when we change the 
+rewriter.
+<<restlabb constants>>=
+RESTLABB_YEAR=26/27
+LABWEEK_YEAR=2026
+RESTLABB_REWRITER=forms.rewriter.restlabb${RESTLABB_YEAR}
+LABWEEK_REWRITER=forms.rewriter.labweek${LABWEEK_YEAR}
+@
+
 The first line clears the entire restlabb configuration, we do this in case we 
-re-run these lines when we've updated the config.
+re-run these lines when we've updated the config, but we still want it to be on 
+the same year.
 <<[[restlabbsetup.sh]]>>=
-kthutils config forms.rewriter.restlabb -s ""
+<<restlabb constants>>
+kthutils config ${RESTLABB_REWRITER} -s ""
 @
 
 We then want to have the overall format string.
@@ -807,7 +820,7 @@ We therefore lift the body of the format string into its own chunk,
 [[<<rewriter format string body>>]], so both rewriters share a single
 definition and cannot drift apart when we tweak the reporting commands.
 <<[[restlabbsetup.sh]]>>=
-kthutils config forms.rewriter.restlabb.format_string -s "
+kthutils config ${RESTLABB_REWRITER}.format_string -s "
 <<rewriter format string body>>
 "
 @
@@ -820,12 +833,13 @@ echo 'Time:         {time}'
 echo 'Course:       {course}'
 echo 'Module:       {module}'
 echo 'Student:      {student}'
+echo 'Passed:       {passed}'
 echo 'Comments:     {comments}'
 echo 'Grader:       {grader}'
 echo 'In Canvas:    {in_canvas}'
 if [ '{in_canvas}' = 'Ja' ]; then
   echo 'Already in Canvas.'
-else
+elif [ '{passed}' = 'Godkänt' ]; then
   canvaslms grade \\
     -c '{course_nick}{year}' \\
     -a '{assignment}' \\
@@ -851,10 +865,11 @@ echo
 
 Now we need to define the substitutions used in the format string above.
 <<[[restlabbsetup.sh]]>>=
-kthutils config forms.rewriter.restlabb.substitutions.time.column -s 0
-kthutils config forms.rewriter.restlabb.substitutions.module.column -s 5
-kthutils config forms.rewriter.restlabb.substitutions.comments.column -s 6
-kthutils config forms.rewriter.restlabb.substitutions.course.column -s 3
+kthutils config ${RESTLABB_REWRITER}.substitutions.time.column -s 0
+kthutils config ${RESTLABB_REWRITER}.substitutions.module.column -s 5
+kthutils config ${RESTLABB_REWRITER}.substitutions.comments.column -s 7
+kthutils config ${RESTLABB_REWRITER}.substitutions.course.column -s 3
+kthutils config ${RESTLABB_REWRITER}.substitutions.passed.column -s 6
 @ These just copy the values from the column verbatim.
 
 Next, let's illustrate how we extract the course code---although we don't use 
@@ -862,8 +877,8 @@ it for now.
 This we can extract from the course column, we'll need a regex substitution to 
 filter out the course code in particular.
 <<[[restlabbsetup.sh]]>>=
-kthutils config forms.rewriter.restlabb.substitutions.course_code.column -s 3
-kthutils config forms.rewriter.restlabb.substitutions.course_code.regex \
+kthutils config ${RESTLABB_REWRITER}.substitutions.course_code.column -s 3
+kthutils config ${RESTLABB_REWRITER}.substitutions.course_code.regex \
   -s "<<course code regex>>"
 @ The regex itself is the same for both forms, so we name it for reuse.
 <<course code regex>>=
@@ -874,8 +889,8 @@ We also want to extract the semester from that column, and turn it into
 capitals.
 We give a list of rewrites, one for each semester.
 <<[[restlabbsetup.sh]]>>=
-kthutils config forms.rewriter.restlabb.substitutions.semester.column -s 3
-kthutils config forms.rewriter.restlabb.substitutions.semester.regex \
+kthutils config ${RESTLABB_REWRITER}.substitutions.semester.column -s 3
+kthutils config ${RESTLABB_REWRITER}.substitutions.semester.regex \
   <<semester regexes>>
 @ We used two regexes to ensure that we rewrite both HT and VT to the correct
 case.
@@ -893,8 +908,8 @@ separately, as can be seen in the format string above.
 When we rewrite the nick, we do it with a list of regexes---one for each 
 course.
 <<[[restlabbsetup.sh]]>>=
-kthutils config forms.rewriter.restlabb.substitutions.course_nick.column -s 3
-kthutils config forms.rewriter.restlabb.substitutions.course_nick.regex \
+kthutils config ${RESTLABB_REWRITER}.substitutions.course_nick.column -s 3
+kthutils config ${RESTLABB_REWRITER}.substitutions.course_nick.regex \
   <<course nick regexes>>
 @
 <<course nick regexes>>=
@@ -907,8 +922,8 @@ We can extract the year from the course column, same as we did for the semester
 above.
 However, some TAs write HT24 (most), some HT2024 (Edvin).
 <<[[restlabbsetup.sh]]>>=
-kthutils config forms.rewriter.restlabb.substitutions.year.column -s 3
-kthutils config forms.rewriter.restlabb.substitutions.year.regex \
+kthutils config ${RESTLABB_REWRITER}.substitutions.year.column -s 3
+kthutils config ${RESTLABB_REWRITER}.substitutions.year.regex \
   -s "<<year regex>>"
 @
 <<year regex>>=
@@ -918,8 +933,8 @@ s/^.*([HhVv][Tt][- ]*|prg[im])(?:20)?(\d{2}).*$/\2/
 We also want to extract the grader, or rather, the grader's (KTH) email.
 The same for the student.
 <<[[restlabbsetup.sh]]>>=
-kthutils config forms.rewriter.restlabb.substitutions.grader.column -s 11
-kthutils config forms.rewriter.restlabb.substitutions.grader.regex \
+kthutils config ${RESTLABB_REWRITER}.substitutions.grader.column -s 12
+kthutils config ${RESTLABB_REWRITER}.substitutions.grader.regex \
   -s "<<grader email regex>>"
 @ The grader's address sits last on its line, so we anchor on a trailing
 space.
@@ -934,8 +949,8 @@ However, we want to do two more rewrites:
 Sometimes the TA has added a space after the email, sometimes not.
 Sometimes the TA has added [[@ug.kth.se]] instead of just [[@kth.se]].
 <<[[restlabbsetup.sh]]>>=
-kthutils config forms.rewriter.restlabb.substitutions.student.column -s 2
-kthutils config forms.rewriter.restlabb.substitutions.student.regex \
+kthutils config ${RESTLABB_REWRITER}.substitutions.student.column -s 2
+kthutils config ${RESTLABB_REWRITER}.substitutions.student.regex \
   -s "s/@ug.kth.se/@kth.se/; s/^.*?([A-Za-z0-9]+@kth.se).*$/\1/"
 @
 
@@ -963,7 +978,7 @@ They just write ``granskning''.
 For this, we have a default grade, in case the substitution doesn't match 
 anything.
 <<[[restlabbsetup.sh]]>>=
-kthutils config forms.rewriter.restlabb.substitutions.grade.no_match_default \
+kthutils config ${RESTLABB_REWRITER}.substitutions.grade.no_match_default \
   -s P
 @
 
@@ -976,8 +991,8 @@ We don't want to match the project when the TA wrote ``Projektgranskning'' or
 But for ``Projekt'', we actually want to match that as ``redovisning''.
 We use a negative lookahead assertion for this ([[(?!...)]]).
 <<[[restlabbsetup.sh]]>>=
-kthutils config forms.rewriter.restlabb.substitutions.assignment.column -s 5
-kthutils config forms.rewriter.restlabb.substitutions.assignment.regex \
+kthutils config ${RESTLABB_REWRITER}.substitutions.assignment.column -s 5
+kthutils config ${RESTLABB_REWRITER}.substitutions.assignment.regex \
   <<assignment name regexes>>
 @ We used to match on only `spec`, `granskn` and `redovisn`.
 But now the `granskning` will also match `kamratgranskning` in the lab titles.
@@ -1120,8 +1135,8 @@ without the trailing [[.*]] only the prefix up to and including
 [[Excel]] is replaced, yielding results like [[KAL1 labb 1-3]] instead
 of [[KAL1]].
 <<[[restlabbsetup.sh]]>>=
-kthutils config forms.rewriter.restlabb.substitutions.assignment_group.column -s 5
-kthutils config forms.rewriter.restlabb.substitutions.assignment_group.regex \
+kthutils config ${RESTLABB_REWRITER}.substitutions.assignment_group.column -s 5
+kthutils config ${RESTLABB_REWRITER}.substitutions.assignment_group.regex \
   <<assignment group regexes>>
 <<assignment group regexes>>=
 -s 's/<<unless Excel>>.*[Ll]ab(b|oration).*/LAB1/' \
@@ -1163,8 +1178,8 @@ only the first does).
 We clear any previous configuration first, in case we re-run these lines after
 an update.
 <<[[restlabbsetup.sh]]>>=
-kthutils config forms.rewriter.labweek -s ""
-kthutils config forms.rewriter.labweek.format_string -s "
+kthutils config ${LABWEEK_REWRITER} -s ""
+kthutils config ${LABWEEK_REWRITER}.format_string -s "
 <<rewriter format string body>>
 "
 @
@@ -1172,36 +1187,36 @@ kthutils config forms.rewriter.labweek.format_string -s "
 The verbatim columns and the shared regexes only differ from Restlabb in their
 column numbers.
 <<[[restlabbsetup.sh]]>>=
-kthutils config forms.rewriter.labweek.substitutions.time.column -s 0
-kthutils config forms.rewriter.labweek.substitutions.module.column -s 10
-kthutils config forms.rewriter.labweek.substitutions.comments.column -s 11
-kthutils config forms.rewriter.labweek.substitutions.course.column -s 8
-kthutils config forms.rewriter.labweek.substitutions.course_code.column -s 8
-kthutils config forms.rewriter.labweek.substitutions.course_code.regex \
+kthutils config ${LABWEEK_REWRITER}.substitutions.time.column -s 0
+kthutils config ${LABWEEK_REWRITER}.substitutions.module.column -s 10
+kthutils config ${LABWEEK_REWRITER}.substitutions.comments.column -s 11
+kthutils config ${LABWEEK_REWRITER}.substitutions.course.column -s 8
+kthutils config ${LABWEEK_REWRITER}.substitutions.course_code.column -s 8
+kthutils config ${LABWEEK_REWRITER}.substitutions.course_code.regex \
   -s "<<course code regex>>"
-kthutils config forms.rewriter.labweek.substitutions.semester.column -s 8
-kthutils config forms.rewriter.labweek.substitutions.semester.regex \
+kthutils config ${LABWEEK_REWRITER}.substitutions.semester.column -s 8
+kthutils config ${LABWEEK_REWRITER}.substitutions.semester.regex \
   <<semester regexes>>
-kthutils config forms.rewriter.labweek.substitutions.course_nick.column -s 8
-kthutils config forms.rewriter.labweek.substitutions.course_nick.regex \
+kthutils config ${LABWEEK_REWRITER}.substitutions.course_nick.column -s 8
+kthutils config ${LABWEEK_REWRITER}.substitutions.course_nick.regex \
   <<course nick regexes>>
-kthutils config forms.rewriter.labweek.substitutions.year.column -s 8
-kthutils config forms.rewriter.labweek.substitutions.year.regex \
+kthutils config ${LABWEEK_REWRITER}.substitutions.year.column -s 8
+kthutils config ${LABWEEK_REWRITER}.substitutions.year.regex \
   -s "<<year regex>>"
-kthutils config forms.rewriter.labweek.substitutions.in_canvas.column -s 12
-kthutils config forms.rewriter.labweek.substitutions.grade.column -s 10
-kthutils config forms.rewriter.labweek.substitutions.grade.regex \
+kthutils config ${LABWEEK_REWRITER}.substitutions.in_canvas.column -s 12
+kthutils config ${LABWEEK_REWRITER}.substitutions.grade.column -s 10
+kthutils config ${LABWEEK_REWRITER}.substitutions.grade.regex \
   <<grade regexes>>
-kthutils config forms.rewriter.labweek.substitutions.grade.no_match_default \
+kthutils config ${LABWEEK_REWRITER}.substitutions.grade.no_match_default \
   -s P
-kthutils config forms.rewriter.labweek.substitutions.assignment.column -s 10
-kthutils config forms.rewriter.labweek.substitutions.assignment.regex \
+kthutils config ${LABWEEK_REWRITER}.substitutions.assignment.column -s 10
+kthutils config ${LABWEEK_REWRITER}.substitutions.assignment.regex \
   <<assignment name regexes>>
-kthutils config forms.rewriter.labweek.substitutions.assignment_group.column -s 10
-kthutils config forms.rewriter.labweek.substitutions.assignment_group.regex \
+kthutils config ${LABWEEK_REWRITER}.substitutions.assignment_group.column -s 10
+kthutils config ${LABWEEK_REWRITER}.substitutions.assignment_group.regex \
   <<assignment group regexes>>
-kthutils config forms.rewriter.labweek.substitutions.grader.column -s 16
-kthutils config forms.rewriter.labweek.substitutions.grader.regex \
+kthutils config ${LABWEEK_REWRITER}.substitutions.grader.column -s 16
+kthutils config ${LABWEEK_REWRITER}.substitutions.grader.regex \
   -s "<<grader email regex>>"
 @
 
@@ -1212,8 +1227,8 @@ extracts the leading address, the second extracts an address that follows a
 [[@kth.se]] and a tab---so it only matches, and only contributes a second
 alternative, when a second student is present.
 <<[[restlabbsetup.sh]]>>=
-kthutils config forms.rewriter.labweek.substitutions.student.column -s "3:7:3"
-kthutils config forms.rewriter.labweek.substitutions.student.regex \
+kthutils config ${LABWEEK_REWRITER}.substitutions.student.column -s "3:7:3"
+kthutils config ${LABWEEK_REWRITER}.substitutions.student.regex \
   -s "s/^.*?([A-Za-z0-9]+@kth.se).*$/\1/" \
   -s "s/^.*@kth.se\t.*?([A-Za-z0-9]+@kth.se).*$/\1/"
 @
