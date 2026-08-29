@@ -8,6 +8,43 @@ We therefore provide two interfaces:
 first, a class, [[StayawhileSession]], that wraps the HTTP API;
 second, a Typer CLI rooted at [[kthutils stayawhile]].
 
+The server (the [[queue-dev]] repository on KTH GitHub, a Rust/Rocket
+application) exposes one route family per concern, and each route is
+protected by one of two guards:
+[[Auth]] accepts only the browser JWT, while [[ApiAuth]] accepts the JWT
+\emph{or} a long-lived API key.
+\Cref{tab:stayawhile-routes} is the map we keep in sync with the server;
+the rest of this chapter walks through it family by family, and the CLI
+mirrors the same grouping.
+\begin{table}
+  \centering
+  \begin{tabular}{lp{0.55\textwidth}l}
+    \toprule
+    Family & Paths under [[/api]] & Guard \\
+    \midrule
+    Identity & [[/user]] & JWT \\
+    API keys & [[/api_keys]], [[/api_keys/:id]] & JWT \\
+    Queues & [[/queues]], [[/queues/:queue]],
+             [[/queues/:queue/queue_entries]] & public \\
+           & [[/queues/mine]], [[:queue/lock]], [[:queue/motd]],
+             [[:queue/info]] & JWT or key \\
+    Presence & [[:queue/on_duty]] & JWT \\
+             & [[:queue/checkin]], [[:queue/checkout]],
+               [[:queue/my_checkins]], [[:queue/ta_checkins/:username]]
+             & JWT or key \\
+    People & [[:queue/teachers]], [[:queue/assistants]] & JWT or key \\
+    Bookings & [[:queue/bookings]] & JWT or key \\
+             & [[:queue/my_booking]] & JWT \\
+    Logs & [[:queue/queue_log]], [[:queue/interaction_log]],
+           [[:queue/queue_events]], [[/my_help_history]] & JWT or key \\
+    Statistics & [[:queue/statistics/...]] & JWT or key \\
+    \bottomrule
+  \end{tabular}
+  \caption{\label{tab:stayawhile-routes}%
+    The Stay A While REST routes and the guard each uses.
+    [[:queue]] abbreviates [[/queues/:queue]].}
+\end{table}
+
 We extract the Python module from the following root chunk.
 <<[[stayawhile.py]]>>=
 import json
@@ -212,15 +249,23 @@ Stay A While side: which endpoints use the JWT, how to read it from
 [[Authorization: Token]] header.
 
 The contrast with queue endpoints matters:
-the queue API uses the long-lived API key directly, while
-[[/api/api_keys]] uses the browser session and JWT.
+most queue endpoints use the [[ApiAuth]] guard and accept the long-lived
+API key directly, while the [[Auth]]-guarded endpoints---[[/api/user]],
+[[/api/api_keys]], [[on_duty]] and [[my_booking]]---accept only the
+browser JWT.
 So the session object decides \emph{which} authentication style an
 endpoint needs, while the two handlers cooperate on \emph{how} to renew
 browser login and Stay A While session state.
+The handler recognises the JWT-only endpoints by path: the first two are
+fixed prefixes, the last two are suffixes of a queue path.
 <<[[StayawhileLogin]] methods>>=
 SESSION_TOKEN_PATH_PREFIXES = [
   "/api/user",
   "/api/api_keys"
+]
+SESSION_TOKEN_PATH_SUFFIXES = [
+  "/on_duty",
+  "/my_booking"
 ]
 
 def __init__(self, base_url):
@@ -240,8 +285,16 @@ Our handler only claims Stay A While API responses that are missing or
 using an expired JWT.
 <<[[StayawhileLogin]] methods>>=
 def _uses_session_token(self, url):
-  return any(url.startswith(f"{self.__base_url}{path}")
-             for path in self.SESSION_TOKEN_PATH_PREFIXES)
+  if not url.startswith(self.__base_url):
+    return False
+  path = urllib.parse.urlparse(url).path
+  base_path = urllib.parse.urlparse(self.__base_url).path.rstrip("/")
+  if base_path and path.startswith(base_path):
+    path = path[len(base_path):]
+  return (any(path.startswith(prefix)
+              for prefix in self.SESSION_TOKEN_PATH_PREFIXES)
+          or any(path.endswith(suffix)
+                 for suffix in self.SESSION_TOKEN_PATH_SUFFIXES))
 
 
 def __eq__(self, other):
@@ -357,20 +410,25 @@ from rich.table import Table
 The API paths contain queue names as path segments.
 The documentation explicitly requires URL encoding for names with spaces or
 parentheses, so we apply that in one place.
+Rocket does not match a trailing slash, so the single-queue lookup (no
+suffix) must not end with one.
 <<[[StayawhileSession]] methods>>=
-def _queue_path(self, queue, suffix):
+def _queue_path(self, queue, suffix=None):
   encoded_queue = urllib.parse.quote(queue, safe="")
-  return f"/api/queues/{encoded_queue}/{suffix}"
+  path = f"/api/queues/{encoded_queue}"
+  if suffix:
+    path = f"{path}/{suffix}"
+  return path
 <<imports>>=
 import urllib.parse
 @
 
 Most API endpoints require an [[Authorization: Token]] header, but the token
-source differs: queue endpoints use the long-lived API key (managed by the
-user), while [[/api/user]] and the API-key management endpoints use the
-session JWT from the OAuth2 login.
-The public [[/api/queues]] listing is the exception: it should work without
-triggering browser login at all.
+source differs: [[ApiAuth]] endpoints use the long-lived API key (managed by
+the user), while the [[Auth]] endpoints use the session JWT from the OAuth2
+login.
+The public endpoints ([[/api/queues]], a single queue, and its live entries)
+are the exception: they should work without triggering browser login at all.
 The flags on [[_request]] therefore choose among three modes: no
 authentication, API-key authentication, or session-token authentication.
 <<[[StayawhileSession]] methods>>=
@@ -661,12 +719,20 @@ def test_stayawhile_login_only_claims_session_token_endpoints():
   api_keys = FakeResponse(
       status_code=403,
       url="https://queue.eecs.kth.se/api/api_keys")
+  on_duty = FakeResponse(
+      status_code=403,
+      url="https://queue.eecs.kth.se/api/queues/demo/on_duty")
   queue = FakeResponse(
       status_code=403,
       url="https://queue.eecs.kth.se/api/queues/demo/bookings")
+  other_host = FakeResponse(
+      status_code=403,
+      url="https://example.invalid/api/user")
 
   assert handler.need_login(api_keys)
+  assert handler.need_login(on_duty)
   assert not handler.need_login(queue)
+  assert not handler.need_login(other_host)
 
 
 def test_queue_paths_are_url_encoded():
@@ -693,16 +759,18 @@ Those endpoints authenticate with the OAuth2 session token rather than
 the long-lived API key.
 Calling [[_request]] without [[use_api_key]] asks the auth handler for
 the current JWT-backed [[Authorization]] header.
+The server requires a label on creation (its request body is
+[[{"label": "..."}]] with no default), which is sensible: the key value is
+shown exactly once, so the label is the only handle the user keeps for
+revoking it later.
 <<[[StayawhileSession]] methods>>=
 def list_api_keys(self):
   """Return the caller's API keys."""
   return self._request("GET", "/api/api_keys")
 
 
-def create_api_key(self, label=None):
-  """Create a new API key."""
-  if label is None:
-    return self._request("POST", "/api/api_keys")
+def create_api_key(self, label):
+  """Create a new API key named `label`; the reply carries the token once."""
   return self._request("POST", "/api/api_keys",
                        payload={"label": label})
 
@@ -752,74 +820,91 @@ def test_api_key_requests():
 @
 
 
-\section{Identity, queues, and presence}
+\section{Caller identity}
 
-The remaining documented metadata endpoints split into three groups that
-illustrate all three authentication modes in [[_request]].
-
-\subsection{Caller identity}
-
-[[/api/user]] identifies the current caller and still uses the browser-backed
-session token---the same mechanism as the API-key management endpoints.
+[[/api/user]] identifies the current caller and uses the browser-backed
+session token---the same [[Auth]] guard as the API-key management endpoints.
+The reply is the very object the web client keeps in its [[userdata]]
+cookie, so besides [[username]], [[realname]] and [[provider_id]] it carries
+the role lists [[teacher_in]] and [[assistant_in]] and---importantly---the
+caller's JWT in [[token]].
+The session returns it unchanged; the CLI picks the fields it shows, so the
+token never ends up in a terminal log by accident.
 <<[[StayawhileSession]] methods>>=
 def get_user(self):
   """Return the identity of the current caller."""
   return self._request("GET", "/api/user")
 @
 
-\subsection{Public queue listing}
 
-[[/api/queues]] is public and should work without triggering a browser login at
-all, so we pass [[use_auth=False]].
+\section{Queues}
+
+The queue endpoints come in three authentication flavours, which is why
+we look at them together: the listing, the single-queue lookup and the live
+entries are public, while [[mine]] and the mutations use [[ApiAuth]].
+They are a good regression test for the routing inside [[_request]].
+
+\subsection{Listing and inspecting queues}
+
+[[/api/queues]] and [[/api/queues/mine]] wrap their result as
+[[{"queues": [...]}]] because the web client's reducer expects that shape,
+whereas [[/api/queues/:queue]] returns the bare queue object.
+We unwrap the list in the session so that callers always see a plain list
+of queue objects ([[name]], [[locked]], [[hiding]], [[motd]], [[info]],
+[[show_helper_to_assistants]]).
+The unwrapping is tolerant: a server that one day returns a bare list, or
+a test fixture that already does, passes through unchanged.
 <<[[StayawhileSession]] methods>>=
 def list_queues(self):
   """Return all public queues."""
-  return self._request("GET", "/api/queues", use_auth=False)
+  return unwrap_queues(
+      self._request("GET", "/api/queues", use_auth=False))
+
+
+def list_my_queues(self):
+  """Return queues where the caller is teacher (all, for superadmins)."""
+  return unwrap_queues(
+      self._request("GET", "/api/queues/mine", use_api_key=True))
+
+
+def get_queue(self, queue):
+  """Return the queue object for `queue`."""
+  return self._request("GET", self._queue_path(queue), use_auth=False)
+<<helper functions>>=
+def unwrap_queues(data):
+  """Return the queue list from a `{"queues": [...]}` reply."""
+  if isinstance(data, dict) and "queues" in data:
+    return data["queues"]
+  return data
 @
 
-\subsection{Teacher-facing metadata and presence}
+\subsection{Locking and messages}
 
-The API documents [[/api/queues/mine]] for the queues where the current API-key
-owner is teacher, so we call that endpoint directly instead of reconstructing
-the result from identity data.
-Assistant presence has likewise moved from [[checkin]] to [[on_duty]].
-For now we only switch the read-side command to the documented [[GET on_duty]]
-endpoint; the write-side check-in and check-out commands stay on their current
-endpoint until the corresponding POST and DELETE semantics are confirmed.
 Queue locking lets a teacher prevent new students from joining while still
 serving those already in line.
 Unlocking also clears all TA check-ins, so assistants must re-check-in for
-the new session---a useful side-effect when transitioning between lab groups.
-The lock endpoint uses [[POST]] to lock and [[DELETE]] to unlock.
+the new session---a useful side-effect when transitioning between lab
+groups.
+The lock endpoint uses [[POST]] to lock and [[DELETE]] to unlock; both are
+recorded as [[close]]/[[open]] events in the queue-event log
+(\cref{sec:stayawhile-logs}).
+
+The two messages a queue carries are set with [[PUT]] and a
+[[{"message": "..."}]] body.
+The MOTD is shown prominently at the top of the queue page and the queue
+info (\enquote{köinfo}) in the sidebar.
+An empty string clears either message; there is no separate delete
+endpoint, which is why [[set_motd(queue, "")]] is the way to clear.
 <<[[StayawhileSession]] methods>>=
-def list_my_queues(self):
-  """Return queues where the caller is a teacher."""
-  return self._request("GET", "/api/queues/mine", use_api_key=True)
-
-
-def list_teachers(self, queue):
-  """Return the teachers for [[queue]]."""
-  return self._request("GET",
-                       self._queue_path(queue, "teachers"),
-                       use_api_key=True)
-
-
-def list_checked_in(self, queue):
-  """Return assistants currently on duty for [[queue]]."""
-  return self._request("GET",
-                       self._queue_path(queue, "on_duty"),
-                       use_api_key=True)
-
-
 def lock_queue(self, queue):
-  """Lock [[queue]] so new users cannot join it."""
+  """Lock `queue` so new users cannot join it."""
   return self._request("POST",
                        self._queue_path(queue, "lock"),
                        use_api_key=True)
 
 
 def unlock_queue(self, queue):
-  """Unlock [[queue]] so new users can join it.
+  """Unlock `queue` so new users can join it.
 
   Also clears all TA check-ins for the queue.
   """
@@ -828,81 +913,58 @@ def unlock_queue(self, queue):
                        use_api_key=True)
 
 
-def checkin(self, queue):
-  """Check the caller in as assistant for [[queue]]."""
-  return self._request("POST",
-                       self._queue_path(queue, "checkin"),
+def set_motd(self, queue, message):
+  """Set the message of the day for `queue`; empty string clears it."""
+  return self._request("PUT",
+                       self._queue_path(queue, "motd"),
+                       payload={"message": message},
                        use_api_key=True)
 
 
-def checkout(self, queue):
-  """Check the caller out as assistant for [[queue]]."""
-  return self._request("DELETE",
-                       self._queue_path(queue, "checkin"),
+def set_info(self, queue, message):
+  """Set the queue info text for `queue`; empty string clears it."""
+  return self._request("PUT",
+                       self._queue_path(queue, "info"),
+                       payload={"message": message},
                        use_api_key=True)
-
-
 @
 
-These endpoints are simple, but they cover all three authentication modes.
-That makes them a good regression test for the routing inside [[_request]].
+These endpoints cover all three authentication modes, so the test pins down
+the header sent for each, the unwrapping and the trailing-slash rule.
 <<test functions>>=
-def test_identity_queue_and_presence_requests():
+def test_queue_listing_and_lookup_requests():
   fake_http = FakeHTTPSession([
-    FakeResponse(json_data={
-      "username": "alice",
-      "ugkthid": "u1alice",
-      "teacher_in": ["Queue"],
-    }),
-    FakeResponse(json_data=[{"name": "Queue"}]),
-    FakeResponse(json_data=[{"name": "Queue"}]),
-    FakeResponse(json_data=[{"username": "teacher1"}]),
-    FakeResponse(json_data=[{"username": "teacher1"}]),
-    FakeResponse(json_data={"checked_in": True}),
-    FakeResponse(status_code=204),
+    FakeResponse(json_data={"queues": [{"name": "Queue"}]}),
+    FakeResponse(json_data={"queues": [{"name": "Mine"}]}),
+    FakeResponse(json_data={"name": "Queue", "locked": False}),
   ])
-  auth_handler = FakeAuthHandler()
-  uglogin_handler = FakeUGlogin("alice", "secret",
-                                "https://queue.eecs.kth.se/login")
   sa = kthutils.stayawhile.StayawhileSession(
       api_key="token",
-      session=fake_http,
-      uglogin_handler=uglogin_handler,
-      auth_handler=auth_handler)
+      session=fake_http)
 
-  assert sa.get_user() == {
-    "username": "alice",
-    "ugkthid": "u1alice",
-    "teacher_in": ["Queue"],
-  }
   assert sa.list_queues() == [{"name": "Queue"}]
-  assert sa.list_my_queues() == [{"name": "Queue"}]
-  assert sa.list_teachers("Queue") == [{"username": "teacher1"}]
-  assert sa.list_checked_in("Queue") == [{"username": "teacher1"}]
-  assert sa.checkin("Queue") == {"checked_in": True}
-  assert sa.checkout("Queue") is None
+  assert sa.list_my_queues() == [{"name": "Mine"}]
+  assert sa.get_queue("Queue Name") == {"name": "Queue", "locked": False}
 
-  assert auth_handler.calls == 1
-  assert fake_http.requests[0]["headers"] == {
-    "Authorization": "Token session-jwt"
-  }
-  assert fake_http.requests[1]["headers"] is None
-  assert fake_http.requests[2]["headers"] == {"Authorization": "Token token"}
-  assert fake_http.requests[3]["headers"] == {"Authorization": "Token token"}
-  assert fake_http.requests[4]["headers"] == {"Authorization": "Token token"}
-  assert fake_http.requests[2]["url"].endswith("/api/queues/mine")
-  assert fake_http.requests[3]["url"].endswith("/teachers")
-  assert fake_http.requests[4]["url"].endswith("/on_duty")
-  assert fake_http.requests[5]["method"] == "POST"
-  assert fake_http.requests[5]["url"].endswith("/checkin")
-  assert fake_http.requests[6]["method"] == "DELETE"
-  assert fake_http.requests[6]["url"].endswith("/checkin")
+  assert fake_http.requests[0]["headers"] is None
+  assert fake_http.requests[1]["headers"] == {"Authorization": "Token token"}
+  assert fake_http.requests[1]["url"].endswith("/api/queues/mine")
+  assert fake_http.requests[2]["headers"] is None
+  assert fake_http.requests[2]["url"].endswith("/api/queues/Queue%20Name")
 
 
-def test_queue_lock_requests():
+def test_unwrap_queues_passes_bare_lists_through():
+  assert kthutils.stayawhile.unwrap_queues([{"name": "Queue"}]) == [
+    {"name": "Queue"}
+  ]
+
+
+def test_queue_lock_and_message_requests():
   fake_http = FakeHTTPSession([
-    FakeResponse(status_code=204),
-    FakeResponse(status_code=204),
+    FakeResponse(json_data={"ok": True}),
+    FakeResponse(json_data={"ok": True}),
+    FakeResponse(json_data={"ok": True}),
+    FakeResponse(json_data={"ok": True}),
   ])
   sa = kthutils.stayawhile.StayawhileSession(
       api_key="token",
@@ -910,87 +972,309 @@ def test_queue_lock_requests():
 
   sa.lock_queue("Queue Name")
   sa.unlock_queue("Queue Name")
+  sa.set_motd("Queue Name", "Lab 3 today.")
+  sa.set_info("Queue Name", "")
 
   assert fake_http.requests[0]["method"] == "POST"
   assert fake_http.requests[0]["url"].endswith("/Queue%20Name/lock")
   assert fake_http.requests[0]["headers"] == {"Authorization": "Token token"}
   assert fake_http.requests[1]["method"] == "DELETE"
   assert fake_http.requests[1]["url"].endswith("/Queue%20Name/lock")
-  assert fake_http.requests[1]["headers"] == {"Authorization": "Token token"}
+  assert fake_http.requests[2]["method"] == "PUT"
+  assert fake_http.requests[2]["url"].endswith("/Queue%20Name/motd")
+  assert fake_http.requests[2]["json"] == {"message": "Lab 3 today."}
+  assert fake_http.requests[3]["method"] == "PUT"
+  assert fake_http.requests[3]["url"].endswith("/Queue%20Name/info")
+  assert fake_http.requests[3]["json"] == {"message": ""}
 @
 
 
-\section{Queue statistics}
+\section{Assistant presence}
+\label{sec:stayawhile-presence}
 
-The statistics endpoints share one queue path prefix and differ only in the
-suffix.
+Assistants announce that they are on duty by checking in, and a queue page
+lists who is currently on duty.
+The server keeps one open check-in row per assistant and queue, so the
+endpoints differ in what they do to that row; the contrast is the whole
+point of having three of them.
+\begin{description}
+\item[ [[POST checkin]] ] opens a session, or revives the open one.
+\item[ [[POST checkout]] ] ends the session and \emph{records} it, so it
+  shows up in the check-in history and the TA statistics.
+\item[ [[DELETE checkin]] ] cancels: it deletes the open row \emph{without}
+  recording a session, for the assistant who clicked by mistake.
+\end{description}
 
-\subsection{Session statistics}
-
-Unlike the other statistics endpoints, session statistics optionally append a
-date to the URL path (rather than using a query parameter) to restrict results
-to a single day.
+Reading the on-duty list uses the [[Auth]] guard, so we must send the
+browser JWT even though the write side accepts the API key.
+We keep that asymmetry rather than ask for the key to be accepted: the
+maintainer deliberately limits what scripts can do around presence, since
+a TA should not be able to automate \enquote{being there}
+(mail from Alexander Baltatzis, 2026-03-31).
+Someone on duty is hidden from the list again after an hour of inactivity
+or when the queue is unlocked.
 <<[[StayawhileSession]] methods>>=
-def get_session_stats(self, queue, date=None):
-  """Return session statistics for [[queue]]."""
-  suffix = "statistics/sessions"
-  if date is not None:
-    suffix = f"{suffix}/{date}"
+def list_on_duty(self, queue):
+  """Return assistants currently on duty for `queue`."""
+  return self._request("GET", self._queue_path(queue, "on_duty"))
+
+
+def checkin(self, queue):
+  """Check the caller in as on-duty assistant for `queue`."""
+  return self._request("POST",
+                       self._queue_path(queue, "checkin"),
+                       use_api_key=True)
+
+
+def checkout(self, queue):
+  """Check the caller out of `queue`, recording the session."""
+  return self._request("POST",
+                       self._queue_path(queue, "checkout"),
+                       use_api_key=True)
+
+
+def cancel_checkin(self, queue):
+  """Discard the caller's open check-in for `queue` without recording it."""
+  return self._request("DELETE",
+                       self._queue_path(queue, "checkin"),
+                       use_api_key=True)
+@
+
+The recorded sessions can be read back, either one's own or---for
+teachers---those of a named assistant.
+Each session reports [[checkin_time]], [[checkout_time]],
+[[last_helped_at]] and the counts [[helped]], [[presented]] and [[booked]].
+Unlike the logs and statistics, these two endpoints parse [[from]] and
+[[until]] as full ISO~8601 timestamps, and an unparsable value silently
+falls back to the default window (the last 90~days).
+To keep the CLI uniform we still accept plain dates here and widen them to
+whole days ourselves; the widening is in UTC, which is what the server
+compares against.
+
+Every range query in the API---here, and in the statistics, booking and
+log endpoints below---builds the same two optional parameters, so we put
+that in one helper.
+Skipping [[None]] values matters: passing [[until=None]] literally would
+send the string [[None]] to the server, and the server rejects [[until]]
+without [[from]].
+<<helper functions>>=
+def date_range_params(from_date=None, until=None, **extra):
+  """Return query parameters for an optional `from`/`until` date range."""
+  params = {}
+  if from_date is not None:
+    params["from"] = from_date
+  if until is not None:
+    params["until"] = until
+  for key, value in extra.items():
+    if value is not None:
+      params[key] = value
+  return params
+@
+
+<<[[StayawhileSession]] methods>>=
+def list_my_checkins(self, queue, from_date=None, until=None):
+  """Return the caller's recorded check-in sessions for `queue`."""
+  return self._request("GET",
+                       self._queue_path(queue, "my_checkins"),
+                       params=timestamp_range_params(from_date, until),
+                       use_api_key=True)
+
+
+def list_ta_checkins(self, queue, username, from_date=None, until=None):
+  """Return the recorded check-in sessions of `username` for `queue`."""
+  suffix = f"ta_checkins/{urllib.parse.quote(username, safe='')}"
   return self._request("GET",
                        self._queue_path(queue, suffix),
+                       params=timestamp_range_params(from_date, until),
                        use_api_key=True)
+<<helper functions>>=
+def widen_to_timestamp(value, end_of_day=False):
+  """Return `value` as an ISO 8601 timestamp, widening bare dates."""
+  if value is None or "T" in value:
+    return value
+  return f"{value}T23:59:59Z" if end_of_day else f"{value}T00:00:00Z"
+
+
+def timestamp_range_params(from_date=None, until=None):
+  """Return `from`/`until` query parameters as full timestamps."""
+  return date_range_params(widen_to_timestamp(from_date),
+                           widen_to_timestamp(until, end_of_day=True))
 @
 
-\subsection{Assistant and interaction statistics}
-
-The remaining two statistics endpoints are plain GET requests with no optional
-parameters.
-<<[[StayawhileSession]] methods>>=
-def get_assistant_stats(self, queue):
-  """Return assistant statistics for [[queue]]."""
-  return self._request("GET",
-                       self._queue_path(queue,
-                                        "statistics/assistants"),
-                       use_api_key=True)
-
-
-def get_interaction_session_stats(self, queue):
-  """Return interaction-session statistics for [[queue]]."""
-  return self._request("GET",
-                       self._queue_path(queue,
-                                        "statistics/interaction_sessions"),
-                       use_api_key=True)
-@
-
-The optional date suffix is the only unusual part here, so the test focuses on
-the requested URLs.
+The presence tests check the authentication split and the three verbs.
 <<test functions>>=
-def test_statistics_requests():
+def test_presence_requests():
   fake_http = FakeHTTPSession([
-    FakeResponse(json_data={"sessions": 2}),
-    FakeResponse(json_data={"sessions": 1}),
-    FakeResponse(json_data=[{"assistant": "alice"}]),
-    FakeResponse(json_data={"interaction_sessions": 3}),
+    FakeResponse(json_data=[{"username": "ta1", "realname": "T. A."}]),
+    FakeResponse(json_data={"ok": True}),
+    FakeResponse(json_data={"ok": True}),
+    FakeResponse(json_data={"ok": True}),
+  ])
+  auth_handler = FakeAuthHandler()
+  sa = kthutils.stayawhile.StayawhileSession(
+      api_key="token",
+      session=fake_http,
+      auth_handler=auth_handler)
+
+  assert sa.list_on_duty("Queue") == [{"username": "ta1",
+                                       "realname": "T. A."}]
+  assert sa.checkin("Queue") == {"ok": True}
+  assert sa.checkout("Queue") == {"ok": True}
+  assert sa.cancel_checkin("Queue") == {"ok": True}
+
+  assert auth_handler.calls == 1
+  assert fake_http.requests[0]["headers"] == {
+    "Authorization": "Token session-jwt"
+  }
+  assert fake_http.requests[0]["url"].endswith("/on_duty")
+  assert fake_http.requests[1]["method"] == "POST"
+  assert fake_http.requests[1]["url"].endswith("/checkin")
+  assert fake_http.requests[1]["headers"] == {"Authorization": "Token token"}
+  assert fake_http.requests[2]["method"] == "POST"
+  assert fake_http.requests[2]["url"].endswith("/checkout")
+  assert fake_http.requests[3]["method"] == "DELETE"
+  assert fake_http.requests[3]["url"].endswith("/checkin")
+
+
+def test_checkin_history_requests_widen_dates():
+  fake_http = FakeHTTPSession([
+    FakeResponse(json_data=[{"helped": 3}]),
+    FakeResponse(json_data=[{"helped": 1}]),
   ])
   sa = kthutils.stayawhile.StayawhileSession(
       api_key="token",
       session=fake_http)
 
-  assert sa.get_session_stats("Queue") == {"sessions": 2}
-  assert sa.get_session_stats("Queue", date="2026-03-30") == {"sessions": 1}
-  assert sa.get_assistant_stats("Queue") == [{"assistant": "alice"}]
-  assert sa.get_interaction_session_stats("Queue") == {
-    "interaction_sessions": 3
+  assert sa.list_my_checkins("Queue", from_date="2026-04-01") == [
+    {"helped": 3}
+  ]
+  assert sa.list_ta_checkins("Queue", "a b",
+                             from_date="2026-04-01T08:00:00Z",
+                             until="2026-04-02") == [{"helped": 1}]
+
+  assert fake_http.requests[0]["url"].endswith("/Queue/my_checkins")
+  assert fake_http.requests[0]["params"] == {"from": "2026-04-01T00:00:00Z"}
+  assert fake_http.requests[1]["url"].endswith("/Queue/ta_checkins/a%20b")
+  assert fake_http.requests[1]["params"] == {
+    "from": "2026-04-01T08:00:00Z",
+    "until": "2026-04-02T23:59:59Z",
   }
+@
+
+
+\section{Queue statistics}
+
+All statistics endpoints are teacher-only and share one queue path prefix.
+They split into two kinds.
+The range queries---[[sessions]], [[assistants]] and
+[[interaction_sessions]]---take optional [[from]] and [[until]] dates
+(YYYY-MM-DD, interpreted in Stockholm time) and default to the last
+90~days; the server rejects [[until]] without [[from]].
+The date-addressed queries give the detail and the hourly breakdown of one
+day's sessions and put the date in the path, under an explicit [[date/]]
+segment.
+That segment is not decoration: the server also serves
+[[statistics/sessions/<session_key>]] for a numeric session id, so a bare
+date in that position fails to parse as an integer and yields a~404.
+The range parameters come from [[date_range_params]]
+(\cref{sec:stayawhile-presence}).
+<<[[StayawhileSession]] methods>>=
+def get_session_stats(self, queue, from_date=None, until=None):
+  """Return per-session statistics for `queue`."""
+  return self._request("GET",
+                       self._queue_path(queue, "statistics/sessions"),
+                       params=date_range_params(from_date, until),
+                       use_api_key=True)
+
+
+def get_session_detail(self, queue, date):
+  """Return the session detail for `queue` on `date` (YYYY-MM-DD)."""
+  return self._request("GET",
+                       self._queue_path(queue,
+                                        f"statistics/sessions/date/{date}"),
+                       use_api_key=True)
+
+
+def get_hourly_session_detail(self, queue, date):
+  """Return the hourly breakdown for `queue` on `date` (YYYY-MM-DD)."""
+  suffix = f"statistics/sessions/date/{date}/hourly"
+  return self._request("GET",
+                       self._queue_path(queue, suffix),
+                       use_api_key=True)
+
+
+def get_assistant_stats(self, queue, from_date=None, until=None):
+  """Return per-assistant statistics for `queue`."""
+  return self._request("GET",
+                       self._queue_path(queue, "statistics/assistants"),
+                       params=date_range_params(from_date, until),
+                       use_api_key=True)
+
+
+def get_interaction_session_stats(self, queue, from_date=None, until=None):
+  """Return interactions grouped by session for `queue`."""
+  return self._request("GET",
+                       self._queue_path(queue,
+                                        "statistics/interaction_sessions"),
+                       params=date_range_params(from_date, until),
+                       use_api_key=True)
+@
+
+The URLs and the parameter dictionaries are the only moving parts, so that
+is what we test.
+<<test functions>>=
+def test_statistics_requests():
+  fake_http = FakeHTTPSession([
+    FakeResponse(json_data=[{"session_key": 1}]),
+    FakeResponse(json_data={"points": [], "help_spans": []}),
+    FakeResponse(json_data=[{"hour": 10}]),
+    FakeResponse(json_data=[{"username": "alice"}]),
+    FakeResponse(json_data=[{"date": "2026-03-30"}]),
+  ])
+  sa = kthutils.stayawhile.StayawhileSession(
+      api_key="token",
+      session=fake_http)
+
+  assert sa.get_session_stats("Queue", from_date="2026-03-01") == [
+    {"session_key": 1}
+  ]
+  assert sa.get_session_detail("Queue", "2026-03-30") == {
+    "points": [], "help_spans": []
+  }
+  assert sa.get_hourly_session_detail("Queue", "2026-03-30") == [
+    {"hour": 10}
+  ]
+  assert sa.get_assistant_stats("Queue") == [{"username": "alice"}]
+  assert sa.get_interaction_session_stats("Queue", "2026-03-01",
+                                          "2026-03-31") == [
+    {"date": "2026-03-30"}
+  ]
 
   assert fake_http.requests[0]["url"].endswith(
       "/api/queues/Queue/statistics/sessions")
+  assert fake_http.requests[0]["params"] == {"from": "2026-03-01"}
   assert fake_http.requests[1]["url"].endswith(
-      "/api/queues/Queue/statistics/sessions/2026-03-30")
+      "/api/queues/Queue/statistics/sessions/date/2026-03-30")
   assert fake_http.requests[2]["url"].endswith(
-      "/api/queues/Queue/statistics/assistants")
+      "/api/queues/Queue/statistics/sessions/date/2026-03-30/hourly")
   assert fake_http.requests[3]["url"].endswith(
+      "/api/queues/Queue/statistics/assistants")
+  assert fake_http.requests[3]["params"] == {}
+  assert fake_http.requests[4]["url"].endswith(
       "/api/queues/Queue/statistics/interaction_sessions")
+  assert fake_http.requests[4]["params"] == {
+    "from": "2026-03-01",
+    "until": "2026-03-31",
+  }
+
+
+def test_date_range_params_skips_missing_values():
+  assert kthutils.stayawhile.date_range_params() == {}
+  assert kthutils.stayawhile.date_range_params(
+      "2026-01-01", None, type="help", other=None) == {
+        "from": "2026-01-01",
+        "type": "help",
+      }
 @
 
 
@@ -998,26 +1282,46 @@ def test_statistics_requests():
 
 Teachers can list, upload, and clear bookings for a queue, while any user can
 inspect their own booking for one queue.
-The booking payload now accepts either a [[u1...]] KTH id or a plain username
-in the [[ugkthid]] field, and [[entry_type]] remains optional with
-[["present"]] as the documented default.
+The upload body is a JSON array of objects with [[provider_id]],
+[[slot_time]] and an optional [[entry_type]] ([[help]] or [[present]],
+defaulting to [[present]]).
+[[provider_id]] is the identity the login provider issues (a [[u1...]]
+KTH~id), but the server also resolves a plain username, first against its
+own user table and then against LDAP, so a teacher can upload straight from
+a class list.
+The field used to be called [[ugkthid]]; the server still accepts that name
+as a deserialisation alias, but it is on its way out, so we only ever emit
+[[provider_id]].
+
+The upload is an upsert keyed on queue, student and slot time, and it is
+partial by design: identifiers that cannot be resolved are reported in
+[[skipped]] (with [[error]] set to [[unresolved_identifiers]]) while the
+rest are stored and returned in [[bookings]].
+We pass that reply through so the caller can decide what to do about the
+skipped ones.
+The listing returns the stored bookings joined with the user table---
+[[username]], [[realname]], [[provider_id]], [[slot_time]], a boolean
+[[help]] and [[uploaded_at]]---so it is the booking \emph{view}, not the
+upload format, that comes back.
+
 Clearing all bookings is rarely intended---a teacher usually wants to remove
 one day's bookings (for instance, after cancelling a lab session) without
 affecting future dates.
 The clear endpoint therefore accepts optional [[from]] and [[until]] date
-parameters (YYYY-MM-DD) that restrict deletion to a specific date range.
-When the server reports how many future bookings it removed, we pass that JSON
-response through unchanged.
+parameters (YYYY-MM-DD, Stockholm time) that restrict deletion to a date
+range, and it never deletes past bookings.
+It reports how many bookings it removed as [[{"deleted": n}]], which we
+pass through unchanged.
 <<[[StayawhileSession]] methods>>=
 def list_bookings(self, queue):
-  """Return the bookings for [[queue]]."""
+  """Return the bookings for `queue`."""
   return self._request("GET",
                        self._queue_path(queue, "bookings"),
                        use_api_key=True)
 
 
 def upsert_bookings(self, queue, bookings):
-  """Upload or update [[bookings]] for [[queue]]."""
+  """Upload or update `bookings` for `queue`; returns bookings and skipped."""
   return self._request("POST",
                        self._queue_path(queue, "bookings"),
                        payload=bookings,
@@ -1025,32 +1329,31 @@ def upsert_bookings(self, queue, bookings):
 
 
 def clear_bookings(self, queue, from_date=None, until=None):
-  """Delete bookings for [[queue]], optionally filtered by date."""
-  params = {}
-  if from_date is not None:
-    params["from"] = from_date
-  if until is not None:
-    params["until"] = until
+  """Delete future bookings for `queue`, optionally in a date range."""
   return self._request("DELETE",
                        self._queue_path(queue, "bookings"),
-                       params=params,
+                       params=date_range_params(from_date, until),
                        use_api_key=True)
+@
 
-
+A student's own booking is the earliest one whose slot is less than
+30~minutes in the past.
+That endpoint is JWT-only because it is what the web client's entry form
+uses to detect the booking window; it returns the bare stored booking
+(without the user-table join).
+<<[[StayawhileSession]] methods>>=
 def get_my_booking(self, queue):
-  """Return the caller's booking for [[queue]]."""
+  """Return the caller's active booking for `queue`."""
   return self._request("GET",
                        self._queue_path(queue, "my_booking"))
-
-
 @
 
 The upload endpoint expects a JSON array.
 The CLI should accept either a file path or standard input so that shell pipes
- remain convenient.
+remain convenient.
 <<helper functions>>=
 def load_json_input(source):
-  """Load JSON from [[source]], or stdin when [[source]] is [[-]]."""
+  """Load JSON from `source`, or stdin when `source` is `-`."""
   if source == "-":
     return json.load(sys.stdin)
 
@@ -1062,8 +1365,9 @@ Let's verify that the bookings endpoints map to the documented requests.
 <<test functions>>=
 def test_booking_requests():
   fake_http = FakeHTTPSession([
-    FakeResponse(json_data=[{"ugkthid": "u1abc123"}]),
-    FakeResponse(json_data={"bookings": [{"ugkthid": "u1abc123"}],
+    FakeResponse(json_data=[{"provider_id": "u1abc123"}]),
+    FakeResponse(json_data={"error": None,
+                            "bookings": [{"provider_id": "u1abc123"}],
                             "skipped": []}),
     FakeResponse(json_data={"deleted": 3}),
     FakeResponse(json_data={"slot_time": "2026-03-01T10:00:00Z"}),
@@ -1076,12 +1380,12 @@ def test_booking_requests():
       session=fake_http,
       uglogin_handler=uglogin_handler,
       auth_handler=auth_handler)
-  bookings = [{"ugkthid": "u1abc123",
+  bookings = [{"provider_id": "u1abc123",
                "slot_time": "2026-03-01T10:00:00Z"}]
 
-  assert sa.list_bookings("Queue") == [{"ugkthid": "u1abc123"}]
+  assert sa.list_bookings("Queue") == [{"provider_id": "u1abc123"}]
   assert sa.upsert_bookings("Queue", bookings) == {
-    "bookings": [{"ugkthid": "u1abc123"}], "skipped": []
+    "error": None, "bookings": [{"provider_id": "u1abc123"}], "skipped": []
   }
   assert sa.clear_bookings("Queue") == {"deleted": 3}
   assert sa.get_my_booking("Queue") == {
@@ -1114,17 +1418,6 @@ def test_clear_bookings_passes_date_params():
   }
 
 
-def test_clear_bookings_can_return_deleted_count():
-  fake_http = FakeHTTPSession([
-    FakeResponse(json_data={"deleted": 2}),
-  ])
-  sa = kthutils.stayawhile.StayawhileSession(
-      api_key="token",
-      session=fake_http)
-
-  assert sa.clear_bookings("Queue") == {"deleted": 2}
-
-
 def test_token_endpoint_requires_api_key(monkeypatch):
   fake_http = FakeHTTPSession()
   sa = kthutils.stayawhile.StayawhileSession(session=fake_http)
@@ -1140,27 +1433,41 @@ We can also verify that the JSON loader accepts files.
 <<test functions>>=
 def test_load_json_input(tmp_path):
   bookings_file = tmp_path / "bookings.json"
-  bookings_file.write_text('[{"ugkthid": "u1abc123"}]')
+  bookings_file.write_text('[{"provider_id": "u1abc123"}]')
 
   assert kthutils.stayawhile.load_json_input(str(bookings_file)) == [
-    {"ugkthid": "u1abc123"}
+    {"provider_id": "u1abc123"}
   ]
 @
 
 
-\section{Teaching assistants}
+\section{Teachers and teaching assistants}
 
-Teachers can list, add, or remove queue assistants by username.
+Teachers can list the teachers and assistants of a queue, and add or remove
+assistants by username.
+Adding resolves the username through the user table or LDAP (the same
+resolution as for bookings) and is idempotent: adding an existing assistant
+is a no-op rather than an error, which makes the command safe to rerun from
+a script that syncs a course's staff list.
+The listings return user objects, that is [[username]], [[realname]] and
+[[provider_id]].
 <<[[StayawhileSession]] methods>>=
+def list_teachers(self, queue):
+  """Return the teachers for `queue`."""
+  return self._request("GET",
+                       self._queue_path(queue, "teachers"),
+                       use_api_key=True)
+
+
 def list_assistants(self, queue):
-  """Return the assistants for [[queue]]."""
+  """Return the assistants for `queue`."""
   return self._request("GET",
                        self._queue_path(queue, "assistants"),
                        use_api_key=True)
 
 
 def add_assistant(self, queue, username):
-  """Add [[username]] as assistant for [[queue]]."""
+  """Add `username` as assistant for `queue`."""
   return self._request("POST",
                        self._queue_path(queue, "assistants"),
                        payload={"username": username},
@@ -1168,7 +1475,7 @@ def add_assistant(self, queue, username):
 
 
 def remove_assistant(self, queue, username):
-  """Remove [[username]] as assistant for [[queue]]."""
+  """Remove `username` as assistant for `queue`."""
   return self._request(
       "DELETE",
       self._queue_path(queue, f"assistants/{urllib.parse.quote(username)}"),
@@ -1180,675 +1487,92 @@ endpoint and the username-specific removal path.
 <<test functions>>=
 def test_assistant_requests():
   fake_http = FakeHTTPSession([
+    FakeResponse(json_data=[{"username": "teacher1"}]),
     FakeResponse(json_data=[{"username": "abcde"}]),
-    FakeResponse(json_data={"username": "abcde"}),
+    FakeResponse(json_data={"ok": True}),
     FakeResponse(status_code=204),
   ])
   sa = kthutils.stayawhile.StayawhileSession(
       api_key="token",
       session=fake_http)
 
+  assert sa.list_teachers("Queue") == [{"username": "teacher1"}]
   assert sa.list_assistants("Queue") == [{"username": "abcde"}]
-  assert sa.add_assistant("Queue", "abcde") == {"username": "abcde"}
+  assert sa.add_assistant("Queue", "abcde") == {"ok": True}
   assert sa.remove_assistant("Queue", "abcde") is None
 
-  assert fake_http.requests[0]["url"].endswith("/assistants")
-  assert fake_http.requests[1]["json"] == {"username": "abcde"}
-  assert fake_http.requests[2]["url"].endswith("/assistants/abcde")
+  assert fake_http.requests[0]["url"].endswith("/teachers")
+  assert fake_http.requests[1]["url"].endswith("/assistants")
+  assert fake_http.requests[2]["json"] == {"username": "abcde"}
+  assert fake_http.requests[3]["url"].endswith("/assistants/abcde")
 @
 
 
 \section{Logs and help history}
+\label{sec:stayawhile-logs}
 
-The API provides two teacher-facing logs and one student-facing help-history
-endpoint.
-The log endpoints share the same optional date-range filtering, while the
-interaction log also accepts a type filter.
+The API provides three teacher-facing logs and one student-facing
+help-history endpoint.
+All three logs take the same optional [[from]]/[[until]] range (YYYY-MM-DD,
+default the last 90~days), and the interaction log additionally filters on
+[[type]].
+They record different things, and it is the difference that tells a
+maintainer which one to reach for:
+\begin{description}
+\item[Queue log] one entry per join or leave event, with the queue size at
+  that moment: [[username]], [[realname]], [[time]], [[help]],
+  [[left_queue]], [[queue_length]], [[help_amount]], [[present_amount]] and
+  the student's [[comment]].
+\item[Interaction log] one entry per help or presentation session:
+  [[helper_username]], [[helper_name]], [[student_username]],
+  [[student_name]], [[started_at]], [[ended_at]] ([[null]] while ongoing),
+  [[duration_secs]] and [[help]].
+\item[Queue events] one entry per open or close of the queue:
+  [[event_type]] ([[open]] or [[close]]) and [[occurred_at]].
+  The statistics use these to delimit lab sessions.
+\end{description}
+None of the logs carries a [[provider_id]]; the usernames are the stable
+join key between them.
 <<[[StayawhileSession]] methods>>=
 def get_interaction_log(self,
                         queue,
                         from_date=None,
                         until=None,
                         interaction_type=None):
-  """Return interaction log entries for [[queue]]."""
-  params = {}
-  if from_date is not None:
-    params["from"] = from_date
-  if until is not None:
-    params["until"] = until
-  if interaction_type is not None:
-    params["type"] = interaction_type
-
+  """Return interaction log entries for `queue`."""
   return self._request("GET",
                        self._queue_path(queue, "interaction_log"),
-                       params=params,
+                       params=date_range_params(from_date,
+                                                until,
+                                                type=interaction_type),
                        use_api_key=True)
 
 
 def get_queue_log(self, queue, from_date=None, until=None):
-  """Return queue log entries for [[queue]]."""
-  params = {}
-  if from_date is not None:
-    params["from"] = from_date
-  if until is not None:
-    params["until"] = until
-
+  """Return queue log entries for `queue`."""
   return self._request("GET",
                        self._queue_path(queue, "queue_log"),
-                       params=params,
+                       params=date_range_params(from_date, until),
                        use_api_key=True)
 
 
+def get_queue_events(self, queue, from_date=None, until=None):
+  """Return open/close events for `queue`."""
+  return self._request("GET",
+                       self._queue_path(queue, "queue_events"),
+                       params=date_range_params(from_date, until),
+                       use_api_key=True)
+@
+
+The help history is the student-facing counterpart of the interaction log:
+the caller's own sessions across all queues for the last 1.5~years, with
+[[queue]], [[started_at]], [[ended_at]], [[duration_secs]], [[helper]]
+(a real name) and [[help]].
+It accepts the API key, so students can script it too.
+<<[[StayawhileSession]] methods>>=
 def get_my_help_history(self):
   """Return the caller's help history."""
   return self._request("GET", "/api/my_help_history", use_api_key=True)
-@
-
-The queue log tells us who is still in the queue, but not whether a help entry
-is currently being helped or is still waiting.
-To answer that, we combine the active queue reconstructed from [[queue_log]]
-with the currently active interactions from [[interaction_log]].
-<<helper functions>>=
-def queue_entry_key(entry):
-  """Return a stable identity key for one queue-log [[entry]]."""
-  ugkthid = entry.get("ugkthid")
-  if ugkthid:
-    return ("ugkthid", ugkthid)
-
-  username = entry.get("username")
-  if username:
-    return ("username", username)
-
-  raise ValueError(f"queue log entry lacks identity: {entry!r}")
-
-
-def reconstruct_active_queue_entries(queue_log):
-  """Return the active queue entries reconstructed from [[queue_log]]."""
-  active = {}
-  ordered_log = sorted(enumerate(queue_log),
-                       key=lambda pair: (pair[1].get("time", ""), pair[0]))
-
-  for event_index, entry in ordered_log:
-    key = queue_entry_key(entry)
-    if entry.get("left_queue"):
-      active.pop(key, None)
-      continue
-
-    current = dict(entry)
-    current["_event_index"] = event_index
-    active[key] = current
-
-  return sorted(active.values(),
-                key=lambda entry: (entry.get("time", ""),
-                                   entry.get("_event_index", 0)))
-
-
-def interaction_entry_key(entry):
-  """Return a stable identity key for one interaction-log [[entry]]."""
-  ugkthid = entry.get("student_ugkthid")
-  if ugkthid:
-    return ("ugkthid", ugkthid)
-
-  username = entry.get("student_username")
-  if username:
-    return ("username", username)
-
-  raise ValueError(f"interaction log entry lacks identity: {entry!r}")
-
-
-def interaction_is_active(entry):
-  """Return whether an interaction-log [[entry]] is still active."""
-  ended_at = entry.get("ended_at")
-  return ended_at in (None, "")
-
-
-def collect_active_interactions(interaction_log):
-  """Return active interactions keyed by student identity."""
-  active = {}
-  warnings = []
-  ordered_log = sorted(enumerate(interaction_log),
-                       key=lambda pair: (pair[1].get("started_at", ""),
-                                         pair[0]))
-  for event_index, entry in ordered_log:
-    if not interaction_is_active(entry):
-      continue
-
-    key = interaction_entry_key(entry)
-    current = dict(entry)
-    current["_event_index"] = event_index
-    if key in active:
-      warnings.append(
-          f"multiple active interactions found for {key[1]}; using latest")
-    active[key] = current
-
-  return active, warnings
-
-
-def reconstruct_current_queue(queue_log, interaction_log):
-  """Return the current queue view from both logs."""
-  active_queue = reconstruct_active_queue_entries(queue_log)
-  active_interactions, warnings = collect_active_interactions(interaction_log)
-  view = []
-  waiting_position = 0
-  matched_interactions = set()
-  for entry in active_queue:
-    key = queue_entry_key(entry)
-    interaction = active_interactions.get(key)
-    entry_type = "help" if entry.get("help") else "present"
-    if interaction is not None:
-      matched_interactions.add(key)
-      status = "being_helped"
-      helper_name = interaction.get("helper_name")
-      help_started_at = interaction.get("started_at")
-      waiting_slot = ""
-    elif entry_type == "help":
-      status = "waiting"
-      helper_name = ""
-      help_started_at = ""
-      waiting_position += 1
-      waiting_slot = waiting_position
-    else:
-      status = "present"
-      helper_name = ""
-      help_started_at = ""
-      waiting_slot = ""
-
-    row = {
-      "waiting_position": waiting_slot,
-      "realname": entry.get("realname"),
-      "username": entry.get("username"),
-      "ugkthid": entry.get("ugkthid"),
-      "entry_type": entry_type,
-      "joined_at": entry.get("time"),
-      "helper_name": helper_name,
-      "help_started_at": help_started_at,
-    }
-    view.append(row)
-
-  for key, interaction in active_interactions.items():
-    if key not in matched_interactions:
-      warnings.append(
-          f"active interaction for {key[1]} has no matching queue entry")
-
-  return view, warnings
-
-
-def queue_view_warnings(queue_log, view, warnings=None):
-  """Return warnings when reconstructed queue counts look inconsistent."""
-  warnings = list(warnings or [])
-  if not queue_log:
-    return warnings
-
-  last_entry = max(enumerate(queue_log),
-                   key=lambda pair: (pair[1].get("time", ""), pair[0]))[1]
-  actual_queue_length = len(view)
-  expected_queue_length = last_entry.get("queue_length")
-  if expected_queue_length is not None and actual_queue_length != expected_queue_length:
-    warnings.append(
-        f"reconstructed queue has {actual_queue_length} active entries, "
-        f"but latest queue_length is {expected_queue_length}")
-
-  actual_help_amount = sum(1 for entry in view
-                           if entry.get("entry_type") == "help")
-  expected_help_amount = last_entry.get("help_amount")
-  if expected_help_amount is not None and actual_help_amount != expected_help_amount:
-    warnings.append(
-        f"reconstructed queue has {actual_help_amount} help entries, "
-        f"but latest help_amount is {expected_help_amount}")
-
-  actual_present_amount = sum(1 for entry in view
-                              if entry.get("entry_type") == "present")
-  expected_present_amount = last_entry.get("present_amount")
-  if (expected_present_amount is not None
-      and actual_present_amount != expected_present_amount):
-    warnings.append(
-        f"reconstructed queue has {actual_present_amount} present entries, "
-        f"but latest present_amount is {expected_present_amount}")
-
-  return warnings
-
-
-def print_warnings(warnings):
-  """Print reconstruction warnings to standard error."""
-  for warning in warnings:
-    print(f"warning: {warning}", file=sys.stderr)
-@
-
-The new [[view]] command is just a filtered replay of the queue log.
-This is more useful than the raw event stream when we want the current state.
-Bookings add one more piece of state that the logs themselves do not encode:
-when a matching slot is imminent, booked students should temporarily rise to
-the top of the waiting order.
-We model that as a post-processing step on the reconstructed active queue so
-the same rules apply to plain reconstruction and the CLI [[view]] command.
-<<constants>>=
-BOOKING_PROMOTION_LEAD = datetime.timedelta(minutes=5)
-BOOKING_PROMOTION_GRACE = datetime.timedelta(minutes=30)
-@
-
-<<helper functions>>=
-def apply_booking_promotion(active_queue, bookings, now=None):
-  """Reorder queue entries when a matching booking is imminent."""
-  if now is None:
-    now = datetime.datetime.now(datetime.timezone.utc)
-
-  booking_by_ugkthid = {}
-  for booking in bookings:
-    ugkthid = booking.get("ugkthid")
-    if ugkthid:
-      booking_by_ugkthid[ugkthid] = booking
-
-  promoted = []
-  rest = []
-  warnings = []
-  for original_index, entry in enumerate(active_queue):
-    current = dict(entry)
-    ugkthid = current.get("ugkthid")
-    booking = booking_by_ugkthid.get(ugkthid) if ugkthid else None
-    if booking is None:
-      rest.append((original_index, current))
-      continue
-
-    slot_time = parse_timestamp(booking.get("slot_time"))
-    if slot_time is None:
-      rest.append((original_index, current))
-      continue
-
-    entry_type = "help" if current.get("help") else "present"
-    booking_type = booking.get("entry_type") or "present"
-    if entry_type != booking_type:
-      warnings.append(
-          f"{current.get('username', ugkthid)} booked for "
-          f"{booking_type} but queued for {entry_type}")
-      rest.append((original_index, current))
-      continue
-
-    current["booking_time"] = booking.get("slot_time")
-    promotion_start = slot_time - BOOKING_PROMOTION_LEAD
-    promotion_end = slot_time + BOOKING_PROMOTION_GRACE
-    if (not current.get("_being_helped")
-        and promotion_start <= now <= promotion_end):
-      promoted.append((slot_time,
-                       current.get("time", ""),
-                       current.get("_event_index", 0),
-                       current))
-    else:
-      rest.append((original_index, current))
-
-  promoted.sort(key=lambda item: (item[0], item[1], item[2]))
-  rest.sort(key=lambda item: item[0])
-  return ([entry for _, _, _, entry in promoted]
-          + [entry for _, entry in rest],
-          warnings)
-@
-
-Promotion happens after we know which students are being helped.
-Those active interactions still take precedence over booking priority: a student
-already receiving help should not jump around in the waiting order.
-<<helper functions>>=
-def reconstruct_current_queue(queue_log,
-                              interaction_log,
-                              bookings=None,
-                              now=None):
-  """Return the current queue view from both logs."""
-  if now is None:
-    now = datetime.datetime.now(datetime.timezone.utc)
-
-  active_queue = reconstruct_active_queue_entries(queue_log)
-  active_interactions, warnings = collect_active_interactions(interaction_log)
-  for entry in active_queue:
-    entry["_being_helped"] = queue_entry_key(entry) in active_interactions
-
-  if bookings:
-    active_queue, booking_warnings = apply_booking_promotion(
-        active_queue, bookings, now=now)
-    warnings.extend(booking_warnings)
-
-  view = []
-  waiting_position = 0
-  matched_interactions = set()
-  for entry in active_queue:
-    key = queue_entry_key(entry)
-    interaction = active_interactions.get(key)
-    entry_type = "help" if entry.get("help") else "present"
-    if interaction is not None:
-      matched_interactions.add(key)
-      helper_name = interaction.get("helper_name")
-      help_started_at = interaction.get("started_at")
-      waiting_slot = ""
-    elif entry_type == "help":
-      helper_name = ""
-      help_started_at = ""
-      waiting_position += 1
-      waiting_slot = waiting_position
-    else:
-      helper_name = ""
-      help_started_at = ""
-      waiting_slot = ""
-
-    view.append({
-      "waiting_position": waiting_slot,
-      "realname": entry.get("realname"),
-      "username": entry.get("username"),
-      "ugkthid": entry.get("ugkthid"),
-      "entry_type": entry_type,
-      "joined_at": entry.get("time"),
-      "booking_time": entry.get("booking_time", ""),
-      "helper_name": helper_name,
-      "help_started_at": help_started_at,
-    })
-
-  for key, interaction in active_interactions.items():
-    if key not in matched_interactions:
-      warnings.append(
-          f"active interaction for {key[1]} has no matching queue entry")
-
-  return view, warnings
-@
-
-<<test functions>>=
-def test_reconstruct_current_queue():
-  queue, warnings = kthutils.stayawhile.reconstruct_current_queue([
-    {
-      "username": "grace",
-      "ugkthid": "u1grace",
-      "realname": "Grace Hopper",
-      "time": "2026-03-01T10:00:00Z",
-      "help": True,
-      "left_queue": False,
-    },
-    {
-      "username": "ada",
-      "ugkthid": "u1ada",
-      "realname": "Ada Lovelace",
-      "time": "2026-03-01T10:05:00Z",
-      "help": False,
-      "left_queue": False,
-    },
-    {
-      "username": "grace",
-      "ugkthid": "u1grace",
-      "realname": "Grace Hopper",
-      "time": "2026-03-01T10:15:00Z",
-      "help": True,
-      "left_queue": True,
-    },
-    {
-      "username": "linus",
-      "ugkthid": "u1linus",
-      "realname": "Linus Torvalds",
-      "time": "2026-03-01T10:20:00Z",
-      "help": True,
-      "left_queue": False,
-    },
-  ], [
-    {
-      "helper_name": "Ada Lovelace",
-      "student_ugkthid": "u1linus",
-      "started_at": "2026-03-01T10:25:00Z",
-      "ended_at": None,
-    },
-  ])
-
-  assert queue == [
-    {
-      "waiting_position": "",
-      "realname": "Ada Lovelace",
-      "username": "ada",
-      "ugkthid": "u1ada",
-      "entry_type": "present",
-      "joined_at": "2026-03-01T10:05:00Z",
-      "booking_time": "",
-      "helper_name": "",
-      "help_started_at": "",
-    },
-    {
-      "waiting_position": "",
-      "realname": "Linus Torvalds",
-      "username": "linus",
-      "ugkthid": "u1linus",
-      "entry_type": "help",
-      "joined_at": "2026-03-01T10:20:00Z",
-      "booking_time": "",
-      "helper_name": "Ada Lovelace",
-      "help_started_at": "2026-03-01T10:25:00Z",
-    },
-  ]
-  assert warnings == []
-
-
-def test_queue_view_warnings_for_inconsistent_counts():
-  queue_log = [{
-    "username": "ada",
-    "ugkthid": "u1ada",
-    "realname": "Ada Lovelace",
-    "time": "2026-03-01T10:05:00Z",
-    "help": False,
-    "left_queue": False,
-    "queue_length": 4,
-    "help_amount": 2,
-    "present_amount": 2,
-  }]
-  view = [{
-    "waiting_position": "",
-    "realname": "Ada Lovelace",
-    "username": "ada",
-    "ugkthid": "u1ada",
-    "entry_type": "present",
-    "joined_at": "2026-03-01T10:05:00Z",
-    "booking_time": "",
-    "helper_name": "",
-    "help_started_at": "",
-  }]
-
-  assert kthutils.stayawhile.queue_view_warnings(queue_log, view) == [
-    "reconstructed queue has 1 active entries, but latest queue_length is 4",
-    "reconstructed queue has 0 help entries, but latest help_amount is 2",
-    "reconstructed queue has 1 present entries, but latest present_amount is 2",
-  ]
-@
-
-The promotion helper is easier to test on its own than only through the final
-queue view.
-These cases pin down the timing window, the type check, the documented default
-[[entry_type]], and the stable sort rules among several promoted students.
-<<test functions>>=
-def test_apply_booking_promotion_without_bookings_keeps_order():
-  queue, warnings = kthutils.stayawhile.apply_booking_promotion(
-      [{
-        "username": "ada",
-        "ugkthid": "u1ada",
-        "time": "2026-03-01T10:00:00Z",
-        "help": True,
-        "_event_index": 0,
-      }, {
-        "username": "grace",
-        "ugkthid": "u1grace",
-        "time": "2026-03-01T10:01:00Z",
-        "help": True,
-        "_event_index": 1,
-      }],
-      [],
-      now=datetime.datetime(2026, 3, 1, 10, 0,
-                            tzinfo=datetime.timezone.utc))
-
-  assert [entry["username"] for entry in queue] == ["ada", "grace"]
-  assert warnings == []
-
-
-def test_apply_booking_promotion_promotes_matching_booking():
-  queue, warnings = kthutils.stayawhile.apply_booking_promotion(
-      [{
-        "username": "ada",
-        "ugkthid": "u1ada",
-        "time": "2026-03-01T10:00:00Z",
-        "help": True,
-        "_event_index": 0,
-      }, {
-        "username": "grace",
-        "ugkthid": "u1grace",
-        "time": "2026-03-01T10:01:00Z",
-        "help": True,
-        "_event_index": 1,
-      }],
-      [{
-        "ugkthid": "u1grace",
-        "slot_time": "2026-03-01T10:06:00Z",
-        "entry_type": "help",
-      }],
-      now=datetime.datetime(2026, 3, 1, 10, 1,
-                            tzinfo=datetime.timezone.utc))
-
-  assert [entry["username"] for entry in queue] == ["grace", "ada"]
-  assert queue[0]["booking_time"] == "2026-03-01T10:06:00Z"
-  assert warnings == []
-
-
-def test_apply_booking_promotion_waits_until_window_opens():
-  queue, warnings = kthutils.stayawhile.apply_booking_promotion(
-      [{
-        "username": "ada",
-        "ugkthid": "u1ada",
-        "time": "2026-03-01T10:00:00Z",
-        "help": True,
-        "_event_index": 0,
-      }, {
-        "username": "grace",
-        "ugkthid": "u1grace",
-        "time": "2026-03-01T10:01:00Z",
-        "help": True,
-        "_event_index": 1,
-      }],
-      [{
-        "ugkthid": "u1grace",
-        "slot_time": "2026-03-01T10:10:00Z",
-        "entry_type": "help",
-      }],
-      now=datetime.datetime(2026, 3, 1, 10, 1,
-                            tzinfo=datetime.timezone.utc))
-
-  assert [entry["username"] for entry in queue] == ["ada", "grace"]
-  assert queue[1]["booking_time"] == "2026-03-01T10:10:00Z"
-  assert warnings == []
-
-
-def test_apply_booking_promotion_warns_on_type_mismatch():
-  queue, warnings = kthutils.stayawhile.apply_booking_promotion(
-      [{
-        "username": "ada",
-        "ugkthid": "u1ada",
-        "time": "2026-03-01T10:00:00Z",
-        "help": True,
-        "_event_index": 0,
-      }],
-      [{
-        "ugkthid": "u1ada",
-        "slot_time": "2026-03-01T10:03:00Z",
-        "entry_type": "present",
-      }],
-      now=datetime.datetime(2026, 3, 1, 10, 0,
-                            tzinfo=datetime.timezone.utc))
-
-  assert [entry["username"] for entry in queue] == ["ada"]
-  assert "booking_time" not in queue[0]
-  assert warnings == ["ada booked for present but queued for help"]
-
-
-def test_apply_booking_promotion_defaults_missing_type_to_present():
-  queue, warnings = kthutils.stayawhile.apply_booking_promotion(
-      [{
-        "username": "ada",
-        "ugkthid": "u1ada",
-        "time": "2026-03-01T10:00:00Z",
-        "help": False,
-        "_event_index": 0,
-      }],
-      [{
-        "ugkthid": "u1ada",
-        "slot_time": "2026-03-01T10:03:00Z",
-      }],
-      now=datetime.datetime(2026, 3, 1, 10, 0,
-                            tzinfo=datetime.timezone.utc))
-
-  assert [entry["username"] for entry in queue] == ["ada"]
-  assert queue[0]["booking_time"] == "2026-03-01T10:03:00Z"
-  assert warnings == []
-
-
-def test_apply_booking_promotion_sorts_promoted_by_slot_then_join_time():
-  queue, warnings = kthutils.stayawhile.apply_booking_promotion(
-      [{
-        "username": "ada",
-        "ugkthid": "u1ada",
-        "time": "2026-03-01T10:02:00Z",
-        "help": True,
-        "_event_index": 0,
-      }, {
-        "username": "grace",
-        "ugkthid": "u1grace",
-        "time": "2026-03-01T10:01:00Z",
-        "help": True,
-        "_event_index": 1,
-      }, {
-        "username": "linus",
-        "ugkthid": "u1linus",
-        "time": "2026-03-01T10:03:00Z",
-        "help": True,
-        "_event_index": 2,
-      }],
-      [{
-        "ugkthid": "u1ada",
-        "slot_time": "2026-03-01T10:06:00Z",
-        "entry_type": "help",
-      }, {
-        "ugkthid": "u1grace",
-        "slot_time": "2026-03-01T10:06:00Z",
-        "entry_type": "help",
-      }, {
-        "ugkthid": "u1linus",
-        "slot_time": "2026-03-01T10:05:00Z",
-        "entry_type": "help",
-      }],
-      now=datetime.datetime(2026, 3, 1, 10, 1,
-                            tzinfo=datetime.timezone.utc))
-
-  assert [entry["username"] for entry in queue] == [
-    "linus", "grace", "ada"
-  ]
-  assert warnings == []
-
-
-def test_apply_booking_promotion_does_not_move_being_helped_entries():
-  queue, warnings = kthutils.stayawhile.apply_booking_promotion(
-      [{
-        "username": "ada",
-        "ugkthid": "u1ada",
-        "time": "2026-03-01T10:00:00Z",
-        "help": True,
-        "_being_helped": True,
-        "_event_index": 0,
-      }, {
-        "username": "grace",
-        "ugkthid": "u1grace",
-        "time": "2026-03-01T10:01:00Z",
-        "help": True,
-        "_event_index": 1,
-      }],
-      [{
-        "ugkthid": "u1grace",
-        "slot_time": "2026-03-01T10:04:00Z",
-        "entry_type": "help",
-      }, {
-        "ugkthid": "u1ada",
-        "slot_time": "2026-03-01T10:03:00Z",
-        "entry_type": "help",
-      }],
-      now=datetime.datetime(2026, 3, 1, 10, 0,
-                            tzinfo=datetime.timezone.utc))
-
-  assert [entry["username"] for entry in queue] == ["grace", "ada"]
-  assert queue[1]["_being_helped"] is True
-  assert warnings == []
 @
 
 We test the query parameters here because that is the only real moving part.
@@ -1857,6 +1581,7 @@ def test_log_requests_and_filters():
   fake_http = FakeHTTPSession([
     FakeResponse(json_data=[{"help": True}]),
     FakeResponse(json_data=[{"queue_length": 3}]),
+    FakeResponse(json_data=[{"event_type": "open"}]),
     FakeResponse(json_data=[{"queue": "Queue"}]),
   ])
   sa = kthutils.stayawhile.StayawhileSession(
@@ -1872,6 +1597,7 @@ def test_log_requests_and_filters():
       "Queue",
       from_date="2026-01-01",
       until="2026-03-27") == [{"queue_length": 3}]
+  assert sa.get_queue_events("Queue") == [{"event_type": "open"}]
   assert sa.get_my_help_history() == [{"queue": "Queue"}]
 
   assert fake_http.requests[0]["params"] == {
@@ -1883,13 +1609,258 @@ def test_log_requests_and_filters():
     "from": "2026-01-01",
     "until": "2026-03-27",
   }
+  assert fake_http.requests[2]["url"].endswith("/Queue/queue_events")
+  assert fake_http.requests[2]["params"] == {}
+  assert fake_http.requests[3]["url"].endswith("/api/my_help_history")
+@
+
+
+\section{The live queue}
+
+The logs tell us what happened; they do not tell us who is in the queue
+\emph{now}, at least not without replaying the join and leave events and
+cross-referencing open interactions.
+The server publishes the answer directly: [[/api/queues/:queue/queue_entries]]
+is the same list the web client renders, it is public (the queue page is
+public too), and each entry carries everything the page shows---
+[[username]], [[provider_id]], [[realname]], [[location]], [[comment]],
+[[starttime]], [[help]], [[gettinghelp]], [[helpstarttime]], [[helper]]
+(the helper's real name), and, when the student has an imminent booking,
+[[booking_time]] and [[booking_help]].
+Entries come in join order.
+<<[[StayawhileSession]] methods>>=
+def list_queue_entries(self, queue):
+  """Return the students currently in `queue`, in join order."""
+  return self._request("GET",
+                       self._queue_path(queue, "queue_entries"),
+                       use_auth=False)
+@
+
+Join order is not display order, though.
+The web client promotes booked students to the top once their slot is
+imminent, and a terminal view should show the order students actually see.
+The rule is the client's [[sortWithBookingPromotion]]: an entry is promoted
+when its [[booking_time]] is at most [[BOOKING_PROMOTION_LEAD]] ahead and
+the booking type matches the entry type, promoted entries sort by slot time
+and then join time, and everything else keeps join order.
+There is no upper bound in the client because the server stops sending
+[[booking_time]] thirty minutes after the slot, so an entry simply drops
+back to its join position then.
+We mirror that exactly rather than improving on it: the value of the view
+is agreeing with the screen the students look at.
+<<constants>>=
+BOOKING_PROMOTION_LEAD = datetime.timedelta(minutes=9)
+<<helper functions>>=
+def apply_booking_promotion(entries, now=None):
+  """Return `entries` in display order, booked students promoted."""
+  if now is None:
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+  promoted = []
+  rest = []
+  for index, entry in enumerate(entries):
+    slot_time = parse_timestamp(entry.get("booking_time"))
+    if (slot_time is not None
+        and slot_time - BOOKING_PROMOTION_LEAD <= now
+        and entry.get("booking_help") == entry.get("help")):
+      promoted.append((slot_time, entry.get("starttime", ""), index, entry))
+    else:
+      rest.append(entry)
+
+  promoted.sort(key=lambda item: item[:3])
+  return [entry for *_, entry in promoted] + rest
+@
+
+The view rows rename the server's fields into the vocabulary the rest of
+the CLI uses ([[entry_type]], [[joined_at]], [[help_started_at]]) and add a
+waiting position.
+Only students not currently being helped get a position, so the numbers
+answer the question a TA actually asks---who is next---while the students
+being helped still appear in the list with their helper.
+<<helper functions>>=
+def queue_view(entries, now=None):
+  """Return display rows for live queue `entries`, in student-visible order."""
+  rows = []
+  waiting_position = 0
+  for entry in apply_booking_promotion(entries, now=now):
+    if entry.get("gettinghelp"):
+      waiting_slot = ""
+    else:
+      waiting_position += 1
+      waiting_slot = waiting_position
+
+    rows.append({
+      "waiting_position": waiting_slot,
+      "realname": entry.get("realname"),
+      "username": entry.get("username"),
+      "provider_id": entry.get("provider_id"),
+      "entry_type": "help" if entry.get("help") else "present",
+      "joined_at": entry.get("starttime"),
+      "location": entry.get("location"),
+      "comment": entry.get("comment"),
+      "booking_time": entry.get("booking_time") or "",
+      "helper": entry.get("helper") or "",
+      "help_started_at": entry.get("helpstarttime") or "",
+    })
+  return rows
+@
+
+The promotion helper is easier to test on its own than only through the
+final view.
+These cases pin down the lead window, the type check and the sort order
+among several promoted students.
+<<test functions>>=
+def test_apply_booking_promotion_without_bookings_keeps_order():
+  entries = [
+    {"username": "ada", "starttime": "2026-03-01T10:00:00Z", "help": True},
+    {"username": "grace", "starttime": "2026-03-01T10:01:00Z", "help": True},
+  ]
+
+  assert [entry["username"]
+          for entry in kthutils.stayawhile.apply_booking_promotion(
+              entries,
+              now=datetime.datetime(2026, 3, 1, 10, 0,
+                                    tzinfo=datetime.timezone.utc))
+          ] == ["ada", "grace"]
+
+
+def test_apply_booking_promotion_promotes_imminent_matching_booking():
+  entries = [
+    {"username": "ada", "starttime": "2026-03-01T10:00:00Z", "help": True},
+    {"username": "grace", "starttime": "2026-03-01T10:01:00Z", "help": True,
+     "booking_time": "2026-03-01T10:10:00Z", "booking_help": True},
+  ]
+
+  assert [entry["username"]
+          for entry in kthutils.stayawhile.apply_booking_promotion(
+              entries,
+              now=datetime.datetime(2026, 3, 1, 10, 1,
+                                    tzinfo=datetime.timezone.utc))
+          ] == ["grace", "ada"]
+
+
+def test_apply_booking_promotion_waits_until_window_opens():
+  entries = [
+    {"username": "ada", "starttime": "2026-03-01T10:00:00Z", "help": True},
+    {"username": "grace", "starttime": "2026-03-01T10:01:00Z", "help": True,
+     "booking_time": "2026-03-01T10:11:00Z", "booking_help": True},
+  ]
+
+  assert [entry["username"]
+          for entry in kthutils.stayawhile.apply_booking_promotion(
+              entries,
+              now=datetime.datetime(2026, 3, 1, 10, 1,
+                                    tzinfo=datetime.timezone.utc))
+          ] == ["ada", "grace"]
+
+
+def test_apply_booking_promotion_requires_matching_type():
+  entries = [
+    {"username": "ada", "starttime": "2026-03-01T10:00:00Z", "help": True},
+    {"username": "grace", "starttime": "2026-03-01T10:01:00Z", "help": True,
+     "booking_time": "2026-03-01T10:03:00Z", "booking_help": False},
+  ]
+
+  assert [entry["username"]
+          for entry in kthutils.stayawhile.apply_booking_promotion(
+              entries,
+              now=datetime.datetime(2026, 3, 1, 10, 1,
+                                    tzinfo=datetime.timezone.utc))
+          ] == ["ada", "grace"]
+
+
+def test_apply_booking_promotion_sorts_promoted_by_slot_then_join_time():
+  entries = [
+    {"username": "ada", "starttime": "2026-03-01T10:02:00Z", "help": True,
+     "booking_time": "2026-03-01T10:06:00Z", "booking_help": True},
+    {"username": "grace", "starttime": "2026-03-01T10:01:00Z", "help": True,
+     "booking_time": "2026-03-01T10:06:00Z", "booking_help": True},
+    {"username": "linus", "starttime": "2026-03-01T10:03:00Z", "help": True,
+     "booking_time": "2026-03-01T10:05:00Z", "booking_help": True},
+  ]
+
+  assert [entry["username"]
+          for entry in kthutils.stayawhile.apply_booking_promotion(
+              entries,
+              now=datetime.datetime(2026, 3, 1, 10, 1,
+                                    tzinfo=datetime.timezone.utc))
+          ] == ["linus", "grace", "ada"]
+@
+
+The view rows renumber only the waiting students and carry the helper
+through for those being helped.
+<<test functions>>=
+def test_queue_view_numbers_waiting_students_only():
+  rows = kthutils.stayawhile.queue_view([
+    {
+      "username": "linus",
+      "provider_id": "u1linus",
+      "realname": "Linus Torvalds",
+      "location": "Red 3",
+      "comment": "",
+      "starttime": "2026-03-01T10:00:00Z",
+      "help": True,
+      "gettinghelp": True,
+      "helpstarttime": "2026-03-01T10:25:00Z",
+      "helper": "Ada Lovelace",
+      "booking_time": None,
+      "booking_help": None,
+    },
+    {
+      "username": "grace",
+      "provider_id": "u1grace",
+      "realname": "Grace Hopper",
+      "location": "Orange 1",
+      "comment": "Lab 2",
+      "starttime": "2026-03-01T10:05:00Z",
+      "help": False,
+      "gettinghelp": False,
+      "helpstarttime": None,
+      "helper": None,
+      "booking_time": None,
+      "booking_help": None,
+    },
+  ], now=datetime.datetime(2026, 3, 1, 10, 30,
+                           tzinfo=datetime.timezone.utc))
+
+  assert rows == [
+    {
+      "waiting_position": "",
+      "realname": "Linus Torvalds",
+      "username": "linus",
+      "provider_id": "u1linus",
+      "entry_type": "help",
+      "joined_at": "2026-03-01T10:00:00Z",
+      "location": "Red 3",
+      "comment": "",
+      "booking_time": "",
+      "helper": "Ada Lovelace",
+      "help_started_at": "2026-03-01T10:25:00Z",
+    },
+    {
+      "waiting_position": 1,
+      "realname": "Grace Hopper",
+      "username": "grace",
+      "provider_id": "u1grace",
+      "entry_type": "present",
+      "joined_at": "2026-03-01T10:05:00Z",
+      "location": "Orange 1",
+      "comment": "Lab 2",
+      "booking_time": "",
+      "helper": "",
+      "help_started_at": "",
+    },
+  ]
 @
 
 
 \section{The CLI}
 
 The CLI mirrors the API structure.
-This keeps the subcommands close to the documented endpoints.
+This keeps the subcommands close to the documented endpoints, and it keeps
+the command tree in step with \cref{tab:stayawhile-routes}: one Typer
+group per route family, plus the handful of verbs ([[checkin]],
+[[checkout]], [[view]]) that read better at the top level.
 <<set up cli>>=
 cli = typer.Typer(name="stayawhile",
                   help="Interacts with the Stay A While queue API")
@@ -1901,12 +1872,14 @@ booking_cli = typer.Typer(name="booking",
                           help="Inspect the caller's booking")
 assistants_cli = typer.Typer(name="assistants",
                              help="Manage queue assistants")
+checkins_cli = typer.Typer(name="checkins",
+                           help="Read recorded assistant check-ins")
 log_cli = typer.Typer(name="log",
                       help="Read Stay A While logs")
 history_cli = typer.Typer(name="history",
                           help="Read the caller's help history")
 queues_cli = typer.Typer(name="queues",
-                         help="List Stay A While queues")
+                         help="List and manage Stay A While queues")
 teachers_cli = typer.Typer(name="teachers",
                            help="List queue teachers")
 stats_cli = typer.Typer(name="stats",
@@ -1916,6 +1889,7 @@ cli.add_typer(api_keys_cli)
 cli.add_typer(bookings_cli)
 cli.add_typer(booking_cli)
 cli.add_typer(assistants_cli)
+cli.add_typer(checkins_cli)
 cli.add_typer(log_cli)
 cli.add_typer(history_cli)
 cli.add_typer(queues_cli)
@@ -1925,6 +1899,8 @@ cli.add_typer(stats_cli)
 <<option and argument definitions>>
 <<command definitions>>
 @
+
+\subsection{Output formatting}
 
 The commands that read tabular data should adapt to their output target.
 When we print to a terminal, a clean table is easier to scan.
@@ -1937,7 +1913,7 @@ def is_tty():
 
 
 def value_to_text(value):
-  """Return a stable textual representation of [[value]]."""
+  """Return a stable textual representation of `value`."""
   if value is None:
     return ""
   if isinstance(value, bool):
@@ -1948,7 +1924,7 @@ def value_to_text(value):
 
 
 def print_csv_rows(rows, fields, headers=None):
-  """Print [[rows]] as CSV with the given [[fields]]."""
+  """Print `rows` as CSV with the given `fields`."""
   writer = csv.writer(sys.stdout, delimiter="\t")
   writer.writerow(headers or fields)
   for row in rows:
@@ -1956,7 +1932,7 @@ def print_csv_rows(rows, fields, headers=None):
 
 
 def print_rich_table(rows, fields, headers=None):
-  """Print [[rows]] as a clean Rich table."""
+  """Print `rows` as a clean Rich table."""
   table = Table(box=None, show_edge=False, pad_edge=False)
   for header in headers or fields:
     table.add_column(header)
@@ -1971,16 +1947,17 @@ def print_records(rows,
                   headers=None,
                   tty=None,
                   today=None,
-                  show_ugkthid=False):
-  """Print tabular [[rows]] either as Rich output or as CSV."""
+                  show_provider_id=False):
+  """Print tabular `rows` either as Rich output or as CSV."""
   original_fields = list(fields)
   headers = filter_headers(original_fields,
                            headers,
-                           show_ugkthid=show_ugkthid)
-  fields = visible_fields(original_fields, show_ugkthid=show_ugkthid)
+                           show_provider_id=show_provider_id)
+  fields = visible_fields(original_fields,
+                          show_provider_id=show_provider_id)
   rows = [format_output_data(row,
                              today=today,
-                             show_ugkthid=show_ugkthid)
+                             show_provider_id=show_provider_id)
           for row in rows]
   if tty is None:
     tty = is_tty()
@@ -1989,10 +1966,21 @@ def print_records(rows,
     print_rich_table(rows, fields, headers=headers)
   else:
     print_csv_rows(rows, fields, headers=headers)
+@
 
-
+Some replies have no fixed shape worth hard-coding---the statistics in
+particular are still evolving on the server side.
+For those we infer the columns from the data: a list of flat objects
+becomes a table with the union of their keys, in first-seen order.
+A single object with nested values (such as the session detail, which is
+two arrays) would only become a one-row table of JSON blobs, so nested
+objects fall back to formatted JSON instead.
+An empty list has no columns to infer, so it prints nothing at all rather
+than an empty header line; a pipeline then sees no rows, which is the
+truth.
+<<helper functions>>=
 def infer_record_fields(rows):
-  """Return a stable field order inferred from [[rows]]."""
+  """Return a stable field order inferred from `rows`."""
   fields = []
   seen = set()
   for row in rows:
@@ -2005,23 +1993,31 @@ def infer_record_fields(rows):
   return fields
 
 
-def print_inferred_records(data, *, show_ugkthid=False):
-  """Print [[data]] tabular when its fields can be inferred."""
-  if isinstance(data, dict):
-    print_records([data], list(data.keys()), show_ugkthid=show_ugkthid)
+def is_nested(data):
+  """Return whether the dict `data` has list or dict values."""
+  return any(isinstance(value, (dict, list)) for value in data.values())
+
+
+def print_inferred_records(data, *, show_provider_id=False):
+  """Print `data` tabular when its fields can be inferred."""
+  if isinstance(data, dict) and not is_nested(data):
+    print_records([data], list(data.keys()),
+                  show_provider_id=show_provider_id)
     return
 
   if isinstance(data, list):
+    if not data:
+      return
     fields = infer_record_fields(data)
     if fields is not None:
-      print_records(data, fields, show_ugkthid=show_ugkthid)
+      print_records(data, fields, show_provider_id=show_provider_id)
       return
 
-  print_json(data, show_ugkthid=show_ugkthid)
+  print_json(data, show_provider_id=show_provider_id)
 
 
 def extract_created_api_key(data):
-  """Return the newly created API key string from [[data]]."""
+  """Return the newly created API key string from `data`."""
   if not isinstance(data, dict):
     raise ValueError(f"unexpected create-api-key response: {data!r}")
 
@@ -2032,20 +2028,35 @@ def extract_created_api_key(data):
   raise ValueError(f"create-api-key response lacks token: {data!r}")
 @
 
-Commands that return non-tabular data still use formatted JSON.
+Timestamps and durations are the fields a human reads most, and the raw
+ISO~8601 and seconds the API returns are hard to scan in a table.
+We therefore format by field name: every timestamp field the API has
+(across all families) is listed once, and [[duration_secs]] is the one
+duration.
+Identifiers ([[provider_id]] and friends) are hidden by default and shown
+on request, since a TA rarely needs them and they widen every table.
 <<helper functions>>=
 TIMESTAMP_FIELDS = {
   "booking_time",
+  "checkin_time",
+  "checkout_time",
   "created",
   "created_at",
   "ended_at",
   "expires",
   "expires_at",
   "help_started_at",
+  "helpstarttime",
   "joined_at",
+  "lab_end",
+  "lab_start",
+  "last_helped_at",
+  "occurred_at",
   "slot_time",
   "started_at",
+  "starttime",
   "time",
+  "uploaded_at",
 }
 
 DURATION_FIELDS = {
@@ -2053,37 +2064,37 @@ DURATION_FIELDS = {
 }
 
 
-def is_ugkthid_field(field):
-  """Return whether [[field]] is a [[ugkthid]] field."""
-  return "ugkthid" in field
+def is_provider_id_field(field):
+  """Return whether `field` is a provider-id field."""
+  return "provider_id" in field
 
 
-def visible_fields(fields, *, show_ugkthid=False):
+def visible_fields(fields, *, show_provider_id=False):
   """Return the fields that should be shown."""
-  if show_ugkthid:
+  if show_provider_id:
     return list(fields)
-  return [field for field in fields if not is_ugkthid_field(field)]
+  return [field for field in fields if not is_provider_id_field(field)]
 
 
-def filter_headers(fields, headers, *, show_ugkthid=False):
-  """Return headers filtered in the same way as [[fields]]."""
+def filter_headers(fields, headers, *, show_provider_id=False):
+  """Return headers filtered in the same way as `fields`."""
   if headers is None:
     return None
 
   return [header for field, header in zip(fields, headers)
-          if show_ugkthid or not is_ugkthid_field(field)]
+          if show_provider_id or not is_provider_id_field(field)]
 
 
-def print_json(data, *, today=None, show_ugkthid=False):
-  """Print [[data]] as formatted JSON."""
+def print_json(data, *, today=None, show_provider_id=False):
+  """Print `data` as formatted JSON."""
   print(json.dumps(format_output_data(data,
                                       today=today,
-                                      show_ugkthid=show_ugkthid),
+                                      show_provider_id=show_provider_id),
                    indent=2))
 
 
 def parse_timestamp(timestamp):
-  """Return [[timestamp]] as a [[datetime]], when possible."""
+  """Return `timestamp` as a `datetime`, when possible."""
   if not timestamp:
     return None
 
@@ -2092,7 +2103,7 @@ def parse_timestamp(timestamp):
 
 
 def format_timestamp(timestamp, *, today=None):
-  """Format [[timestamp]] compactly for CLI output."""
+  """Format `timestamp` compactly for CLI output."""
   parsed = parse_timestamp(timestamp)
   if parsed is None:
     return ""
@@ -2106,7 +2117,7 @@ def format_timestamp(timestamp, *, today=None):
 
 
 def format_duration(duration_secs):
-  """Return [[duration_secs]] in a compact human-readable form."""
+  """Return `duration_secs` in a compact human-readable form."""
   if duration_secs in (None, ""):
     return ""
 
@@ -2132,7 +2143,7 @@ def format_duration(duration_secs):
 
 
 def format_field_value(field, value, *, today=None):
-  """Return [[value]] formatted for [[field]]."""
+  """Return `value` formatted for `field`."""
   if field in TIMESTAMP_FIELDS:
     return format_timestamp(value, today=today)
   if field in DURATION_FIELDS:
@@ -2140,24 +2151,23 @@ def format_field_value(field, value, *, today=None):
   return value
 
 
-def format_output_data(data, *, today=None, show_ugkthid=False):
+def format_output_data(data, *, today=None, show_provider_id=False):
   """Return formatted Stay A While output data."""
   if isinstance(data, list):
     return [format_output_data(item,
                                today=today,
-                               show_ugkthid=show_ugkthid)
+                               show_provider_id=show_provider_id)
             for item in data]
 
   if isinstance(data, dict):
     formatted = {}
     for key, value in data.items():
-      if not show_ugkthid and is_ugkthid_field(key):
+      if not show_provider_id and is_provider_id_field(key):
         continue
 
       if isinstance(value, (dict, list)):
-        formatted[key] = format_output_data(value,
-                                            today=today,
-                                            show_ugkthid=show_ugkthid)
+        formatted[key] = format_output_data(
+            value, today=today, show_provider_id=show_provider_id)
       else:
         formatted[key] = format_field_value(key, value, today=today)
     return formatted
@@ -2165,41 +2175,72 @@ def format_output_data(data, *, today=None, show_ugkthid=False):
   return data
 @
 
+\subsection{Arguments and options}
+
 We start with the shared arguments and options.
+The booking source help text doubles as the documentation of the upload
+format, since that is where a teacher writing a script will look first.
 <<option and argument definitions>>=
 queue_arg = typer.Argument(help="Queue name as shown in Stay A While.")
 username_arg = typer.Argument(help="KTH login name, without @kth.se.")
 api_key_id_arg = typer.Argument(help="Identifier of the API key to revoke.")
 bookings_source_arg = typer.Argument(
     help=("JSON file with bookings, or - to read JSON from stdin. "
-          "Use ugkthid for either a u1... id or a plain username. "
+          "Use provider_id for either a u1... id or a plain username. "
           "entry_type is optional and defaults to present. "
           "Example: "
-          "[{\"ugkthid\":\"u1abc123\","
+          "[{\"provider_id\":\"u1abc123\","
           "\"slot_time\":\"2026-03-01T10:00:00Z\"},"
-          "{\"ugkthid\":\"alba\","
+          "{\"provider_id\":\"alba\","
           "\"slot_time\":\"2026-03-01T10:15:00Z\","
           "\"entry_type\":\"help\"}]."))
-label_arg = typer.Argument(help="Optional label for the new API key.")
+label_arg = typer.Argument(help="Label for the new API key, e.g. "
+                                "the script that will use it.")
+message_arg = typer.Argument(help="Message text; an empty string clears.")
+date_arg = typer.Argument(help="Date, YYYY-MM-DD.")
 from_opt = typer.Option("--from",
                         help="Filter from this date, YYYY-MM-DD.")
 until_opt = typer.Option(help="Filter until this date, YYYY-MM-DD.")
 interaction_type_opt = typer.Option(help="Filter to help or present.")
-date_opt = typer.Option(help="Statistics date, YYYY-MM-DD.")
-show_ugkthid_opt = typer.Option("--ugkthid",
-                                help="Include the ugkthid column in view.")
+cancel_opt = typer.Option("--cancel",
+                          help="Discard the check-in instead of "
+                               "recording it as a session.")
+show_provider_id_opt = typer.Option("--provider-id",
+                                    help="Include provider-id columns.")
 @
 
-The commands that expose queue participants should hide [[ugkthid]] by
-default, but let the user opt in when they need identifiers.
+The commands that expose people hide [[provider_id]] by default, but let
+the user opt in when they need identifiers.
+The field lists are the server's reply shapes from the sections above,
+minus the internal ids ([[id]], [[queue_id]]) nobody needs in a terminal.
 <<helper functions>>=
-BOOKING_FIELDS = ["ugkthid", "slot_time", "entry_type"]
-ASSISTANT_FIELDS = ["username"]
+USER_FIELDS = [
+  "username",
+  "realname",
+  "provider_id",
+  "superadmin",
+  "teacher_in",
+  "assistant_in",
+]
+API_KEY_FIELDS = ["id", "label", "created_at", "expires_at"]
+API_KEY_HEADERS = ["id", "label", "created", "expires"]
+QUEUE_FIELDS = ["name", "locked", "hiding", "motd", "info"]
+PERSON_FIELDS = ["username", "realname", "provider_id"]
+BOOKING_FIELDS = ["username", "realname", "provider_id", "slot_time", "help"]
+MY_BOOKING_FIELDS = ["provider_id", "slot_time", "help"]
+CHECKIN_FIELDS = [
+  "checkin_time",
+  "checkout_time",
+  "last_helped_at",
+  "helped",
+  "presented",
+  "booked",
+]
 INTERACTION_LOG_FIELDS = [
+  "helper_username",
   "helper_name",
-  "helper_ugkthid",
+  "student_username",
   "student_name",
-  "student_ugkthid",
   "started_at",
   "ended_at",
   "duration_secs",
@@ -2207,7 +2248,6 @@ INTERACTION_LOG_FIELDS = [
 ]
 QUEUE_LOG_FIELDS = [
   "username",
-  "ugkthid",
   "realname",
   "time",
   "help",
@@ -2215,16 +2255,20 @@ QUEUE_LOG_FIELDS = [
   "queue_length",
   "help_amount",
   "present_amount",
+  "comment",
 ]
+QUEUE_EVENT_FIELDS = ["event_type", "occurred_at"]
 QUEUE_VIEW_FIELDS = [
   "waiting_position",
   "realname",
   "username",
-  "ugkthid",
+  "provider_id",
   "entry_type",
   "joined_at",
+  "location",
+  "comment",
   "booking_time",
-  "helper_name",
+  "helper",
   "help_started_at",
 ]
 HELP_HISTORY_FIELDS = [
@@ -2233,28 +2277,38 @@ HELP_HISTORY_FIELDS = [
   "ended_at",
   "duration_secs",
   "helper",
+  "help",
 ]
 @
 
-Each command is just a thin wrapper around the corresponding session method.
+\subsection{Commands}
+
+Each command is a thin wrapper around the corresponding session method.
+Commands that read print a table; commands that mutate are silent on
+success and log the error and exit with status~1 on failure, so that shell
+scripts can chain them.
+We start with identity and API keys.
 <<command definitions>>=
 @cli.command(name="user")
-def cli_user():
+def cli_user(
+    show_provider_id: Annotated[bool, show_provider_id_opt] = False):
   """Show the current Stay A While user."""
-  print_inferred_records(get_session().get_user())
+  print_records([get_session().get_user()],
+                USER_FIELDS,
+                show_provider_id=show_provider_id)
 
 
 @api_keys_cli.command(name="ls")
 def cli_list_api_keys():
   """List the caller's API keys."""
   print_records(get_session().list_api_keys(),
-                ["id", "label", "created_at", "expires_at"],
-                headers=["id", "label", "created", "expires"])
+                API_KEY_FIELDS,
+                headers=API_KEY_HEADERS)
 
 
 @api_keys_cli.command(name="create")
-def cli_create_api_key(label: Annotated[Optional[str], label_arg] = None):
-  """Create a new API key."""
+def cli_create_api_key(label: Annotated[str, label_arg]):
+  """Create a new API key and print it (shown only once)."""
   try:
     print(extract_created_api_key(get_session().create_api_key(label)))
   except Exception as err:
@@ -2270,67 +2324,27 @@ def cli_revoke_api_key(api_key_id: Annotated[str, api_key_id_arg]):
   except Exception as err:
     logging.error("api-key revoke failed for %s: %s", api_key_id, err)
     raise typer.Exit(code=1)
+@
 
-
-@bookings_cli.command(name="ls")
-def cli_list_bookings(queue: Annotated[str, queue_arg],
-                      show_ugkthid: Annotated[bool, show_ugkthid_opt] = False):
-  """List bookings for one queue."""
-  print_records(get_session().list_bookings(queue),
-                BOOKING_FIELDS,
-                show_ugkthid=show_ugkthid)
-
-
-@bookings_cli.command(name="upsert")
-def cli_upsert_bookings(queue: Annotated[str, queue_arg],
-                        source: Annotated[str, bookings_source_arg]):
-  """Upload bookings from a JSON document."""
-  try:
-    session = get_session()
-    bookings = load_json_input(source)
-    session.upsert_bookings(queue, bookings)
-  except Exception as err:
-    logging.error("booking upload failed for %s: %s", queue, err)
-    raise typer.Exit(code=1)
-
-
-@bookings_cli.command(name="clear")
-def cli_clear_bookings(queue: Annotated[str, queue_arg],
-                       from_date: Annotated[Optional[str],
-                                            from_opt] = None,
-                       until: Annotated[Optional[str],
-                                        until_opt] = None):
-  """Delete bookings for one queue."""
-  try:
-    get_session().clear_bookings(queue,
-                                from_date=from_date,
-                                until=until)
-  except Exception as err:
-    logging.error("booking clear failed for %s: %s", queue, err)
-    raise typer.Exit(code=1)
-
-
-@booking_cli.command(name="mine")
-def cli_my_booking(queue: Annotated[str, queue_arg],
-                   show_ugkthid: Annotated[bool, show_ugkthid_opt] = False):
-  """Show the caller's own booking for one queue."""
-  booking = get_session().get_my_booking(queue)
-  if isinstance(booking, dict):
-    print_records([booking], BOOKING_FIELDS, show_ugkthid=show_ugkthid)
-  else:
-    print_json(booking, show_ugkthid=show_ugkthid)
-
-
+The queue commands follow \cref{tab:stayawhile-routes}: listing, lookup,
+locking and the two messages.
+<<command definitions>>=
 @queues_cli.command(name="ls")
 def cli_list_queues():
   """List all public queues."""
-  print_inferred_records(get_session().list_queues())
+  print_records(get_session().list_queues(), QUEUE_FIELDS)
 
 
 @queues_cli.command(name="mine")
 def cli_list_my_queues():
   """List queues where the caller is teacher."""
-  print_inferred_records(get_session().list_my_queues())
+  print_records(get_session().list_my_queues(), QUEUE_FIELDS)
+
+
+@queues_cli.command(name="show")
+def cli_show_queue(queue: Annotated[str, queue_arg]):
+  """Show one queue: lock state, MOTD and info."""
+  print_records([get_session().get_queue(queue)], QUEUE_FIELDS)
 
 
 @queues_cli.command(name="lock")
@@ -2353,10 +2367,61 @@ def cli_unlock_queue(queue: Annotated[str, queue_arg]):
     raise typer.Exit(code=1)
 
 
+@queues_cli.command(name="motd")
+def cli_set_motd(queue: Annotated[str, queue_arg],
+                 message: Annotated[str, message_arg]):
+  """Set the message of the day for one queue."""
+  try:
+    get_session().set_motd(queue, message)
+  except Exception as err:
+    logging.error("setting MOTD failed for %s: %s", queue, err)
+    raise typer.Exit(code=1)
+
+
+@queues_cli.command(name="info")
+def cli_set_info(queue: Annotated[str, queue_arg],
+                 message: Annotated[str, message_arg]):
+  """Set the queue info text for one queue."""
+  try:
+    get_session().set_info(queue, message)
+  except Exception as err:
+    logging.error("setting info failed for %s: %s", queue, err)
+    raise typer.Exit(code=1)
+@
+
+Teachers and assistants are plain person tables.
+The [[on-duty]] listing sits under [[assistants]] because that is what it
+lists, even though it is the one read endpoint that needs the browser
+session (\cref{sec:stayawhile-presence}).
+<<command definitions>>=
 @teachers_cli.command(name="ls")
-def cli_list_teachers(queue: Annotated[str, queue_arg]):
+def cli_list_teachers(
+    queue: Annotated[str, queue_arg],
+    show_provider_id: Annotated[bool, show_provider_id_opt] = False):
   """List teachers for one queue."""
-  print_inferred_records(get_session().list_teachers(queue))
+  print_records(get_session().list_teachers(queue),
+                PERSON_FIELDS,
+                show_provider_id=show_provider_id)
+
+
+@assistants_cli.command(name="ls")
+def cli_list_assistants(
+    queue: Annotated[str, queue_arg],
+    show_provider_id: Annotated[bool, show_provider_id_opt] = False):
+  """List assistants for one queue."""
+  print_records(get_session().list_assistants(queue),
+                PERSON_FIELDS,
+                show_provider_id=show_provider_id)
+
+
+@assistants_cli.command(name="on-duty")
+def cli_list_on_duty(
+    queue: Annotated[str, queue_arg],
+    show_provider_id: Annotated[bool, show_provider_id_opt] = False):
+  """List assistants currently on duty for one queue."""
+  print_records(get_session().list_on_duty(queue),
+                PERSON_FIELDS,
+                show_provider_id=show_provider_id)
 
 
 @assistants_cli.command(name="add")
@@ -2373,18 +2438,6 @@ def cli_add_assistant(queue: Annotated[str, queue_arg],
     raise typer.Exit(code=1)
 
 
-@assistants_cli.command(name="ls")
-def cli_list_assistants(queue: Annotated[str, queue_arg]):
-  """List assistants for one queue."""
-  print_records(get_session().list_assistants(queue), ASSISTANT_FIELDS)
-
-
-@assistants_cli.command(name="on-duty")
-def cli_list_checked_in(queue: Annotated[str, queue_arg]):
-  """List assistants currently on duty for one queue."""
-  print_records(get_session().list_checked_in(queue), ASSISTANT_FIELDS)
-
-
 @assistants_cli.command(name="rm")
 def cli_remove_assistant(queue: Annotated[str, queue_arg],
                          username: Annotated[str, username_arg]):
@@ -2397,60 +2450,18 @@ def cli_remove_assistant(queue: Annotated[str, queue_arg],
                   username,
                   err)
     raise typer.Exit(code=1)
+@
 
-
-@log_cli.command(name="interactions")
-def cli_interaction_log(
-    queue: Annotated[str, queue_arg],
-    from_date: Annotated[Optional[str], from_opt] = None,
-    until: Annotated[Optional[str], until_opt] = None,
-    interaction_type: Annotated[Optional[str], interaction_type_opt] = None,
-    show_ugkthid: Annotated[bool, show_ugkthid_opt] = False):
-  """Read the interaction log for one queue."""
-  print_records(get_session().get_interaction_log(
-      queue,
-      from_date=from_date,
-      until=until,
-      interaction_type=interaction_type),
-      INTERACTION_LOG_FIELDS,
-      show_ugkthid=show_ugkthid)
-
-
-@log_cli.command(name="queue")
-def cli_queue_log(queue: Annotated[str, queue_arg],
-                  from_date: Annotated[Optional[str], from_opt] = None,
-                  until: Annotated[Optional[str], until_opt] = None,
-                  show_ugkthid: Annotated[bool, show_ugkthid_opt] = False):
-  """Read the queue log for one queue."""
-  print_records(get_session().get_queue_log(queue,
-                                            from_date=from_date,
-                                            until=until),
-                QUEUE_LOG_FIELDS,
-                show_ugkthid=show_ugkthid)
-
-
-@stats_cli.command(name="sessions")
-def cli_session_stats(queue: Annotated[str, queue_arg],
-                      date: Annotated[Optional[str], date_opt] = None):
-  """Read session statistics for one queue."""
-  print_inferred_records(get_session().get_session_stats(queue, date=date))
-
-
-@stats_cli.command(name="assistants")
-def cli_assistant_stats(queue: Annotated[str, queue_arg]):
-  """Read assistant statistics for one queue."""
-  print_inferred_records(get_session().get_assistant_stats(queue))
-
-
-@stats_cli.command(name="interactions")
-def cli_interaction_session_stats(queue: Annotated[str, queue_arg]):
-  """Read interaction-session statistics for one queue."""
-  print_inferred_records(get_session().get_interaction_session_stats(queue))
-
-
+Checking in and out are verbs an assistant types often, so they live at
+the top level.
+[[checkout --cancel]] maps to the cancelling [[DELETE]]: the flag spells
+out that the session is discarded rather than recorded, which is the one
+distinction a TA needs to make.
+The recorded sessions are read under [[checkins]].
+<<command definitions>>=
 @cli.command(name="checkin")
 def cli_checkin(queue: Annotated[str, queue_arg]):
-  """Check in as assistant for one queue."""
+  """Check in as on-duty assistant for one queue."""
   try:
     get_session().checkin(queue)
   except Exception as err:
@@ -2459,34 +2470,149 @@ def cli_checkin(queue: Annotated[str, queue_arg]):
 
 
 @cli.command(name="checkout")
-def cli_checkout(queue: Annotated[str, queue_arg]):
-  """Check out as assistant for one queue."""
+def cli_checkout(queue: Annotated[str, queue_arg],
+                 cancel: Annotated[bool, cancel_opt] = False):
+  """Check out from one queue, recording the session unless --cancel."""
   try:
-    get_session().checkout(queue)
+    if cancel:
+      get_session().cancel_checkin(queue)
+    else:
+      get_session().checkout(queue)
   except Exception as err:
     logging.error("checkout failed for %s: %s", queue, err)
     raise typer.Exit(code=1)
 
 
-@cli.command(name="view")
-def cli_view_queue(queue: Annotated[str, queue_arg],
-                   from_date: Annotated[Optional[str], from_opt] = None,
-                   until: Annotated[Optional[str], until_opt] = None,
-                   show_ugkthid: Annotated[bool, show_ugkthid_opt] = False):
-  """Show who is currently active in one queue."""
-  session = get_session()
-  queue_log = session.get_queue_log(queue,
-                                    from_date=from_date,
-                                    until=until)
-  interaction_log = session.get_interaction_log(queue,
-                                                from_date=from_date,
-                                                until=until)
-  bookings = session.list_bookings(queue)
-  view, overlay_warnings = reconstruct_current_queue(queue_log,
-                                                     interaction_log,
-                                                     bookings=bookings)
-  print_warnings(queue_view_warnings(queue_log, view, overlay_warnings))
-  print_records(view, QUEUE_VIEW_FIELDS, show_ugkthid=show_ugkthid)
+@checkins_cli.command(name="mine")
+def cli_my_checkins(queue: Annotated[str, queue_arg],
+                    from_date: Annotated[Optional[str], from_opt] = None,
+                    until: Annotated[Optional[str], until_opt] = None):
+  """List the caller's recorded check-in sessions for one queue."""
+  print_records(get_session().list_my_checkins(queue,
+                                               from_date=from_date,
+                                               until=until),
+                CHECKIN_FIELDS)
+
+
+@checkins_cli.command(name="ta")
+def cli_ta_checkins(queue: Annotated[str, queue_arg],
+                    username: Annotated[str, username_arg],
+                    from_date: Annotated[Optional[str], from_opt] = None,
+                    until: Annotated[Optional[str], until_opt] = None):
+  """List one assistant's recorded check-in sessions for one queue."""
+  print_records(get_session().list_ta_checkins(queue,
+                                               username,
+                                               from_date=from_date,
+                                               until=until),
+                CHECKIN_FIELDS)
+@
+
+The booking upload is the one mutation that can partially succeed, so it
+is not silent: unresolved identifiers are reported and the exit status
+is~1, because a script that syncs bookings from Canvas should notice that
+some students were dropped.
+Clearing reports the number of deleted bookings on standard error, where it
+informs an interactive user without polluting a pipeline.
+<<command definitions>>=
+@bookings_cli.command(name="ls")
+def cli_list_bookings(
+    queue: Annotated[str, queue_arg],
+    show_provider_id: Annotated[bool, show_provider_id_opt] = False):
+  """List bookings for one queue."""
+  print_records(get_session().list_bookings(queue),
+                BOOKING_FIELDS,
+                show_provider_id=show_provider_id)
+
+
+@bookings_cli.command(name="upsert")
+def cli_upsert_bookings(queue: Annotated[str, queue_arg],
+                        source: Annotated[str, bookings_source_arg]):
+  """Upload bookings from a JSON document."""
+  try:
+    session = get_session()
+    bookings = load_json_input(source)
+    result = session.upsert_bookings(queue, bookings)
+  except Exception as err:
+    logging.error("booking upload failed for %s: %s", queue, err)
+    raise typer.Exit(code=1)
+
+  skipped = result.get("skipped") if isinstance(result, dict) else None
+  if skipped:
+    logging.error("booking upload for %s skipped unresolved identifiers: %s",
+                  queue, ", ".join(map(str, skipped)))
+    raise typer.Exit(code=1)
+
+
+@bookings_cli.command(name="clear")
+def cli_clear_bookings(queue: Annotated[str, queue_arg],
+                       from_date: Annotated[Optional[str],
+                                            from_opt] = None,
+                       until: Annotated[Optional[str],
+                                        until_opt] = None):
+  """Delete future bookings for one queue."""
+  try:
+    result = get_session().clear_bookings(queue,
+                                         from_date=from_date,
+                                         until=until)
+  except Exception as err:
+    logging.error("booking clear failed for %s: %s", queue, err)
+    raise typer.Exit(code=1)
+
+  if isinstance(result, dict) and "deleted" in result:
+    typer.echo(f"deleted {result['deleted']} bookings", err=True)
+
+
+@booking_cli.command(name="mine")
+def cli_my_booking(
+    queue: Annotated[str, queue_arg],
+    show_provider_id: Annotated[bool, show_provider_id_opt] = False):
+  """Show the caller's own booking for one queue."""
+  booking = get_session().get_my_booking(queue)
+  if isinstance(booking, dict):
+    print_records([booking],
+                  MY_BOOKING_FIELDS,
+                  show_provider_id=show_provider_id)
+  else:
+    print_json(booking, show_provider_id=show_provider_id)
+@
+
+The logs and the help history print the fixed field lists above.
+<<command definitions>>=
+@log_cli.command(name="interactions")
+def cli_interaction_log(
+    queue: Annotated[str, queue_arg],
+    from_date: Annotated[Optional[str], from_opt] = None,
+    until: Annotated[Optional[str], until_opt] = None,
+    interaction_type: Annotated[Optional[str], interaction_type_opt] = None):
+  """Read the interaction log for one queue."""
+  print_records(get_session().get_interaction_log(
+      queue,
+      from_date=from_date,
+      until=until,
+      interaction_type=interaction_type),
+      INTERACTION_LOG_FIELDS)
+
+
+@log_cli.command(name="queue")
+def cli_queue_log(queue: Annotated[str, queue_arg],
+                  from_date: Annotated[Optional[str], from_opt] = None,
+                  until: Annotated[Optional[str], until_opt] = None):
+  """Read the queue log for one queue."""
+  print_records(get_session().get_queue_log(queue,
+                                            from_date=from_date,
+                                            until=until),
+                QUEUE_LOG_FIELDS)
+
+
+@log_cli.command(name="events")
+def cli_queue_events(queue: Annotated[str, queue_arg],
+                     from_date: Annotated[Optional[str], from_opt] = None,
+                     until: Annotated[Optional[str], until_opt] = None):
+  """Read the open/close event log for one queue."""
+  print_records(get_session().get_queue_events(queue,
+                                               from_date=from_date,
+                                               until=until),
+                QUEUE_EVENT_FIELDS)
 
 
 @history_cli.command(name="mine")
@@ -2496,8 +2622,72 @@ def cli_help_history():
                 HELP_HISTORY_FIELDS)
 @
 
-The CLI tests should verify both the command hierarchy and the translation from
-arguments to API calls.
+The statistics replies are the ones we infer columns for.
+The range queries take [[--from]]/[[--until]]; the two date-addressed ones
+take the date as an argument, mirroring where the server puts it.
+<<command definitions>>=
+@stats_cli.command(name="sessions")
+def cli_session_stats(queue: Annotated[str, queue_arg],
+                      from_date: Annotated[Optional[str], from_opt] = None,
+                      until: Annotated[Optional[str], until_opt] = None):
+  """Read per-session statistics for one queue."""
+  print_inferred_records(get_session().get_session_stats(queue,
+                                                        from_date=from_date,
+                                                        until=until))
+
+
+@stats_cli.command(name="session")
+def cli_session_detail(queue: Annotated[str, queue_arg],
+                       date: Annotated[str, date_arg]):
+  """Read the session detail for one queue on one date."""
+  print_inferred_records(get_session().get_session_detail(queue, date))
+
+
+@stats_cli.command(name="hourly")
+def cli_hourly_session_detail(queue: Annotated[str, queue_arg],
+                              date: Annotated[str, date_arg]):
+  """Read the hourly breakdown for one queue on one date."""
+  print_inferred_records(
+      get_session().get_hourly_session_detail(queue, date))
+
+
+@stats_cli.command(name="assistants")
+def cli_assistant_stats(queue: Annotated[str, queue_arg],
+                        from_date: Annotated[Optional[str], from_opt] = None,
+                        until: Annotated[Optional[str], until_opt] = None):
+  """Read per-assistant statistics for one queue."""
+  print_inferred_records(get_session().get_assistant_stats(
+      queue, from_date=from_date, until=until))
+
+
+@stats_cli.command(name="interactions")
+def cli_interaction_session_stats(
+    queue: Annotated[str, queue_arg],
+    from_date: Annotated[Optional[str], from_opt] = None,
+    until: Annotated[Optional[str], until_opt] = None):
+  """Read interaction-session statistics for one queue."""
+  print_inferred_records(get_session().get_interaction_session_stats(
+      queue, from_date=from_date, until=until))
+@
+
+Finally, [[view]] shows the live queue in the order students see it.
+<<command definitions>>=
+@cli.command(name="view")
+def cli_view_queue(
+    queue: Annotated[str, queue_arg],
+    show_provider_id: Annotated[bool, show_provider_id_opt] = False):
+  """Show who is currently in one queue, in display order."""
+  print_records(queue_view(get_session().list_queue_entries(queue)),
+                QUEUE_VIEW_FIELDS,
+                show_provider_id=show_provider_id)
+@
+
+\subsection{CLI tests}
+
+The CLI tests should verify both the command hierarchy and the translation
+from arguments to API calls.
+The fake session returns the reply shapes documented in the sections above,
+so these tests double as a record of what the server sends.
 <<test helpers>>=
 class FakeStayawhileSession:
   def __init__(self):
@@ -2507,21 +2697,43 @@ class FakeStayawhileSession:
     self.calls.append(("get_user",))
     return {
       "username": "alice",
-      "ugkthid": "u1alice",
+      "provider_id": "u1alice",
+      "realname": "Alice",
+      "superadmin": False,
+      "teacher_in": ["Queue"],
+      "assistant_in": [],
+      "token": "secret-jwt",
     }
 
   def list_queues(self):
     self.calls.append(("list_queues",))
     return [{
       "name": "Queue",
-      "open": True,
+      "locked": False,
+      "hiding": False,
+      "motd": "",
+      "info": "Lab 3",
     }]
 
   def list_my_queues(self):
     self.calls.append(("list_my_queues",))
     return [{
       "name": "Queue",
+      "locked": True,
+      "hiding": False,
+      "motd": "",
+      "info": "",
     }]
+
+  def get_queue(self, queue):
+    self.calls.append(("get_queue", queue))
+    return {
+      "name": queue,
+      "locked": True,
+      "hiding": False,
+      "motd": "Bring laptops",
+      "info": "",
+    }
 
   def lock_queue(self, queue):
     self.calls.append(("lock_queue", queue))
@@ -2529,9 +2741,17 @@ class FakeStayawhileSession:
   def unlock_queue(self, queue):
     self.calls.append(("unlock_queue", queue))
 
+  def set_motd(self, queue, message):
+    self.calls.append(("set_motd", queue, message))
+
+  def set_info(self, queue, message):
+    self.calls.append(("set_info", queue, message))
+
   def list_teachers(self, queue):
     self.calls.append(("list_teachers", queue))
-    return [{"username": "teacher1"}]
+    return [{"username": "teacher1",
+             "realname": "Teacher One",
+             "provider_id": "u1teacher"}]
 
   def list_api_keys(self):
     self.calls.append(("list_api_keys",))
@@ -2542,7 +2762,7 @@ class FakeStayawhileSession:
       "expires_at": "2026-04-01T09:15:00Z",
     }]
 
-  def create_api_key(self, label=None):
+  def create_api_key(self, label):
     self.calls.append(("create_api_key", label))
     return {"label": label, "token": "secret-token"}
 
@@ -2552,69 +2772,114 @@ class FakeStayawhileSession:
   def list_bookings(self, queue):
     self.calls.append(("list_bookings", queue))
     return [{
-      "ugkthid": "u1abc123",
+      "username": "abc",
+      "realname": "A. B. C.",
+      "provider_id": "u1abc123",
       "slot_time": "2026-03-01T10:00:00Z",
-      "entry_type": "help",
+      "help": True,
     }]
 
   def upsert_bookings(self, queue, bookings):
     self.calls.append(("upsert_bookings", queue, bookings))
-    return {"updated": len(bookings)}
+    return {"error": None, "bookings": bookings, "skipped": []}
 
   def clear_bookings(self, queue, from_date=None, until=None):
     self.calls.append(("clear_bookings", queue, from_date, until))
+    return {"deleted": 2}
 
   def get_my_booking(self, queue):
     self.calls.append(("get_my_booking", queue))
     return {
-      "ugkthid": "u1abc123",
+      "provider_id": "u1abc123",
       "slot_time": "2026-03-01T10:00:00Z",
-      "entry_type": "help",
+      "help": True,
     }
 
   def list_assistants(self, queue):
     self.calls.append(("list_assistants", queue))
-    return [{"username": "abcde"}]
+    return [{"username": "abcde",
+             "realname": "Ab Cde",
+             "provider_id": "u1abcde"}]
 
-  def list_checked_in(self, queue):
-    self.calls.append(("list_checked_in", queue))
-    return [{"username": "checkedin"}]
+  def list_on_duty(self, queue):
+    self.calls.append(("list_on_duty", queue))
+    return [{"username": "checkedin", "realname": "Checked In"}]
 
   def add_assistant(self, queue, username):
     self.calls.append(("add_assistant", queue, username))
-    return {"queue": queue, "username": username}
+    return {"ok": True}
 
   def remove_assistant(self, queue, username):
     self.calls.append(("remove_assistant", queue, username))
 
-  def get_session_stats(self, queue, date=None):
-    self.calls.append(("get_session_stats", queue, date))
-    return {
-      "queue": queue,
-      "date": date,
-      "sessions": 2,
-    }
+  def get_session_stats(self, queue, from_date=None, until=None):
+    self.calls.append(("get_session_stats", queue, from_date, until))
+    return [{
+      "session_key": 1,
+      "date": "2026-03-30",
+      "total_helped": 2,
+    }]
 
-  def get_assistant_stats(self, queue):
-    self.calls.append(("get_assistant_stats", queue))
-    return {
-      "queue": queue,
-      "assistants": 1,
-    }
+  def get_session_detail(self, queue, date):
+    self.calls.append(("get_session_detail", queue, date))
+    return {"points": [{"minutes_from_start": 0, "queue_length": 1}],
+            "help_spans": []}
 
-  def get_interaction_session_stats(self, queue):
-    self.calls.append(("get_interaction_session_stats", queue))
-    return {
-      "queue": queue,
-      "interaction_sessions": 3,
-    }
+  def get_hourly_session_detail(self, queue, date):
+    self.calls.append(("get_hourly_session_detail", queue, date))
+    return [{"hour": 10, "queued_help": 3}]
+
+  def get_assistant_stats(self, queue, from_date=None, until=None):
+    self.calls.append(("get_assistant_stats", queue, from_date, until))
+    return [{
+      "realname": "Ada Lovelace",
+      "username": "ada",
+      "students_helped": 1,
+    }]
+
+  def get_interaction_session_stats(self, queue, from_date=None,
+                                    until=None):
+    self.calls.append(("get_interaction_session_stats",
+                       queue, from_date, until))
+    return [{
+      "date": "2026-03-30",
+      "lab_start": "2026-03-30T08:00:00Z",
+    }]
 
   def checkin(self, queue):
     self.calls.append(("checkin", queue))
-    return {"queue": queue, "checked_in": True}
+    return {"ok": True}
 
   def checkout(self, queue):
     self.calls.append(("checkout", queue))
+    return {"ok": True}
+
+  def cancel_checkin(self, queue):
+    self.calls.append(("cancel_checkin", queue))
+    return {"ok": True}
+
+  def list_my_checkins(self, queue, from_date=None, until=None):
+    self.calls.append(("list_my_checkins", queue, from_date, until))
+    return [{
+      "checkin_time": "2026-03-01T09:00:00Z",
+      "checkout_time": "2026-03-01T11:00:00Z",
+      "last_helped_at": "2026-03-01T10:50:00Z",
+      "helped": 4,
+      "presented": 1,
+      "booked": 0,
+    }]
+
+  def list_ta_checkins(self, queue, username, from_date=None, until=None):
+    self.calls.append(("list_ta_checkins", queue, username,
+                       from_date, until))
+    return [{
+      "checkin_time": "2026-03-01T09:00:00Z",
+      "checkout_time": None,
+      "last_helped_at": None,
+      "helped": 0,
+      "presented": 0,
+      "booked": 0,
+    }]
 
   def get_interaction_log(self,
                           queue,
@@ -2627,10 +2892,10 @@ class FakeStayawhileSession:
                        until,
                        interaction_type))
     return [{
+      "helper_username": "ada",
       "helper_name": "Ada Lovelace",
-      "helper_ugkthid": "u1helper",
+      "student_username": "grace",
       "student_name": "Grace Hopper",
-      "student_ugkthid": "u1student",
       "started_at": "2026-03-01T10:00:00Z",
       "ended_at": None,
       "duration_secs": 600,
@@ -2640,18 +2905,7 @@ class FakeStayawhileSession:
   def get_queue_log(self, queue, from_date=None, until=None):
     self.calls.append(("get_queue_log", queue, from_date, until))
     return [{
-      "username": "former",
-      "ugkthid": "u1former",
-      "realname": "Former Student",
-      "time": "2026-03-01T09:50:00Z",
-      "help": True,
-      "left_queue": False,
-      "queue_length": 1,
-      "help_amount": 1,
-      "present_amount": 0,
-    }, {
       "username": "student1",
-      "ugkthid": "u1student",
       "realname": "Grace Hopper",
       "time": "2026-03-01T10:00:00Z",
       "help": True,
@@ -2659,26 +2913,14 @@ class FakeStayawhileSession:
       "queue_length": 3,
       "help_amount": 2,
       "present_amount": 1,
-    }, {
-      "username": "present1",
-      "ugkthid": "u1present",
-      "realname": "Ada Lovelace",
-      "time": "2026-03-01T10:05:00Z",
-      "help": False,
-      "left_queue": False,
-      "queue_length": 4,
-      "help_amount": 2,
-      "present_amount": 2,
-    }, {
-      "username": "former",
-      "ugkthid": "u1former",
-      "realname": "Former Student",
-      "time": "2026-03-01T10:10:00Z",
-      "help": True,
-      "left_queue": True,
-      "queue_length": 3,
-      "help_amount": 1,
-      "present_amount": 2,
+      "comment": "Lab 2",
+    }]
+
+  def get_queue_events(self, queue, from_date=None, until=None):
+    self.calls.append(("get_queue_events", queue, from_date, until))
+    return [{
+      "event_type": "open",
+      "occurred_at": "2026-03-01T09:00:00Z",
     }]
 
   def get_my_help_history(self):
@@ -2689,6 +2931,37 @@ class FakeStayawhileSession:
       "ended_at": "2026-03-01T10:10:00Z",
       "duration_secs": 600,
       "helper": "Ada Lovelace",
+      "help": True,
+    }]
+
+  def list_queue_entries(self, queue):
+    self.calls.append(("list_queue_entries", queue))
+    return [{
+      "username": "student1",
+      "provider_id": "u1student",
+      "realname": "Grace Hopper",
+      "location": "Red 3",
+      "comment": "",
+      "starttime": "2026-03-01T10:00:00Z",
+      "help": True,
+      "gettinghelp": True,
+      "helpstarttime": "2026-03-01T10:02:00Z",
+      "helper": "Ada Lovelace",
+      "booking_time": None,
+      "booking_help": None,
+    }, {
+      "username": "present1",
+      "provider_id": "u1present",
+      "realname": "Ada Lovelace",
+      "location": "Orange 1",
+      "comment": "",
+      "starttime": "2026-03-01T10:05:00Z",
+      "help": False,
+      "gettinghelp": False,
+      "helpstarttime": None,
+      "helper": None,
+      "booking_time": None,
+      "booking_help": None,
     }]
 @
 
@@ -2697,6 +2970,7 @@ def parse_csv_output(output):
   return list(csv.reader(output.splitlines(), delimiter="\t"))
 @
 
+The formatting helpers are tested directly first.
 <<test functions>>=
 def test_print_records_uses_csv_when_not_tty(capsys):
   kthutils.stayawhile.print_records(
@@ -2719,6 +2993,22 @@ def test_print_records_uses_clean_rich_table(capsys):
   assert "\u2500" not in output
 
 
+def test_print_inferred_records_falls_back_to_json_for_nested(capsys):
+  kthutils.stayawhile.print_inferred_records(
+      {"points": [{"queue_length": 1}], "help_spans": []})
+
+  assert json.loads(capsys.readouterr().out) == {
+    "points": [{"queue_length": 1}],
+    "help_spans": [],
+  }
+
+
+def test_print_inferred_records_prints_nothing_for_empty_list(capsys):
+  kthutils.stayawhile.print_inferred_records([])
+
+  assert capsys.readouterr().out == ""
+
+
 def test_format_timestamp_for_today():
   assert kthutils.stayawhile.format_timestamp(
       "2026-03-27T14:38:00Z",
@@ -2737,10 +3027,10 @@ def test_format_duration():
   assert kthutils.stayawhile.format_duration(7384) == "2h 03m 04s"
 
 
-def test_format_output_data_hides_ugkthid_and_formats_fields():
+def test_format_output_data_hides_provider_id_and_formats_fields():
   assert kthutils.stayawhile.format_output_data(
       {
-        "ugkthid": "u1abc123",
+        "provider_id": "u1abc123",
         "slot_time": "2026-03-27T14:38:00Z",
         "duration_secs": 600,
       },
@@ -2750,10 +3040,10 @@ def test_format_output_data_hides_ugkthid_and_formats_fields():
       }
 
 
-def test_format_output_data_can_keep_ugkthid():
+def test_format_output_data_can_keep_provider_id():
   assert kthutils.stayawhile.format_output_data(
-      {"student_ugkthid": "u1abc123"},
-      show_ugkthid=True) == {"student_ugkthid": "u1abc123"}
+      {"helper_provider_id": "u1abc123"},
+      show_provider_id=True) == {"helper_provider_id": "u1abc123"}
 
 
 def test_extract_created_api_key_reads_token_field():
@@ -2764,31 +3054,35 @@ def test_extract_created_api_key_reads_token_field():
 def test_extract_created_api_key_rejects_unusable_response():
   with pytest.raises(ValueError, match="lacks token"):
     kthutils.stayawhile.extract_created_api_key({"label": "Exam"})
+@
 
-
+Then the command hierarchy.
+<<test functions>>=
 def test_stayawhile_help():
   result = runner.invoke(kthutils.stayawhile.cli, ["--help"])
   assert result.exit_code == 0
   assert "stayawhile" in result.stdout
-  assert "user" in result.stdout
-  assert "api-keys" in result.stdout
-  assert "bookings" in result.stdout
-  assert "assistants" in result.stdout
-  assert "queues" in result.stdout
-  assert "teachers" in result.stdout
-  assert "stats" in result.stdout
-  assert "checkin" in result.stdout
-  assert "checkout" in result.stdout
-  assert "history" in result.stdout
-  assert "view" in result.stdout
+  for group in ["user", "api-keys", "bookings", "booking", "assistants",
+                "checkins", "queues", "teachers", "stats", "checkin",
+                "checkout", "history", "log", "view"]:
+    assert group in result.stdout
 
 
-def test_queue_help_mentions_lock_and_unlock():
+def test_queue_help_mentions_all_queue_commands():
   result = runner.invoke(kthutils.stayawhile.cli, ["queues", "--help"])
 
   assert result.exit_code == 0
-  assert "lock" in result.stdout
-  assert "unlock" in result.stdout
+  for command in ["ls", "mine", "show", "lock", "unlock", "motd", "info"]:
+    assert command in result.stdout
+
+
+def test_stats_help_mentions_date_commands():
+  result = runner.invoke(kthutils.stayawhile.cli, ["stats", "--help"])
+
+  assert result.exit_code == 0
+  for command in ["sessions", "session", "hourly", "assistants",
+                  "interactions"]:
+    assert command in result.stdout
 
 
 def test_bookings_upsert_help_mentions_json_example():
@@ -2796,16 +3090,17 @@ def test_bookings_upsert_help_mentions_json_example():
                          ["bookings", "upsert", "--help"])
 
   assert result.exit_code == 0
-  assert "JSON file with bookings" in result.stdout
-  assert "plain" in result.stdout
-  assert "username" in result.stdout
-  assert "defaults to" in result.stdout
-  assert "present" in result.stdout
-  assert "Example:" in result.stdout
-  assert '"ugkthid":"u1abc123"' in result.stdout
+  help_text = " ".join(result.stdout.replace("\u2502", " ").split())
+  assert "JSON file with bookings" in help_text
+  assert "plain username" in help_text
+  assert "defaults to present" in help_text
+  assert "Example:" in help_text
+  assert '"provider_id":"u1abc123"' in help_text
+@
 
-
-def test_cli_reads_user(monkeypatch):
+Identity and API keys: the user command must not leak the JWT.
+<<test functions>>=
+def test_cli_reads_user_without_token(monkeypatch):
   fake = FakeStayawhileSession()
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
 
@@ -2813,9 +3108,10 @@ def test_cli_reads_user(monkeypatch):
 
   assert result.exit_code == 0
   assert fake.calls == [("get_user",)]
+  assert "secret-jwt" not in result.stdout
   assert parse_csv_output(result.stdout) == [
-    ["username"],
-    ["alice"],
+    ["username", "realname", "superadmin", "teacher_in", "assistant_in"],
+    ["alice", "Alice", "false", '["Queue"]', "[]"],
   ]
 
 
@@ -2845,6 +3141,16 @@ def test_cli_creates_api_key_printing_only_key(monkeypatch):
   assert result.stdout == "secret-token\n"
 
 
+def test_cli_create_api_key_requires_label(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli, ["api-keys", "create"])
+
+  assert result.exit_code != 0
+  assert fake.calls == []
+
+
 def test_cli_revoke_api_key_is_silent_on_success(monkeypatch):
   fake = FakeStayawhileSession()
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
@@ -2858,7 +3164,7 @@ def test_cli_revoke_api_key_is_silent_on_success(monkeypatch):
 
 def test_cli_api_key_commands_log_errors(monkeypatch, caplog):
   class FailingSession(FakeStayawhileSession):
-    def create_api_key(self, label=None):
+    def create_api_key(self, label):
       self.calls.append(("create_api_key", label))
       raise RuntimeError("boom")
 
@@ -2877,35 +3183,10 @@ def test_cli_api_key_commands_log_errors(monkeypatch, caplog):
   assert revoke.exit_code == 1
   assert "api-key creation failed: boom" in caplog.text
   assert "api-key revoke failed for 2: boom" in caplog.text
+@
 
-
-def test_cli_lists_bookings_without_ugkthid(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
-
-  result = runner.invoke(kthutils.stayawhile.cli, ["bookings", "ls", "Queue"])
-
-  assert result.exit_code == 0
-  assert parse_csv_output(result.stdout) == [
-    ["slot_time", "entry_type"],
-    ["2026-03-01 10:00", "help"],
-  ]
-
-
-def test_cli_lists_bookings_with_ugkthid(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
-
-  result = runner.invoke(kthutils.stayawhile.cli,
-                         ["bookings", "ls", "Queue", "--ugkthid"])
-
-  assert result.exit_code == 0
-  assert parse_csv_output(result.stdout) == [
-    ["ugkthid", "slot_time", "entry_type"],
-    ["u1abc123", "2026-03-01 10:00", "help"],
-  ]
-
-
+Queues: listing, lookup, locking and messages.
+<<test functions>>=
 def test_cli_lists_public_queues(monkeypatch):
   fake = FakeStayawhileSession()
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
@@ -2915,8 +3196,8 @@ def test_cli_lists_public_queues(monkeypatch):
   assert result.exit_code == 0
   assert fake.calls == [("list_queues",)]
   assert parse_csv_output(result.stdout) == [
-    ["name", "open"],
-    ["Queue", "true"],
+    ["name", "locked", "hiding", "motd", "info"],
+    ["Queue", "false", "false", "", "Lab 3"],
   ]
 
 
@@ -2929,8 +3210,23 @@ def test_cli_lists_teacher_queues(monkeypatch):
   assert result.exit_code == 0
   assert fake.calls == [("list_my_queues",)]
   assert parse_csv_output(result.stdout) == [
-    ["name"],
-    ["Queue"],
+    ["name", "locked", "hiding", "motd", "info"],
+    ["Queue", "true", "false", "", ""],
+  ]
+
+
+def test_cli_shows_one_queue(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["queues", "show", "Queue"])
+
+  assert result.exit_code == 0
+  assert fake.calls == [("get_queue", "Queue")]
+  assert parse_csv_output(result.stdout) == [
+    ["name", "locked", "hiding", "motd", "info"],
+    ["Queue", "true", "false", "Bring laptops", ""],
   ]
 
 
@@ -2952,6 +3248,66 @@ def test_cli_locks_and_unlocks_queues(monkeypatch):
   assert unlock.stdout == ""
 
 
+def test_cli_sets_motd_and_info(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  motd = runner.invoke(kthutils.stayawhile.cli,
+                       ["queues", "motd", "Queue", "Lab 3 today."])
+  info = runner.invoke(kthutils.stayawhile.cli,
+                       ["queues", "info", "Queue", ""])
+
+  assert motd.exit_code == 0
+  assert info.exit_code == 0
+  assert fake.calls == [
+    ("set_motd", "Queue", "Lab 3 today."),
+    ("set_info", "Queue", ""),
+  ]
+  assert motd.stdout == ""
+  assert info.stdout == ""
+
+
+def test_cli_queue_mutations_log_errors(monkeypatch, caplog):
+  class FailingSession(FakeStayawhileSession):
+    def lock_queue(self, queue):
+      self.calls.append(("lock_queue", queue))
+      raise RuntimeError("boom")
+
+    def unlock_queue(self, queue):
+      self.calls.append(("unlock_queue", queue))
+      raise RuntimeError("boom")
+
+    def set_motd(self, queue, message):
+      self.calls.append(("set_motd", queue, message))
+      raise RuntimeError("boom")
+
+    def set_info(self, queue, message):
+      self.calls.append(("set_info", queue, message))
+      raise RuntimeError("boom")
+
+  fake = FailingSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  lock = runner.invoke(kthutils.stayawhile.cli, ["queues", "lock", "Queue"])
+  unlock = runner.invoke(kthutils.stayawhile.cli,
+                         ["queues", "unlock", "Queue"])
+  motd = runner.invoke(kthutils.stayawhile.cli,
+                       ["queues", "motd", "Queue", "x"])
+  info = runner.invoke(kthutils.stayawhile.cli,
+                       ["queues", "info", "Queue", "x"])
+
+  assert lock.exit_code == 1
+  assert unlock.exit_code == 1
+  assert motd.exit_code == 1
+  assert info.exit_code == 1
+  assert "queue lock failed for Queue: boom" in caplog.text
+  assert "queue unlock failed for Queue: boom" in caplog.text
+  assert "setting MOTD failed for Queue: boom" in caplog.text
+  assert "setting info failed for Queue: boom" in caplog.text
+@
+
+Teachers, assistants and presence.
+<<test functions>>=
 def test_cli_lists_teachers(monkeypatch):
   fake = FakeStayawhileSession()
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
@@ -2962,8 +3318,156 @@ def test_cli_lists_teachers(monkeypatch):
   assert result.exit_code == 0
   assert fake.calls == [("list_teachers", "Queue")]
   assert parse_csv_output(result.stdout) == [
-    ["username"],
-    ["teacher1"],
+    ["username", "realname"],
+    ["teacher1", "Teacher One"],
+  ]
+
+
+def test_cli_lists_assistants_with_provider_id(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["assistants", "ls", "Queue", "--provider-id"])
+
+  assert result.exit_code == 0
+  assert fake.calls == [("list_assistants", "Queue")]
+  assert parse_csv_output(result.stdout) == [
+    ["username", "realname", "provider_id"],
+    ["abcde", "Ab Cde", "u1abcde"],
+  ]
+
+
+def test_cli_adds_and_removes_assistants_silently(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  add = runner.invoke(kthutils.stayawhile.cli,
+                      ["assistants", "add", "Queue", "abcde"])
+  remove = runner.invoke(kthutils.stayawhile.cli,
+                         ["assistants", "rm", "Queue", "abcde"])
+
+  assert add.exit_code == 0
+  assert remove.exit_code == 0
+  assert fake.calls == [
+    ("add_assistant", "Queue", "abcde"),
+    ("remove_assistant", "Queue", "abcde"),
+  ]
+  assert add.stdout == ""
+  assert remove.stdout == ""
+
+
+def test_cli_lists_on_duty_assistants(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["assistants", "on-duty", "Queue"])
+
+  assert result.exit_code == 0
+  assert fake.calls == [("list_on_duty", "Queue")]
+  assert parse_csv_output(result.stdout) == [
+    ["username", "realname"],
+    ["checkedin", "Checked In"],
+  ]
+
+
+def test_cli_checkin_and_checkout(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  checkin = runner.invoke(kthutils.stayawhile.cli, ["checkin", "Queue"])
+  checkout = runner.invoke(kthutils.stayawhile.cli, ["checkout", "Queue"])
+  cancel = runner.invoke(kthutils.stayawhile.cli,
+                         ["checkout", "Queue", "--cancel"])
+
+  assert checkin.exit_code == 0
+  assert checkout.exit_code == 0
+  assert cancel.exit_code == 0
+  assert fake.calls == [
+    ("checkin", "Queue"),
+    ("checkout", "Queue"),
+    ("cancel_checkin", "Queue"),
+  ]
+  assert checkin.stdout == ""
+  assert checkout.stdout == ""
+  assert cancel.stdout == ""
+
+
+def test_cli_checkin_and_checkout_log_errors(monkeypatch, caplog):
+  class FailingSession(FakeStayawhileSession):
+    def checkin(self, queue):
+      self.calls.append(("checkin", queue))
+      raise RuntimeError("boom")
+
+    def checkout(self, queue):
+      self.calls.append(("checkout", queue))
+      raise RuntimeError("boom")
+
+  fake = FailingSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  checkin = runner.invoke(kthutils.stayawhile.cli, ["checkin", "Queue"])
+  checkout = runner.invoke(kthutils.stayawhile.cli, ["checkout", "Queue"])
+
+  assert checkin.exit_code == 1
+  assert checkout.exit_code == 1
+  assert "checkin failed for Queue: boom" in caplog.text
+  assert "checkout failed for Queue: boom" in caplog.text
+
+
+def test_cli_reads_checkin_history(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  mine = runner.invoke(kthutils.stayawhile.cli,
+                       ["checkins", "mine", "Queue", "--from", "2026-03-01"])
+  ta = runner.invoke(kthutils.stayawhile.cli,
+                     ["checkins", "ta", "Queue", "abcde"])
+
+  assert mine.exit_code == 0
+  assert ta.exit_code == 0
+  assert fake.calls == [
+    ("list_my_checkins", "Queue", "2026-03-01", None),
+    ("list_ta_checkins", "Queue", "abcde", None, None),
+  ]
+  assert parse_csv_output(mine.stdout) == [
+    ["checkin_time", "checkout_time", "last_helped_at",
+     "helped", "presented", "booked"],
+    ["2026-03-01 09:00", "2026-03-01 11:00", "2026-03-01 10:50",
+     "4", "1", "0"],
+  ]
+  assert parse_csv_output(ta.stdout)[1] == [
+    "2026-03-01 09:00", "", "", "0", "0", "0"
+  ]
+@
+
+Bookings.
+<<test functions>>=
+def test_cli_lists_bookings_without_provider_id(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli, ["bookings", "ls", "Queue"])
+
+  assert result.exit_code == 0
+  assert parse_csv_output(result.stdout) == [
+    ["username", "realname", "slot_time", "help"],
+    ["abc", "A. B. C.", "2026-03-01 10:00", "true"],
+  ]
+
+
+def test_cli_lists_bookings_with_provider_id(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["bookings", "ls", "Queue", "--provider-id"])
+
+  assert result.exit_code == 0
+  assert parse_csv_output(result.stdout) == [
+    ["username", "realname", "provider_id", "slot_time", "help"],
+    ["abc", "A. B. C.", "u1abc123", "2026-03-01 10:00", "true"],
   ]
 
 
@@ -2972,7 +3476,7 @@ def test_cli_upserts_bookings(monkeypatch, tmp_path):
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
   bookings_file = tmp_path / "bookings.json"
   bookings_file.write_text(
-      '[{"ugkthid": "u1abc123", "slot_time": "2026-03-01T10:00:00Z"}]')
+      '[{"provider_id": "u1abc123", "slot_time": "2026-03-01T10:00:00Z"}]')
 
   result = runner.invoke(
       kthutils.stayawhile.cli,
@@ -2982,12 +3486,35 @@ def test_cli_upserts_bookings(monkeypatch, tmp_path):
   assert fake.calls == [(
     "upsert_bookings",
     "Queue",
-    [{"ugkthid": "u1abc123", "slot_time": "2026-03-01T10:00:00Z"}],
+    [{"provider_id": "u1abc123", "slot_time": "2026-03-01T10:00:00Z"}],
   )]
   assert result.stdout == ""
 
 
-def test_cli_clears_bookings_silently(monkeypatch):
+def test_cli_upsert_reports_skipped_identifiers(monkeypatch, tmp_path,
+                                                caplog):
+  class SkippingSession(FakeStayawhileSession):
+    def upsert_bookings(self, queue, bookings):
+      self.calls.append(("upsert_bookings", queue, bookings))
+      return {"error": "unresolved_identifiers",
+              "bookings": [],
+              "skipped": ["nobody", "u1nobody"]}
+
+  fake = SkippingSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+  bookings_file = tmp_path / "bookings.json"
+  bookings_file.write_text(
+      '[{"provider_id": "nobody", "slot_time": "2026-03-01T10:00:00Z"}]')
+
+  result = runner.invoke(
+      kthutils.stayawhile.cli,
+      ["bookings", "upsert", "Queue", str(bookings_file)])
+
+  assert result.exit_code == 1
+  assert "skipped unresolved identifiers: nobody, u1nobody" in caplog.text
+
+
+def test_cli_clears_bookings_reporting_count(monkeypatch):
   fake = FakeStayawhileSession()
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
 
@@ -2997,6 +3524,7 @@ def test_cli_clears_bookings_silently(monkeypatch):
   assert result.exit_code == 0
   assert fake.calls == [("clear_bookings", "Queue", None, None)]
   assert result.stdout == ""
+  assert result.stderr == "deleted 2 bookings\n"
 
 
 def test_cli_clears_bookings_with_date_range(monkeypatch):
@@ -3023,179 +3551,23 @@ def test_cli_reads_my_booking_as_csv(monkeypatch):
 
   assert result.exit_code == 0
   assert parse_csv_output(result.stdout) == [
-    ["slot_time", "entry_type"],
-    ["2026-03-01 10:00", "help"],
+    ["slot_time", "help"],
+    ["2026-03-01 10:00", "true"],
   ]
 
 
-def test_cli_reads_my_booking_with_ugkthid(monkeypatch):
+def test_cli_reads_my_booking_with_provider_id(monkeypatch):
   fake = FakeStayawhileSession()
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
 
   result = runner.invoke(kthutils.stayawhile.cli,
-                         ["booking", "mine", "Q", "--ugkthid"])
+                         ["booking", "mine", "Q", "--provider-id"])
 
   assert result.exit_code == 0
   assert parse_csv_output(result.stdout) == [
-    ["ugkthid", "slot_time", "entry_type"],
-    ["u1abc123", "2026-03-01 10:00", "help"],
+    ["provider_id", "slot_time", "help"],
+    ["u1abc123", "2026-03-01 10:00", "true"],
   ]
-
-
-def test_cli_lists_assistants(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
-
-  result = runner.invoke(kthutils.stayawhile.cli, ["assistants", "ls", "Queue"])
-
-  assert result.exit_code == 0
-  assert fake.calls == [("list_assistants", "Queue")]
-  assert parse_csv_output(result.stdout) == [
-    ["username"],
-    ["abcde"],
-  ]
-
-
-def test_cli_adds_and_removes_assistants_silently(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
-
-  add = runner.invoke(kthutils.stayawhile.cli,
-                      ["assistants", "add", "Queue", "abcde"])
-  remove = runner.invoke(kthutils.stayawhile.cli,
-                         ["assistants", "rm", "Queue", "abcde"])
-
-  assert add.exit_code == 0
-  assert remove.exit_code == 0
-  assert fake.calls == [
-    ("add_assistant", "Queue", "abcde"),
-    ("remove_assistant", "Queue", "abcde"),
-  ]
-  assert add.stdout == ""
-  assert remove.stdout == ""
-
-
-def test_cli_reads_session_stats(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
-
-  result = runner.invoke(kthutils.stayawhile.cli,
-                         ["stats", "sessions", "Queue", "--date",
-                          "2026-03-30"])
-
-  assert result.exit_code == 0
-  assert fake.calls == [("get_session_stats", "Queue", "2026-03-30")]
-  assert parse_csv_output(result.stdout) == [
-    ["queue", "date", "sessions"],
-    ["Queue", "2026-03-30", "2"],
-  ]
-
-
-def test_cli_reads_assistant_stats(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
-
-  result = runner.invoke(kthutils.stayawhile.cli,
-                         ["stats", "assistants", "Queue"])
-
-  assert result.exit_code == 0
-  assert fake.calls == [("get_assistant_stats", "Queue")]
-  assert parse_csv_output(result.stdout) == [
-    ["queue", "assistants"],
-    ["Queue", "1"],
-  ]
-
-
-def test_cli_reads_interaction_session_stats(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
-
-  result = runner.invoke(kthutils.stayawhile.cli,
-                         ["stats", "interactions", "Queue"])
-
-  assert result.exit_code == 0
-  assert fake.calls == [("get_interaction_session_stats", "Queue")]
-  assert parse_csv_output(result.stdout) == [
-    ["queue", "interaction_sessions"],
-    ["Queue", "3"],
-  ]
-
-
-def test_cli_lists_on_duty_assistants(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
-
-  result = runner.invoke(kthutils.stayawhile.cli,
-                         ["assistants", "on-duty", "Queue"])
-
-  assert result.exit_code == 0
-  assert fake.calls == [("list_checked_in", "Queue")]
-  assert parse_csv_output(result.stdout) == [
-    ["username"],
-    ["checkedin"],
-  ]
-
-
-def test_cli_checkin_and_checkout(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
-
-  checkin = runner.invoke(kthutils.stayawhile.cli, ["checkin", "Queue"])
-  checkout = runner.invoke(kthutils.stayawhile.cli, ["checkout", "Queue"])
-
-  assert checkin.exit_code == 0
-  assert checkout.exit_code == 0
-  assert fake.calls == [
-    ("checkin", "Queue"),
-    ("checkout", "Queue"),
-  ]
-  assert checkin.stdout == ""
-  assert checkout.stdout == ""
-
-
-def test_cli_checkin_and_checkout_log_errors(monkeypatch, caplog):
-  class FailingSession(FakeStayawhileSession):
-    def checkin(self, queue):
-      self.calls.append(("checkin", queue))
-      raise RuntimeError("boom")
-
-    def checkout(self, queue):
-      self.calls.append(("checkout", queue))
-      raise RuntimeError("boom")
-
-  fake = FailingSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
-
-  checkin = runner.invoke(kthutils.stayawhile.cli, ["checkin", "Queue"])
-  checkout = runner.invoke(kthutils.stayawhile.cli, ["checkout", "Queue"])
-
-  assert checkin.exit_code == 1
-  assert checkout.exit_code == 1
-  assert "checkin failed for Queue: boom" in caplog.text
-  assert "checkout failed for Queue: boom" in caplog.text
-
-
-def test_cli_queue_lock_commands_log_errors(monkeypatch, caplog):
-  class FailingSession(FakeStayawhileSession):
-    def lock_queue(self, queue):
-      self.calls.append(("lock_queue", queue))
-      raise RuntimeError("boom")
-
-    def unlock_queue(self, queue):
-      self.calls.append(("unlock_queue", queue))
-      raise RuntimeError("boom")
-
-  fake = FailingSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
-
-  lock = runner.invoke(kthutils.stayawhile.cli, ["queues", "lock", "Queue"])
-  unlock = runner.invoke(kthutils.stayawhile.cli,
-                         ["queues", "unlock", "Queue"])
-
-  assert lock.exit_code == 1
-  assert unlock.exit_code == 1
-  assert "queue lock failed for Queue: boom" in caplog.text
-  assert "queue unlock failed for Queue: boom" in caplog.text
 
 
 def test_cli_booking_and_assistant_mutations_log_errors(monkeypatch, caplog,
@@ -3221,7 +3593,7 @@ def test_cli_booking_and_assistant_mutations_log_errors(monkeypatch, caplog,
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
   bookings_file = tmp_path / "bookings.json"
   bookings_file.write_text(
-      '[{"ugkthid": "u1abc123", "slot_time": "2026-03-01T10:00:00Z"}]')
+      '[{"provider_id": "u1abc123", "slot_time": "2026-03-01T10:00:00Z"}]')
 
   upsert = runner.invoke(kthutils.stayawhile.cli,
                          ["bookings", "upsert", "Queue",
@@ -3241,8 +3613,10 @@ def test_cli_booking_and_assistant_mutations_log_errors(monkeypatch, caplog,
   assert "booking clear failed for Queue: boom" in caplog.text
   assert "assistant add failed for Queue/abcde: boom" in caplog.text
   assert "assistant remove failed for Queue/abcde: boom" in caplog.text
+@
 
-
+Logs, history and statistics.
+<<test functions>>=
 def test_cli_reads_interaction_log(monkeypatch):
   fake = FakeStayawhileSession()
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
@@ -3263,14 +3637,18 @@ def test_cli_reads_interaction_log(monkeypatch):
     "help",
   )]
   assert parse_csv_output(result.stdout) == [[
+    "helper_username",
     "helper_name",
+    "student_username",
     "student_name",
     "started_at",
     "ended_at",
     "duration_secs",
     "help",
   ], [
+    "ada",
     "Ada Lovelace",
+    "grace",
     "Grace Hopper",
     "2026-03-01 10:00",
     "",
@@ -3279,33 +3657,35 @@ def test_cli_reads_interaction_log(monkeypatch):
   ]]
 
 
-def test_cli_reads_interaction_log_with_ugkthid(monkeypatch):
+def test_cli_reads_queue_log(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli, ["log", "queue", "Queue"])
+
+  assert result.exit_code == 0
+  assert fake.calls == [("get_queue_log", "Queue", None, None)]
+  assert parse_csv_output(result.stdout) == [
+    ["username", "realname", "time", "help", "left_queue",
+     "queue_length", "help_amount", "present_amount", "comment"],
+    ["student1", "Grace Hopper", "2026-03-01 10:00", "true", "false",
+     "3", "2", "1", "Lab 2"],
+  ]
+
+
+def test_cli_reads_queue_events(monkeypatch):
   fake = FakeStayawhileSession()
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
 
   result = runner.invoke(kthutils.stayawhile.cli,
-                         ["log", "interactions", "Queue", "--ugkthid"])
+                         ["log", "events", "Queue", "--from", "2026-03-01"])
 
   assert result.exit_code == 0
-  assert parse_csv_output(result.stdout) == [[
-    "helper_name",
-    "helper_ugkthid",
-    "student_name",
-    "student_ugkthid",
-    "started_at",
-    "ended_at",
-    "duration_secs",
-    "help",
-  ], [
-    "Ada Lovelace",
-    "u1helper",
-    "Grace Hopper",
-    "u1student",
-    "2026-03-01 10:00",
-    "",
-    "10m",
-    "true",
-  ]]
+  assert fake.calls == [("get_queue_events", "Queue", "2026-03-01", None)]
+  assert parse_csv_output(result.stdout) == [
+    ["event_type", "occurred_at"],
+    ["open", "2026-03-01 09:00"],
+  ]
 
 
 def test_cli_reads_help_history(monkeypatch):
@@ -3322,150 +3702,154 @@ def test_cli_reads_help_history(monkeypatch):
     "ended_at",
     "duration_secs",
     "helper",
+    "help",
   ], [
     "Queue",
     "2026-03-01 10:00",
     "2026-03-01 10:10",
     "10m",
     "Ada Lovelace",
+    "true",
   ]]
 
 
-def test_cli_reads_queue_log_without_ugkthid(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
-
-  result = runner.invoke(kthutils.stayawhile.cli, ["log", "queue", "Queue"])
-
-  assert result.exit_code == 0
-  assert parse_csv_output(result.stdout) == [
-    ["username", "realname", "time", "help", "left_queue",
-     "queue_length", "help_amount", "present_amount"],
-    ["former", "Former Student", "2026-03-01 09:50", "true", "false",
-     "1", "1", "0"],
-    ["student1", "Grace Hopper", "2026-03-01 10:00", "true", "false",
-     "3", "2", "1"],
-    ["present1", "Ada Lovelace", "2026-03-01 10:05", "false", "false",
-     "4", "2", "2"],
-    ["former", "Former Student", "2026-03-01 10:10", "true", "true",
-     "3", "1", "2"],
-  ]
-
-
-def test_cli_reads_queue_log_with_ugkthid(monkeypatch):
+def test_cli_reads_session_stats(monkeypatch):
   fake = FakeStayawhileSession()
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
 
   result = runner.invoke(kthutils.stayawhile.cli,
-                         ["log", "queue", "Queue", "--ugkthid"])
+                         ["stats", "sessions", "Queue",
+                          "--from", "2026-03-01", "--until", "2026-03-31"])
 
   assert result.exit_code == 0
+  assert fake.calls == [
+    ("get_session_stats", "Queue", "2026-03-01", "2026-03-31")
+  ]
   assert parse_csv_output(result.stdout) == [
-    ["username", "ugkthid", "realname", "time", "help", "left_queue",
-     "queue_length", "help_amount", "present_amount"],
-    ["former", "u1former", "Former Student", "2026-03-01 09:50",
-     "true", "false", "1", "1", "0"],
-    ["student1", "u1student", "Grace Hopper", "2026-03-01 10:00",
-     "true", "false", "3", "2", "1"],
-    ["present1", "u1present", "Ada Lovelace", "2026-03-01 10:05",
-     "false", "false", "4", "2", "2"],
-    ["former", "u1former", "Former Student", "2026-03-01 10:10",
-     "true", "true", "3", "1", "2"],
+    ["session_key", "date", "total_helped"],
+    ["1", "2026-03-30", "2"],
   ]
 
 
+def test_cli_reads_session_detail_and_hourly(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  detail = runner.invoke(kthutils.stayawhile.cli,
+                         ["stats", "session", "Queue", "2026-03-30"])
+  hourly = runner.invoke(kthutils.stayawhile.cli,
+                         ["stats", "hourly", "Queue", "2026-03-30"])
+
+  assert detail.exit_code == 0
+  assert hourly.exit_code == 0
+  assert fake.calls == [
+    ("get_session_detail", "Queue", "2026-03-30"),
+    ("get_hourly_session_detail", "Queue", "2026-03-30"),
+  ]
+  assert json.loads(detail.stdout) == {
+    "points": [{"minutes_from_start": 0, "queue_length": 1}],
+    "help_spans": [],
+  }
+  assert parse_csv_output(hourly.stdout) == [
+    ["hour", "queued_help"],
+    ["10", "3"],
+  ]
+
+
+def test_cli_reads_assistant_and_interaction_stats(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  assistants = runner.invoke(kthutils.stayawhile.cli,
+                             ["stats", "assistants", "Queue"])
+  interactions = runner.invoke(kthutils.stayawhile.cli,
+                               ["stats", "interactions", "Queue",
+                                "--from", "2026-03-01"])
+
+  assert assistants.exit_code == 0
+  assert interactions.exit_code == 0
+  assert fake.calls == [
+    ("get_assistant_stats", "Queue", None, None),
+    ("get_interaction_session_stats", "Queue", "2026-03-01", None),
+  ]
+  assert parse_csv_output(assistants.stdout) == [
+    ["realname", "username", "students_helped"],
+    ["Ada Lovelace", "ada", "1"],
+  ]
+  assert parse_csv_output(interactions.stdout) == [
+    ["date", "lab_start"],
+    ["2026-03-30", "2026-03-30 08:00"],
+  ]
+@
+
+The view prints the live queue; its booking promotion is exercised through
+the fake's entries with a frozen clock.
+<<test functions>>=
 def test_cli_views_current_queue(monkeypatch):
   fake = FakeStayawhileSession()
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
 
-  with runner.isolated_filesystem():
-    result = runner.invoke(kthutils.stayawhile.cli,
-                           ["view", "Queue", "--from", "2026-03-01"])
+  result = runner.invoke(kthutils.stayawhile.cli, ["view", "Queue"])
 
   assert result.exit_code == 0
-  assert fake.calls == [
-    ("get_queue_log", "Queue", "2026-03-01", None),
-    ("get_interaction_log", "Queue", "2026-03-01", None, None),
-    ("list_bookings", "Queue"),
-  ]
+  assert fake.calls == [("list_queue_entries", "Queue")]
   assert parse_csv_output(result.stdout) == [
     ["waiting_position", "realname", "username", "entry_type",
-     "joined_at", "booking_time", "helper_name", "help_started_at"],
+     "joined_at", "location", "comment", "booking_time", "helper",
+     "help_started_at"],
     ["", "Grace Hopper", "student1", "help",
-     "2026-03-01 10:00", "", "Ada Lovelace",
-     "2026-03-01 10:00"],
-    ["", "Ada Lovelace", "present1", "present",
-     "2026-03-01 10:05", "", "", ""],
-  ]
-  warnings = kthutils.stayawhile.queue_view_warnings(
-      fake.get_queue_log("Queue", "2026-03-01", None),
-      kthutils.stayawhile.reconstruct_current_queue(
-          fake.get_queue_log("Queue", "2026-03-01", None),
-          fake.get_interaction_log("Queue", "2026-03-01", None),
-          fake.list_bookings("Queue"))[0])
-  assert warnings == [
-    "reconstructed queue has 2 active entries, but latest queue_length is 3",
-    "reconstructed queue has 1 present entries, but latest present_amount is 2",
+     "2026-03-01 10:00", "Red 3", "", "", "Ada Lovelace",
+     "2026-03-01 10:02"],
+    ["1", "Ada Lovelace", "present1", "present",
+     "2026-03-01 10:05", "Orange 1", "", "", "", ""],
   ]
 
 
-def test_cli_views_current_queue_with_ugkthid(monkeypatch):
+def test_cli_views_current_queue_with_provider_id(monkeypatch):
   fake = FakeStayawhileSession()
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
 
-  with runner.isolated_filesystem():
-    result = runner.invoke(kthutils.stayawhile.cli,
-                           ["view", "Queue", "--ugkthid"])
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["view", "Queue", "--provider-id"])
 
   assert result.exit_code == 0
-  assert parse_csv_output(result.stdout) == [
-    ["waiting_position", "realname", "username", "ugkthid", "entry_type",
-     "joined_at", "booking_time", "helper_name", "help_started_at"],
-    ["", "Grace Hopper", "student1", "u1student", "help",
-     "2026-03-01 10:00", "", "Ada Lovelace", "2026-03-01 10:00"],
-    ["", "Ada Lovelace", "present1", "u1present", "present",
-     "2026-03-01 10:05", "", "", ""],
-  ]
+  assert parse_csv_output(result.stdout)[0] == [
+    "waiting_position", "realname", "username", "provider_id",
+    "entry_type", "joined_at", "location", "comment", "booking_time",
+    "helper", "help_started_at"]
+  assert parse_csv_output(result.stdout)[1][3] == "u1student"
 
 
 def test_cli_view_promotes_booked_students(monkeypatch):
   class FakePromotionSession(FakeStayawhileSession):
-    def get_queue_log(self, queue, from_date=None, until=None):
-      self.calls.append(("get_queue_log", queue, from_date, until))
+    def list_queue_entries(self, queue):
+      self.calls.append(("list_queue_entries", queue))
       return [{
         "username": "late",
-        "ugkthid": "u1late",
+        "provider_id": "u1late",
         "realname": "Late Student",
-        "time": "2026-03-01T10:00:00Z",
+        "location": "",
+        "comment": "",
+        "starttime": "2026-03-01T10:00:00Z",
         "help": True,
-        "left_queue": False,
+        "gettinghelp": False,
+        "helpstarttime": None,
+        "helper": None,
+        "booking_time": None,
+        "booking_help": None,
       }, {
         "username": "booked",
-        "ugkthid": "u1booked",
+        "provider_id": "u1booked",
         "realname": "Booked Student",
-        "time": "2026-03-01T10:01:00Z",
+        "location": "",
+        "comment": "",
+        "starttime": "2026-03-01T10:01:00Z",
         "help": True,
-        "left_queue": False,
-      }]
-
-    def get_interaction_log(self,
-                            queue,
-                            from_date=None,
-                            until=None,
-                            interaction_type=None):
-      self.calls.append(("get_interaction_log",
-                         queue,
-                         from_date,
-                         until,
-                         interaction_type))
-      return []
-
-    def list_bookings(self, queue):
-      self.calls.append(("list_bookings", queue))
-      return [{
-        "ugkthid": "u1booked",
-        "slot_time": "2026-03-01T10:05:00Z",
-        "entry_type": "help",
+        "gettinghelp": False,
+        "helpstarttime": None,
+        "helper": None,
+        "booking_time": "2026-03-01T10:05:00Z",
+        "booking_help": True,
       }]
 
   fake = FakePromotionSession()
@@ -3485,10 +3869,11 @@ def test_cli_view_promotes_booked_students(monkeypatch):
   assert result.exit_code == 0
   assert parse_csv_output(result.stdout) == [
     ["waiting_position", "realname", "username", "entry_type",
-     "joined_at", "booking_time", "helper_name", "help_started_at"],
+     "joined_at", "location", "comment", "booking_time", "helper",
+     "help_started_at"],
     ["1", "Booked Student", "booked", "help",
-     "2026-03-01 10:01", "2026-03-01 10:05", "", ""],
+     "2026-03-01 10:01", "", "", "2026-03-01 10:05", "", ""],
     ["2", "Late Student", "late", "help",
-     "2026-03-01 10:00", "", "", ""],
+     "2026-03-01 10:00", "", "", "", "", ""],
   ]
 @
