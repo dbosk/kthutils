@@ -786,6 +786,9 @@ Assistant presence has likewise moved from [[checkin]] to [[on_duty]].
 For now we only switch the read-side command to the documented [[GET on_duty]]
 endpoint; the write-side check-in and check-out commands stay on their current
 endpoint until the corresponding POST and DELETE semantics are confirmed.
+The check-in \emph{history}, which answers whether an assistant was present
+during a past session, has its own endpoints covered in
+\cref{sec:checkin-history}.
 Queue locking lets a teacher prevent new students from joining while still
 serving those already in line.
 Unlocking also clears all TA check-ins, so assistants must re-check-in for
@@ -919,6 +922,119 @@ def test_queue_lock_requests():
   assert fake_http.requests[1]["headers"] == {"Authorization": "Token token"}
 @
 
+
+\subsection{Check-in history}
+\label{sec:checkin-history}
+
+The [[on_duty]] listing only answers \enquote{who is here now}.
+To verify afterwards that an assistant actually worked a lab session, we
+need the check-in history: the server keeps one row per check-in with the
+check-in time, the check-out time (null while the session is open) and the
+time of the assistant's last activity in the queue, plus per-session counts
+of helped, presented and booked students.
+Two endpoints expose that history: [[my_checkins]] for the caller's own
+sessions and [[ta_checkins/<username>]] for teachers looking at any
+assistant.
+Both take the same optional [[from]] and [[until]] parameters, so they share
+one parameter builder.
+
+Those parameters differ from the date filters of the log endpoints in a way
+that is easy to get wrong.
+The server parses [[from]] and [[until]] as full RFC 3339 timestamps, and a
+value it cannot parse---such as a bare date---is \emph{silently} replaced by
+the default window of the last 90 days, so a wrong format yields plausible
+but wrong data instead of an error.
+We therefore accept [[datetime]] objects and render them ourselves in a
+format the server accepts, converting to UTC first so the [[Z]] suffix is
+correct regardless of the caller's time zone.
+Strings are passed through unchanged for callers who already have the right
+format.
+<<helper functions>>=
+def format_api_timestamp(value):
+  """Return `value` as an RFC 3339 UTC timestamp for the Stay A While API.
+
+  Strings are returned unchanged. A `datetime` is converted to UTC; a
+  naive one is taken to be in local time.
+  """
+  if isinstance(value, datetime.datetime):
+    return value.astimezone(datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+  return value
+
+
+def time_range_params(from_time=None, until=None):
+  """Return API query parameters for an optional time range."""
+  params = {}
+  if from_time is not None:
+    params["from"] = format_api_timestamp(from_time)
+  if until is not None:
+    params["until"] = format_api_timestamp(until)
+  return params
+@
+
+The second pitfall is that the server selects sessions by their
+\emph{check-in} time, not by overlap with the range.
+An assistant who checked in ten minutes before the lab started is therefore
+not returned for a range that starts at the lab start.
+The methods below pass the range on unchanged; the activity report in
+\cref{sec:activity} widens the range before calling them.
+<<[[StayawhileSession]] methods>>=
+def get_ta_checkins(self, queue, username, from_time=None, until=None):
+  """Return check-in sessions for `username` in `queue`.
+
+  Requires teacher rights. `from_time` and `until` are aware
+  `datetime` objects or RFC 3339 strings; the server defaults to the
+  last 90 days and selects sessions by check-in time.
+  """
+  return self._request(
+      "GET",
+      self._queue_path(queue,
+                       f"ta_checkins/{urllib.parse.quote(username)}"),
+      params=time_range_params(from_time, until),
+      use_api_key=True)
+
+
+def get_my_checkins(self, queue, from_time=None, until=None):
+  """Return the caller's own check-in sessions for `queue`."""
+  return self._request("GET",
+                       self._queue_path(queue, "my_checkins"),
+                       params=time_range_params(from_time, until),
+                       use_api_key=True)
+@
+
+Since a wrongly formatted timestamp fails silently on the server, the test
+pins the exact query parameters we send, including the conversion of a
+non-UTC [[datetime]] to UTC.
+<<test functions>>=
+def test_checkin_history_requests():
+  fake_http = FakeHTTPSession([
+    FakeResponse(json_data=[{"checkin_time": "2026-03-01T09:55:00Z"}]),
+    FakeResponse(json_data=[]),
+  ])
+  sa = kthutils.stayawhile.StayawhileSession(
+      api_key="token",
+      session=fake_http)
+  plus_one = datetime.timezone(datetime.timedelta(hours=1))
+  start = datetime.datetime(2026, 3, 1, 11, 0, tzinfo=plus_one)
+
+  assert sa.get_ta_checkins("Queue Name", "alice",
+                            from_time=start,
+                            until="2026-03-01T12:00:00Z") == [
+    {"checkin_time": "2026-03-01T09:55:00Z"}
+  ]
+  assert sa.get_my_checkins("Queue Name") == []
+
+  assert fake_http.requests[0]["url"].endswith(
+      "/api/queues/Queue%20Name/ta_checkins/alice")
+  assert fake_http.requests[0]["params"] == {
+    "from": "2026-03-01T10:00:00Z",
+    "until": "2026-03-01T12:00:00Z",
+  }
+  assert fake_http.requests[0]["headers"] == {"Authorization": "Token token"}
+  assert fake_http.requests[1]["url"].endswith(
+      "/api/queues/Queue%20Name/my_checkins")
+  assert fake_http.requests[1]["params"] == {}
+@
 
 \section{Queue statistics}
 
@@ -1202,8 +1318,9 @@ def test_assistant_requests():
 
 The API provides two teacher-facing logs and one student-facing help-history
 endpoint.
-The log endpoints share the same optional date-range filtering, while the
-interaction log also accepts a type filter.
+The log endpoints share the same optional date-range filtering, where a
+date means the whole of that day in Stockholm time, from 00:00 to
+23:59:59; the interaction log also accepts a type filter.
 <<[[StayawhileSession]] methods>>=
 def get_interaction_log(self,
                         queue,
@@ -1248,16 +1365,21 @@ The queue log tells us who is still in the queue, but not whether a help entry
 is currently being helped or is still waiting.
 To answer that, we combine the active queue reconstructed from [[queue_log]]
 with the currently active interactions from [[interaction_log]].
+The two logs must agree on how a student is identified, or no queue entry
+will ever match its interaction.
+The server names the student by username in both logs (and never sends a
+[[ugkthid]] in either), so username is the primary key; [[ugkthid]] remains
+as a fallback for payloads that carry only that.
 <<helper functions>>=
 def queue_entry_key(entry):
   """Return a stable identity key for one queue-log [[entry]]."""
-  ugkthid = entry.get("ugkthid")
-  if ugkthid:
-    return ("ugkthid", ugkthid)
-
   username = entry.get("username")
   if username:
     return ("username", username)
+
+  ugkthid = entry.get("ugkthid")
+  if ugkthid:
+    return ("ugkthid", ugkthid)
 
   raise ValueError(f"queue log entry lacks identity: {entry!r}")
 
@@ -1285,13 +1407,13 @@ def reconstruct_active_queue_entries(queue_log):
 
 def interaction_entry_key(entry):
   """Return a stable identity key for one interaction-log [[entry]]."""
-  ugkthid = entry.get("student_ugkthid")
-  if ugkthid:
-    return ("ugkthid", ugkthid)
-
   username = entry.get("student_username")
   if username:
     return ("username", username)
+
+  ugkthid = entry.get("student_ugkthid")
+  if ugkthid:
+    return ("ugkthid", ugkthid)
 
   raise ValueError(f"interaction log entry lacks identity: {entry!r}")
 
@@ -1584,7 +1706,7 @@ def test_reconstruct_current_queue():
   ], [
     {
       "helper_name": "Ada Lovelace",
-      "student_ugkthid": "u1linus",
+      "student_username": "linus",
       "started_at": "2026-03-01T10:25:00Z",
       "ended_at": None,
     },
@@ -1886,6 +2008,394 @@ def test_log_requests_and_filters():
 @
 
 
+\section{Assistant activity during a session}
+\label{sec:activity}
+
+A teacher approving an assistant's hours wants to know what the assistant
+did during a particular lab session, often long after the fact.
+A yes/no answer from the check-in history is not enough: an assistant who
+checked in, helped one student at the start and then left looks the same
+as one who worked the whole session.
+We therefore reconstruct a small activity report from two sources and let
+the teacher judge.
+
+The primary source is the interaction log, which records every help and
+presentation the assistant performed, with timestamps.
+The check-in history is only supporting evidence, for two reasons.
+Unlocking a queue deletes all its check-in rows, and teachers unlock the
+queue at the start of every lab, so the check-ins of a past lab typically
+no longer exist by the time the teacher asks.
+Help events survive unlocking.
+Moreover, helping a student without having checked in makes the server
+create a check-in row, so help events imply presence anyway.
+
+The report needs four pieces, presented in turn below: a parser for the
+human-readable session times, the selection of the assistant's events
+within the session, the check-in sessions overlapping it, and a summary
+that makes an idle assistant visible at a glance.
+The CLI command that assembles them follows in \cref{sec:activity-cli}.
+
+\subsection{Session times}
+
+The teacher types the session as local wall-clock times such as
+[[2026-09-01 10:00]], the way they appear in the schedule.
+[[datetime.fromisoformat]] accepts exactly this form (with either a space
+or a [[T]] separator, and optional seconds) on every Python version we
+support, so we need no third-party parser.
+The result is naive; we attach the zone with [[astimezone]] rather than
+with a fixed offset because [[astimezone]] applies the platform's rules for
+that particular date, so a lab in December gets CET even when the command
+runs in September under CEST.
+Tests pass an explicit [[tz]] instead, because the machine's zone is not
+under their control.
+
+Because the end of a session almost always falls on the same day as its
+start, a bare time such as [[12:00]] is accepted too and combined with the
+[[date]] the caller supplies.
+<<helper functions>>=
+def parse_local_time(text, tz=None, date=None):
+  """Return `text` such as `"2026-09-01 10:00"` as an aware datetime.
+
+  A bare time such as `"12:00"` is combined with `date` when given.
+  A time without zone is interpreted in `tz`, defaulting to the local
+  zone. Raises `ValueError` for unparsable input.
+  """
+  text = text.strip()
+  try:
+    parsed = datetime.datetime.fromisoformat(text)
+  except ValueError:
+    parsed = None
+
+  if parsed is None and date is not None:
+    try:
+      parsed = datetime.datetime.combine(date,
+                                         datetime.time.fromisoformat(text))
+    except ValueError:
+      parsed = None
+
+  if parsed is None:
+    raise ValueError(f"cannot parse {text!r}, expected YYYY-MM-DD HH:MM")
+
+  if parsed.tzinfo is None:
+    if tz is None:
+      parsed = parsed.astimezone()
+    else:
+      parsed = parsed.replace(tzinfo=tz)
+  return parsed
+@
+
+Lab sessions at KTH are normally two hours, so an omitted end defaults to
+two hours after the start.
+Rejecting an end before the start here, rather than letting the report
+print an empty window, gives the teacher an error where the mistake was
+made.
+<<constants>>=
+DEFAULT_SESSION_LENGTH = datetime.timedelta(hours=2)
+<<helper functions>>=
+def session_window(start, end=None, tz=None):
+  """Return `(start, end)` as aware datetimes from human-readable text.
+
+  `end` defaults to `start` plus `DEFAULT_SESSION_LENGTH` and may be a
+  bare time on the start's date. Raises `ValueError` when the end is
+  not after the start.
+  """
+  start_time = parse_local_time(start, tz=tz)
+  if end is None:
+    end_time = start_time + DEFAULT_SESSION_LENGTH
+  else:
+    end_time = parse_local_time(end, tz=tz, date=start_time.date())
+
+  if end_time <= start_time:
+    raise ValueError("the session end must be after its start")
+  return start_time, end_time
+@
+
+The tests pin the accepted spellings and the default length.
+<<test functions>>=
+def test_parse_local_time_accepts_schedule_spellings():
+  expected = datetime.datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
+
+  assert kthutils.stayawhile.parse_local_time("2026-09-01 10:00",
+                                              tz=UTC) == expected
+  assert kthutils.stayawhile.parse_local_time("2026-09-01T10:00:00",
+                                              tz=UTC) == expected
+  assert kthutils.stayawhile.parse_local_time(
+      "2026-09-01T10:00:00+00:00") == expected
+  assert kthutils.stayawhile.parse_local_time(
+      "12:00", tz=UTC, date=datetime.date(2026, 9, 1)) == \
+    datetime.datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+
+
+def test_parse_local_time_rejects_garbage():
+  with pytest.raises(ValueError):
+    kthutils.stayawhile.parse_local_time("next tuesday", tz=UTC)
+  with pytest.raises(ValueError):
+    kthutils.stayawhile.parse_local_time("12:00", tz=UTC)
+
+
+def test_session_window_defaults_to_two_hours():
+  start, end = kthutils.stayawhile.session_window("2026-09-01 10:00",
+                                                  tz=UTC)
+
+  assert start == datetime.datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
+  assert end == datetime.datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+
+
+def test_session_window_accepts_bare_end_time():
+  start, end = kthutils.stayawhile.session_window("2026-09-01 10:00",
+                                                  "13:00",
+                                                  tz=UTC)
+
+  assert end == datetime.datetime(2026, 9, 1, 13, 0, tzinfo=UTC)
+
+
+def test_session_window_rejects_end_before_start():
+  with pytest.raises(ValueError):
+    kthutils.stayawhile.session_window("2026-09-01 10:00",
+                                       "2026-09-01 09:00",
+                                       tz=UTC)
+@
+
+\subsection{The assistant's events}
+
+The interaction log endpoint filters by whole dates, which the server
+interprets as days in Stockholm time, while the session is given in the
+teacher's local time---usually, but not necessarily, the same zone.
+Rather than reasoning about which server days a local window touches, the
+caller fetches one extra day on each side and the precise selection happens
+here: the assistant's events whose start falls inside the window.
+We match on [[helper_username]], the field the server uses to identify the
+helper, and sort by start time so the table reads as a timeline.
+<<constants>>=
+LOG_DATE_MARGIN = datetime.timedelta(days=1)
+<<helper functions>>=
+def helper_events_in_window(events, username, start, end):
+  """Return `events` by `username` that started within `[start, end]`."""
+  selected = []
+  for event in events:
+    if event.get("helper_username") != username:
+      continue
+    started = parse_timestamp(event.get("started_at"))
+    if started is None or started < start or started > end:
+      continue
+    selected.append(event)
+  return sorted(selected,
+                key=lambda event: parse_timestamp(event["started_at"]))
+@
+
+<<test functions>>=
+def test_helper_events_in_window_filters_and_sorts():
+  events = [
+    {"helper_username": "ada", "started_at": "2026-03-01T10:30:00Z"},
+    {"helper_username": "bob", "started_at": "2026-03-01T10:15:00Z"},
+    {"helper_username": "ada", "started_at": "2026-03-01T10:05:00Z"},
+    {"helper_username": "ada", "started_at": "2026-03-01T13:00:00Z"},
+    {"helper_username": "ada", "started_at": None},
+  ]
+
+  assert kthutils.stayawhile.helper_events_in_window(
+      events,
+      "ada",
+      datetime.datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+      datetime.datetime(2026, 3, 1, 12, 0, tzinfo=UTC)) == [
+    {"helper_username": "ada", "started_at": "2026-03-01T10:05:00Z"},
+    {"helper_username": "ada", "started_at": "2026-03-01T10:30:00Z"},
+  ]
+@
+
+\subsection{Overlapping check-in sessions}
+
+A check-in session is relevant when it overlaps the window, which is not
+the same as starting inside it.
+The end of a session is its check-out time, but assistants often forget to
+check out, so many sessions are still open.
+For those we use the server's own notion of presence: the [[on_duty]]
+listing counts an assistant as present for one hour after their last
+activity.
+Applying the same rule here makes an open session end one hour after the
+later of the check-in and the last recorded activity, capped at the current
+time, and we flag such sessions as [[open]] so the teacher knows the end is
+inferred.
+The effective end is stored as an ISO string like the server's own
+timestamps, so the output formatting treats it like any other timestamp
+field.
+
+Because the server selects by check-in time, the CLI asks for sessions from
+a day before the window.
+A session that began more than a day earlier and is still open is not a
+session of this lab in any meaningful sense, so a longer lookback would
+only add noise.
+<<constants>>=
+CHECKIN_ACTIVITY_GRACE = datetime.timedelta(hours=1)
+CHECKIN_LOOKBACK = datetime.timedelta(days=1)
+<<helper functions>>=
+def checkin_sessions_overlapping(sessions, start, end, *, now=None):
+  """Return the check-in `sessions` overlapping `[start, end]`.
+
+  Each returned session gets an `effective_end` and an `open` flag;
+  an open session is assumed to end `CHECKIN_ACTIVITY_GRACE` after its
+  last activity, as the server's on-duty listing does.
+  """
+  if now is None:
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+  overlapping = []
+  for session in sessions:
+    checkin = parse_timestamp(session.get("checkin_time"))
+    if checkin is None:
+      continue
+
+    checkout = parse_timestamp(session.get("checkout_time"))
+    if checkout is None:
+      last_active = parse_timestamp(session.get("last_helped_at")) or checkin
+      effective_end = min(max(checkin, last_active) + CHECKIN_ACTIVITY_GRACE,
+                          now)
+    else:
+      effective_end = checkout
+
+    if checkin <= end and effective_end >= start:
+      overlapping.append({
+        **session,
+        "effective_end": effective_end.isoformat(),
+        "open": checkout is None,
+      })
+  return overlapping
+@
+
+The cases that matter are a session that started before the window, an
+open session kept alive by recent activity, and a stale open session that
+the grace period does not reach into the window.
+<<test functions>>=
+def test_checkin_sessions_overlapping():
+  start = datetime.datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+  end = datetime.datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+  now = datetime.datetime(2026, 3, 1, 15, 0, tzinfo=UTC)
+  sessions = [{
+    "checkin_time": "2026-03-01T09:50:00Z",
+    "checkout_time": "2026-03-01T11:50:00Z",
+    "last_helped_at": "2026-03-01T11:40:00Z",
+  }, {
+    "checkin_time": "2026-03-01T10:30:00Z",
+    "checkout_time": None,
+    "last_helped_at": "2026-03-01T11:30:00Z",
+  }, {
+    "checkin_time": "2026-03-01T08:00:00Z",
+    "checkout_time": None,
+    "last_helped_at": None,
+  }, {
+    "checkin_time": "2026-03-01T13:00:00Z",
+    "checkout_time": "2026-03-01T14:00:00Z",
+    "last_helped_at": None,
+  }]
+
+  overlapping = kthutils.stayawhile.checkin_sessions_overlapping(
+      sessions, start, end, now=now)
+
+  assert [(s["checkin_time"], s["effective_end"], s["open"])
+          for s in overlapping] == [
+    ("2026-03-01T09:50:00Z", "2026-03-01T11:50:00+00:00", False),
+    ("2026-03-01T10:30:00Z", "2026-03-01T12:30:00+00:00", True),
+  ]
+@
+
+\subsection{Summary}
+
+The event table shows the detail, but the judgement usually rests on a few
+numbers: how many students the assistant helped, when the first and last
+events were, how much time was spent helping, and the longest stretch
+without any activity.
+The last one is what exposes an assistant who helped one student at the
+start and then disappeared.
+It is cheap to compute once the events are sorted: sweep them in order,
+keeping the latest end seen so far, and measure the gap from that end to
+the next start.
+The window boundaries count as activity boundaries, so time before the
+first event and after the last one also counts as a gap.
+
+An event still marked as ongoing has no end time; we fall back on its
+recorded duration, or treat it as instantaneous.
+Every end is clamped to the window so a long help session spanning the end
+does not produce negative gaps or inflated helping time.
+<<helper functions>>=
+def activity_summary(events, start, end):
+  """Return summary statistics for `events` within `[start, end]`.
+
+  The result has the number of help and present events, the first and
+  last start times, the total helping time and the longest gap without
+  activity, gaps at the window boundaries included.
+  """
+  intervals = []
+  for event in events:
+    started = parse_timestamp(event.get("started_at"))
+    if started is None:
+      continue
+    ended = parse_timestamp(event.get("ended_at"))
+    if ended is None and event.get("duration_secs"):
+      ended = started + datetime.timedelta(seconds=event["duration_secs"])
+    ended = min(max(started, ended or started), end)
+    intervals.append((started, ended))
+  intervals.sort()
+
+  helping_time = sum((ended - started for started, ended in intervals),
+                     datetime.timedelta())
+  longest_gap = datetime.timedelta()
+  latest_end = start
+  for started, ended in intervals:
+    longest_gap = max(longest_gap, started - latest_end)
+    latest_end = max(latest_end, ended)
+  longest_gap = max(longest_gap, end - latest_end)
+
+  return {
+    "help_events": sum(1 for event in events if event.get("help")),
+    "present_events": sum(1 for event in events if not event.get("help")),
+    "first_event": intervals[0][0].isoformat() if intervals else None,
+    "last_event": intervals[-1][0].isoformat() if intervals else None,
+    "helping_time_secs": int(helping_time.total_seconds()),
+    "longest_gap_secs": int(longest_gap.total_seconds()),
+  }
+@
+
+The test is the motivating case: one help at the start of a two-hour
+session and nothing after, so the longest gap is nearly the whole session.
+<<test functions>>=
+def test_activity_summary_exposes_idle_assistant():
+  start = datetime.datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+  end = datetime.datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+  events = [{
+    "started_at": "2026-03-01T10:05:00Z",
+    "ended_at": None,
+    "duration_secs": 600,
+    "help": True,
+  }, {
+    "started_at": "2026-03-01T10:20:00Z",
+    "ended_at": "2026-03-01T10:25:00Z",
+    "help": False,
+  }]
+
+  assert kthutils.stayawhile.activity_summary(events, start, end) == {
+    "help_events": 1,
+    "present_events": 1,
+    "first_event": "2026-03-01T10:05:00+00:00",
+    "last_event": "2026-03-01T10:20:00+00:00",
+    "helping_time_secs": 900,
+    "longest_gap_secs": 95 * 60,
+  }
+
+
+def test_activity_summary_without_events():
+  start = datetime.datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+  end = datetime.datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+
+  assert kthutils.stayawhile.activity_summary([], start, end) == {
+    "help_events": 0,
+    "present_events": 0,
+    "first_event": None,
+    "last_event": None,
+    "helping_time_secs": 0,
+    "longest_gap_secs": 2 * 3600,
+  }
+@
+
 \section{The CLI}
 
 The CLI mirrors the API structure.
@@ -2036,13 +2546,19 @@ Commands that return non-tabular data still use formatted JSON.
 <<helper functions>>=
 TIMESTAMP_FIELDS = {
   "booking_time",
+  "checkin_time",
+  "checkout_time",
   "created",
   "created_at",
+  "effective_end",
   "ended_at",
   "expires",
   "expires_at",
+  "first_event",
   "help_started_at",
   "joined_at",
+  "last_event",
+  "last_helped_at",
   "slot_time",
   "started_at",
   "time",
@@ -2050,6 +2566,8 @@ TIMESTAMP_FIELDS = {
 
 DURATION_FIELDS = {
   "duration_secs",
+  "helping_time_secs",
+  "longest_gap_secs",
 }
 
 
@@ -2089,13 +2607,31 @@ def parse_timestamp(timestamp):
 
   return datetime.datetime.fromisoformat(
       timestamp.replace("Z", "+00:00"))
+@
+
+The server reports every timestamp in UTC, but the user reads them against
+a schedule in local time, so a lab at 13:00 would print as 11:00 (or
+12:00 in winter).
+We therefore convert to local time before formatting.
+The conversion uses [[astimezone]] with no argument, which applies the
+platform's zone rules for that particular instant, so summer and winter
+timestamps both come out right regardless of when the command runs.
+It lives in its own function so the tests can pin it to UTC; without
+that, the expected output would depend on the machine running the tests.
+The [[today]] comparison happens after the conversion, so that
+\enquote{today} means the local date, as the user would expect.
+<<helper functions>>=
+def to_local_time(moment):
+  """Return the aware [[datetime]] [[moment]] in the local time zone."""
+  return moment.astimezone()
 
 
 def format_timestamp(timestamp, *, today=None):
-  """Format [[timestamp]] compactly for CLI output."""
+  """Format [[timestamp]] compactly in local time for CLI output."""
   parsed = parse_timestamp(timestamp)
   if parsed is None:
     return ""
+  parsed = to_local_time(parsed)
 
   if today is None:
     today = datetime.date.today()
@@ -2103,6 +2639,39 @@ def format_timestamp(timestamp, *, today=None):
   if parsed.date() == today:
     return parsed.strftime("%H:%M")
   return parsed.strftime("%Y-%m-%d %H:%M")
+@
+
+Every CLI test runs with the local zone pinned to UTC, for both directions
+of conversion, so the expected strings can be written down once.
+<<test helpers>>=
+UTC = datetime.timezone.utc
+
+
+@pytest.fixture(autouse=True)
+def pin_local_time_to_utc(monkeypatch):
+  monkeypatch.setattr(kthutils.stayawhile,
+                      "to_local_time",
+                      lambda moment: moment.astimezone(UTC))
+  original = kthutils.stayawhile.parse_local_time
+  monkeypatch.setattr(
+      kthutils.stayawhile,
+      "parse_local_time",
+      lambda text, tz=None, date=None: original(text, tz=UTC, date=date))
+@
+
+<<test functions>>=
+def test_format_timestamp_converts_to_local_time(monkeypatch):
+  plus_one = datetime.timezone(datetime.timedelta(hours=1))
+  monkeypatch.setattr(kthutils.stayawhile,
+                      "to_local_time",
+                      lambda moment: moment.astimezone(plus_one))
+
+  assert kthutils.stayawhile.format_timestamp(
+      "2026-03-01T23:30:00Z",
+      today=datetime.date(2026, 3, 2)) == "00:30"
+@
+
+<<helper functions>>=
 
 
 def format_duration(duration_secs):
@@ -2181,25 +2750,70 @@ bookings_source_arg = typer.Argument(
           "\"slot_time\":\"2026-03-01T10:15:00Z\","
           "\"entry_type\":\"help\"}]."))
 label_arg = typer.Argument(help="Optional label for the new API key.")
-from_opt = typer.Option("--from",
-                        help="Filter from this date, YYYY-MM-DD.")
-until_opt = typer.Option(help="Filter until this date, YYYY-MM-DD.")
+from_opt = typer.Option(
+    "--from",
+    help="Filter from the start of this date (Stockholm time), YYYY-MM-DD.")
+until_opt = typer.Option(
+    help="Filter until the end of this date (Stockholm time), YYYY-MM-DD.")
 interaction_type_opt = typer.Option(help="Filter to help or present.")
-date_opt = typer.Option(help="Statistics date, YYYY-MM-DD.")
+date_opt = typer.Option(help="Statistics date (Stockholm time), YYYY-MM-DD.")
 show_ugkthid_opt = typer.Option("--ugkthid",
                                 help="Include the ugkthid column in view.")
 @
 
+The check-in history and activity commands take points in time rather than
+dates, in the local spelling accepted by [[parse_local_time]].
+<<option and argument definitions>>=
+start_arg = typer.Argument(
+    help="Session start in local time, e.g. \"2026-09-01 10:00\".")
+end_arg = typer.Argument(
+    help=("Session end, e.g. \"2026-09-01 12:00\" or just \"12:00\". "
+          "Defaults to two hours after the start."))
+from_time_opt = typer.Option(
+    "--from",
+    help=("Sessions checked in from this local time, "
+          "e.g. \"2026-09-01 08:00\". Defaults to 90 days before --until."))
+until_time_opt = typer.Option(
+    help="Sessions checked in until this local time. Defaults to now.")
+@
+
+The activity report is meant to be read by a teacher, but a script wants a
+single table: one line per event to count, or the summary row to read the
+helping time and the longest gap from.
+The [[--only]] option selects one of the three parts and prints it bare,
+without headings or notes, so that the usual pipe convention of
+[[print_records]] (a header line followed by one TSV row per record)
+holds for the whole output.
+<<option and argument definitions>>=
+class ActivityPart(str, enum.Enum):
+  checkins = "checkins"
+  events = "events"
+  summary = "summary"
+
+
+only_opt = typer.Option(
+    "--only",
+    help=("Print only this part of the report as a bare table: "
+          "checkins, events or summary."))
+<<imports>>=
+import enum
+@
+
 The commands that expose queue participants should hide [[ugkthid]] by
 default, but let the user opt in when they need identifiers.
+The interaction log is the exception: the server identifies both parties by
+username ([[RawHelpEvent]] in the server's [[db/help_events.rs]]) and never
+sends a [[ugkthid]], so we show the usernames unconditionally---they are the
+only unique identifier in the log and are no more sensitive than the
+usernames the queue log already shows.
 <<helper functions>>=
 BOOKING_FIELDS = ["ugkthid", "slot_time", "entry_type"]
 ASSISTANT_FIELDS = ["username"]
 INTERACTION_LOG_FIELDS = [
   "helper_name",
-  "helper_ugkthid",
+  "helper_username",
   "student_name",
-  "student_ugkthid",
+  "student_username",
   "started_at",
   "ended_at",
   "duration_secs",
@@ -2233,6 +2847,37 @@ HELP_HISTORY_FIELDS = [
   "ended_at",
   "duration_secs",
   "helper",
+]
+CHECKIN_FIELDS = [
+  "checkin_time",
+  "checkout_time",
+  "last_helped_at",
+  "helped",
+  "presented",
+  "booked",
+]
+OVERLAPPING_CHECKIN_FIELDS = [
+  "checkin_time",
+  "effective_end",
+  "open",
+  "helped",
+  "presented",
+  "booked",
+]
+ACTIVITY_EVENT_FIELDS = [
+  "started_at",
+  "ended_at",
+  "duration_secs",
+  "help",
+  "student_name",
+]
+ACTIVITY_SUMMARY_FIELDS = [
+  "help_events",
+  "present_events",
+  "first_event",
+  "last_event",
+  "helping_time_secs",
+  "longest_gap_secs",
 ]
 @
 
@@ -2397,23 +3042,186 @@ def cli_remove_assistant(queue: Annotated[str, queue_arg],
                   username,
                   err)
     raise typer.Exit(code=1)
+@
+
+\subsection{Check-in history commands}
+
+The raw check-in history is available both for an assistant chosen by a
+teacher and for the caller's own sessions.
+The two commands differ only in the session method, so they share the
+parsing of the optional time range.
+An unparsable time is reported as a usage error, which is what Typer's
+[[BadParameter]] renders, rather than as a crash.
+Since the range is given in local time, the sessions are printed in local
+time as well; a check-in at 08:12 shown as 06:12 would only invite
+mistakes.
+<<helper functions>>=
+def parse_time_range(from_time=None, until=None):
+  """Return `(from_time, until)` parsed by `parse_local_time`.
+
+  Missing values stay `None`. Raises `typer.BadParameter` for
+  unparsable input so the CLI reports a usage error.
+  """
+  try:
+    if from_time is not None:
+      from_time = parse_local_time(from_time)
+    if until is not None:
+      until = parse_local_time(until)
+  except ValueError as err:
+    raise typer.BadParameter(str(err))
+  return from_time, until
+<<command definitions>>=
+@assistants_cli.command(name="checkins")
+def cli_assistant_checkins(
+    queue: Annotated[str, queue_arg],
+    username: Annotated[str, username_arg],
+    from_time: Annotated[Optional[str], from_time_opt] = None,
+    until: Annotated[Optional[str], until_time_opt] = None):
+  """List check-in sessions for one assistant. Requires teacher rights."""
+  from_time, until = parse_time_range(from_time, until)
+  print_records(get_session().get_ta_checkins(
+                    queue, username, from_time=from_time, until=until),
+                CHECKIN_FIELDS)
 
 
+@history_cli.command(name="checkins")
+def cli_my_checkins(
+    queue: Annotated[str, queue_arg],
+    from_time: Annotated[Optional[str], from_time_opt] = None,
+    until: Annotated[Optional[str], until_time_opt] = None):
+  """List the caller's own check-in sessions for one queue."""
+  from_time, until = parse_time_range(from_time, until)
+  print_records(get_session().get_my_checkins(
+                    queue, from_time=from_time, until=until),
+                CHECKIN_FIELDS)
+@
+
+\subsection{The activity command}
+\label{sec:activity-cli}
+
+The activity command assembles the pieces from \cref{sec:activity}.
+It fetches the assistant's events and check-ins for the window, prints
+them as three small tables---check-ins, events, summary---or just one of
+them with [[--only]], and exits with status 1 when there is no trace of
+the assistant at all, so the command can also be used in scripts.
+The fetching and the printing are separate chunks because the fetching
+encodes the two server quirks (date-based log filtering and check-in-based
+session selection) while the printing is plain presentation.
+<<command definitions>>=
+@assistants_cli.command(name="activity")
+def cli_assistant_activity(
+    queue: Annotated[str, queue_arg],
+    username: Annotated[str, username_arg],
+    start: Annotated[str, start_arg],
+    end: Annotated[Optional[str], end_arg] = None,
+    only: Annotated[Optional[ActivityPart], only_opt] = None):
+  """Show what one assistant did during a lab session.
+
+  Lists the assistant's help events and check-in sessions within the
+  session window, with a summary. Use --only to print just one of the
+  three tables, e.g. for scripts. Exits with status 1 when there is no
+  trace of the assistant at all. Requires teacher rights.
+  """
+  try:
+    start_time, end_time = session_window(start, end)
+  except ValueError as err:
+    raise typer.BadParameter(str(err))
+
+  session = get_session()
+  <<fetch the assistant's events and check-ins>>
+  <<print the activity report>>
+  if not events and not checkins:
+    raise typer.Exit(code=1)
+@
+
+The interaction log is filtered by whole Stockholm days on the server, so
+we widen the dates by [[LOG_DATE_MARGIN]] on both sides and select
+precisely afterwards.
+The check-in history is selected by check-in time, so we start
+[[CHECKIN_LOOKBACK]] before the window and keep only overlapping sessions.
+<<fetch the assistant's events and check-ins>>=
+log_from = (start_time - LOG_DATE_MARGIN).astimezone(datetime.timezone.utc)
+log_until = (end_time + LOG_DATE_MARGIN).astimezone(datetime.timezone.utc)
+events = helper_events_in_window(
+    session.get_interaction_log(queue,
+                                from_date=log_from.date().isoformat(),
+                                until=log_until.date().isoformat()),
+    username,
+    start_time,
+    end_time)
+checkins = checkin_sessions_overlapping(
+    session.get_ta_checkins(queue,
+                            username,
+                            from_time=start_time - CHECKIN_LOOKBACK,
+                            until=end_time),
+    start_time,
+    end_time)
+@
+
+All three parts are prepared as (rows, fields) pairs before anything is
+printed, so that the bare [[--only]] output and the full report draw on
+the same data and cannot drift apart.
+Each table is printed with [[print_records]], so the report follows the
+same terminal-versus-pipe convention as the other commands, and its
+timestamps come out in local time like everywhere else, lining up with
+the window the teacher typed.
+<<print the activity report>>=
+parts = {
+  ActivityPart.checkins: (checkins, OVERLAPPING_CHECKIN_FIELDS),
+  ActivityPart.events: (events, ACTIVITY_EVENT_FIELDS),
+  ActivityPart.summary: ([activity_summary(events, start_time, end_time)],
+                         ACTIVITY_SUMMARY_FIELDS),
+}
+if only is not None:
+  print_records(*parts[only])
+else:
+  <<print the full activity report with headings>>
+@
+
+In the full report the tables are separated by headings and blank lines.
+An empty check-in table gets an explicit note about unlocking, since that
+is the usual reason for it and the teacher should not read it as absence;
+with [[--only checkins]] the same case yields just the header line, which
+is what a script expects.
+<<print the full activity report with headings>>=
+print(f"Activity of {username} in {queue}, "
+      f"{start_time.strftime('%Y-%m-%d %H:%M')} to "
+      f"{end_time.strftime('%Y-%m-%d %H:%M')}")
+
+print()
+print("Check-ins:")
+if checkins:
+  print_records(*parts[ActivityPart.checkins])
+else:
+  print("none recorded (check-ins are deleted when the queue is unlocked)")
+
+print()
+print("Help events:")
+if events:
+  print_records(*parts[ActivityPart.events])
+else:
+  print("none")
+
+print()
+print("Summary:")
+print_records(*parts[ActivityPart.summary])
+@
+
+The remaining commands read logs and statistics.
+<<command definitions>>=
 @log_cli.command(name="interactions")
 def cli_interaction_log(
     queue: Annotated[str, queue_arg],
     from_date: Annotated[Optional[str], from_opt] = None,
     until: Annotated[Optional[str], until_opt] = None,
-    interaction_type: Annotated[Optional[str], interaction_type_opt] = None,
-    show_ugkthid: Annotated[bool, show_ugkthid_opt] = False):
+    interaction_type: Annotated[Optional[str], interaction_type_opt] = None):
   """Read the interaction log for one queue."""
   print_records(get_session().get_interaction_log(
       queue,
       from_date=from_date,
       until=until,
       interaction_type=interaction_type),
-      INTERACTION_LOG_FIELDS,
-      show_ugkthid=show_ugkthid)
+      INTERACTION_LOG_FIELDS)
 
 
 @log_cli.command(name="queue")
@@ -2628,9 +3436,9 @@ class FakeStayawhileSession:
                        interaction_type))
     return [{
       "helper_name": "Ada Lovelace",
-      "helper_ugkthid": "u1helper",
+      "helper_username": "ada",
       "student_name": "Grace Hopper",
-      "student_ugkthid": "u1student",
+      "student_username": "student1",
       "started_at": "2026-03-01T10:00:00Z",
       "ended_at": None,
       "duration_secs": 600,
@@ -2689,6 +3497,29 @@ class FakeStayawhileSession:
       "ended_at": "2026-03-01T10:10:00Z",
       "duration_secs": 600,
       "helper": "Ada Lovelace",
+    }]
+
+  def get_ta_checkins(self, queue, username, from_time=None, until=None):
+    self.calls.append(("get_ta_checkins", queue, username,
+                       from_time, until))
+    return [{
+      "checkin_time": "2026-03-01T09:55:00Z",
+      "checkout_time": None,
+      "last_helped_at": "2026-03-01T10:10:00Z",
+      "helped": 1,
+      "presented": 0,
+      "booked": 0,
+    }]
+
+  def get_my_checkins(self, queue, from_time=None, until=None):
+    self.calls.append(("get_my_checkins", queue, from_time, until))
+    return [{
+      "checkin_time": "2026-03-01T09:55:00Z",
+      "checkout_time": "2026-03-01T12:05:00Z",
+      "last_helped_at": "2026-03-01T11:40:00Z",
+      "helped": 4,
+      "presented": 2,
+      "booked": 1,
     }]
 @
 
@@ -3136,6 +3967,129 @@ def test_cli_lists_on_duty_assistants(monkeypatch):
   ]
 
 
+def test_cli_lists_assistant_checkins(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["assistants", "checkins", "Queue", "ada",
+                          "--from", "2026-03-01 00:00"])
+
+  assert result.exit_code == 0
+  assert fake.calls == [
+    ("get_ta_checkins", "Queue", "ada",
+     datetime.datetime(2026, 3, 1, 0, 0, tzinfo=UTC), None),
+  ]
+  assert parse_csv_output(result.stdout) == [
+    ["checkin_time", "checkout_time", "last_helped_at",
+     "helped", "presented", "booked"],
+    ["2026-03-01 09:55", "", "2026-03-01 10:10", "1", "0", "0"],
+  ]
+
+
+def test_cli_lists_my_checkins(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["history", "checkins", "Queue"])
+
+  assert result.exit_code == 0
+  assert fake.calls == [("get_my_checkins", "Queue", None, None)]
+  assert parse_csv_output(result.stdout) == [
+    ["checkin_time", "checkout_time", "last_helped_at",
+     "helped", "presented", "booked"],
+    ["2026-03-01 09:55", "2026-03-01 12:05", "2026-03-01 11:40",
+     "4", "2", "1"],
+  ]
+
+
+def test_cli_checkins_reject_bad_time(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["assistants", "checkins", "Queue", "ada",
+                          "--from", "yesterday"])
+
+  assert result.exit_code == 2
+  assert fake.calls == []
+@
+
+The activity test uses the fake session's one help event at 10:00 and
+open check-in at 09:55, with a window from 09:30 to the default 11:30.
+The output mixes headings with three tables, so we check that the expected
+rows are present rather than the whole output.
+<<test functions>>=
+def test_cli_assistant_activity(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["assistants", "activity", "Queue", "ada",
+                          "2026-03-01 09:30"])
+
+  assert result.exit_code == 0
+  assert fake.calls == [
+    ("get_interaction_log", "Queue", "2026-02-28", "2026-03-02", None),
+    ("get_ta_checkins", "Queue", "ada",
+     datetime.datetime(2026, 2, 28, 9, 30, tzinfo=UTC),
+     datetime.datetime(2026, 3, 1, 11, 30, tzinfo=UTC)),
+  ]
+  rows = parse_csv_output(result.stdout)
+  assert ["Activity of ada in Queue, 2026-03-01 09:30 to 2026-03-01 11:30"] \
+    in rows
+  assert ["2026-03-01 09:55", "2026-03-01 11:10", "true", "1", "0", "0"] \
+    in rows
+  assert ["2026-03-01 10:00", "", "10m", "true", "Grace Hopper"] in rows
+  assert ["1", "0", "2026-03-01 10:00", "2026-03-01 10:00",
+          "10m", "1h 20m"] in rows
+
+
+def test_cli_assistant_activity_only_prints_one_bare_table(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  events = runner.invoke(kthutils.stayawhile.cli,
+                         ["assistants", "activity", "Queue", "ada",
+                          "2026-03-01 09:30", "--only", "events"])
+  summary = runner.invoke(kthutils.stayawhile.cli,
+                          ["assistants", "activity", "Queue", "ada",
+                           "2026-03-01 09:30", "--only", "summary"])
+
+  assert events.exit_code == 0
+  assert parse_csv_output(events.stdout) == [
+    ["started_at", "ended_at", "duration_secs", "help", "student_name"],
+    ["2026-03-01 10:00", "", "10m", "true", "Grace Hopper"],
+  ]
+  assert summary.exit_code == 0
+  assert parse_csv_output(summary.stdout) == [
+    ["help_events", "present_events", "first_event", "last_event",
+     "helping_time_secs", "longest_gap_secs"],
+    ["1", "0", "2026-03-01 10:00", "2026-03-01 10:00", "10m", "1h 20m"],
+  ]
+
+
+def test_cli_assistant_activity_exits_1_without_trace(monkeypatch):
+  class FakeEmptySession(FakeStayawhileSession):
+    def get_interaction_log(self, *args, **kwargs):
+      return []
+
+    def get_ta_checkins(self, *args, **kwargs):
+      return []
+
+  fake = FakeEmptySession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["assistants", "activity", "Queue", "ada",
+                          "2026-03-01 09:30", "11:00"])
+
+  assert result.exit_code == 1
+  assert "none recorded" in result.stdout
+  assert ["0", "0", "", "", "0s", "1h 30m"] in parse_csv_output(result.stdout)
+
+
 def test_cli_checkin_and_checkout(monkeypatch):
   fake = FakeStayawhileSession()
   monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
@@ -3264,43 +4218,18 @@ def test_cli_reads_interaction_log(monkeypatch):
   )]
   assert parse_csv_output(result.stdout) == [[
     "helper_name",
+    "helper_username",
     "student_name",
+    "student_username",
     "started_at",
     "ended_at",
     "duration_secs",
     "help",
   ], [
     "Ada Lovelace",
+    "ada",
     "Grace Hopper",
-    "2026-03-01 10:00",
-    "",
-    "10m",
-    "true",
-  ]]
-
-
-def test_cli_reads_interaction_log_with_ugkthid(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
-
-  result = runner.invoke(kthutils.stayawhile.cli,
-                         ["log", "interactions", "Queue", "--ugkthid"])
-
-  assert result.exit_code == 0
-  assert parse_csv_output(result.stdout) == [[
-    "helper_name",
-    "helper_ugkthid",
-    "student_name",
-    "student_ugkthid",
-    "started_at",
-    "ended_at",
-    "duration_secs",
-    "help",
-  ], [
-    "Ada Lovelace",
-    "u1helper",
-    "Grace Hopper",
-    "u1student",
+    "student1",
     "2026-03-01 10:00",
     "",
     "10m",
