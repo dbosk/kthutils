@@ -1318,8 +1318,9 @@ def test_assistant_requests():
 
 The API provides two teacher-facing logs and one student-facing help-history
 endpoint.
-The log endpoints share the same optional date-range filtering, while the
-interaction log also accepts a type filter.
+The log endpoints share the same optional date-range filtering, where a
+date means the whole of that day in Stockholm time, from 00:00 to
+23:59:59; the interaction log also accepts a type filter.
 <<[[StayawhileSession]] methods>>=
 def get_interaction_log(self,
                         queue,
@@ -2157,9 +2158,10 @@ def test_session_window_rejects_end_before_start():
 
 \subsection{The assistant's events}
 
-The interaction log endpoint filters by whole dates, and the server's days
-are UTC days while the session is given in local time.
-Rather than reasoning about which UTC dates a local window touches, the
+The interaction log endpoint filters by whole dates, which the server
+interprets as days in Stockholm time, while the session is given in the
+teacher's local time---usually, but not necessarily, the same zone.
+Rather than reasoning about which server days a local window touches, the
 caller fetches one extra day on each side and the precise selection happens
 here: the assistant's events whose start falls inside the window.
 We match on [[helper_username]], the field the server uses to identify the
@@ -2748,11 +2750,13 @@ bookings_source_arg = typer.Argument(
           "\"slot_time\":\"2026-03-01T10:15:00Z\","
           "\"entry_type\":\"help\"}]."))
 label_arg = typer.Argument(help="Optional label for the new API key.")
-from_opt = typer.Option("--from",
-                        help="Filter from this date, YYYY-MM-DD.")
-until_opt = typer.Option(help="Filter until this date, YYYY-MM-DD.")
+from_opt = typer.Option(
+    "--from",
+    help="Filter from the start of this date (Stockholm time), YYYY-MM-DD.")
+until_opt = typer.Option(
+    help="Filter until the end of this date (Stockholm time), YYYY-MM-DD.")
 interaction_type_opt = typer.Option(help="Filter to help or present.")
-date_opt = typer.Option(help="Statistics date, YYYY-MM-DD.")
+date_opt = typer.Option(help="Statistics date (Stockholm time), YYYY-MM-DD.")
 show_ugkthid_opt = typer.Option("--ugkthid",
                                 help="Include the ugkthid column in view.")
 @
@@ -3130,8 +3134,9 @@ def cli_assistant_activity(
     raise typer.Exit(code=1)
 @
 
-The interaction log is filtered by UTC dates on the server, so we widen the
-dates by [[LOG_DATE_MARGIN]] on both sides and select precisely afterwards.
+The interaction log is filtered by whole Stockholm days on the server, so
+we widen the dates by [[LOG_DATE_MARGIN]] on both sides and select
+precisely afterwards.
 The check-in history is selected by check-in time, so we start
 [[CHECKIN_LOOKBACK]] before the window and keep only overlapping sessions.
 <<fetch the assistant's events and check-ins>>=
