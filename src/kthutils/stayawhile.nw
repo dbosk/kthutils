@@ -2094,13 +2094,31 @@ def parse_timestamp(timestamp):
 
   return datetime.datetime.fromisoformat(
       timestamp.replace("Z", "+00:00"))
+@
+
+The server reports every timestamp in UTC, but the user reads them against
+a schedule in local time, so a lab at 13:00 would print as 11:00 (or
+12:00 in winter).
+We therefore convert to local time before formatting.
+The conversion uses [[astimezone]] with no argument, which applies the
+platform's zone rules for that particular instant, so summer and winter
+timestamps both come out right regardless of when the command runs.
+It lives in its own function so the tests can pin it to UTC; without
+that, the expected output would depend on the machine running the tests.
+The [[today]] comparison happens after the conversion, so that
+\enquote{today} means the local date, as the user would expect.
+<<helper functions>>=
+def to_local_time(moment):
+  """Return the aware [[datetime]] [[moment]] in the local time zone."""
+  return moment.astimezone()
 
 
 def format_timestamp(timestamp, *, today=None):
-  """Format [[timestamp]] compactly for CLI output."""
+  """Format [[timestamp]] compactly in local time for CLI output."""
   parsed = parse_timestamp(timestamp)
   if parsed is None:
     return ""
+  parsed = to_local_time(parsed)
 
   if today is None:
     today = datetime.date.today()
@@ -2108,6 +2126,34 @@ def format_timestamp(timestamp, *, today=None):
   if parsed.date() == today:
     return parsed.strftime("%H:%M")
   return parsed.strftime("%Y-%m-%d %H:%M")
+@
+
+Every CLI test runs with the local zone pinned to UTC, so the expected
+strings can be written down once.
+<<test helpers>>=
+UTC = datetime.timezone.utc
+
+
+@pytest.fixture(autouse=True)
+def pin_local_time_to_utc(monkeypatch):
+  monkeypatch.setattr(kthutils.stayawhile,
+                      "to_local_time",
+                      lambda moment: moment.astimezone(UTC))
+@
+
+<<test functions>>=
+def test_format_timestamp_converts_to_local_time(monkeypatch):
+  plus_one = datetime.timezone(datetime.timedelta(hours=1))
+  monkeypatch.setattr(kthutils.stayawhile,
+                      "to_local_time",
+                      lambda moment: moment.astimezone(plus_one))
+
+  assert kthutils.stayawhile.format_timestamp(
+      "2026-03-01T23:30:00Z",
+      today=datetime.date(2026, 3, 2)) == "00:30"
+@
+
+<<helper functions>>=
 
 
 def format_duration(duration_secs):
