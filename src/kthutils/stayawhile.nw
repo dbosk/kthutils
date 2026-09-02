@@ -1248,16 +1248,21 @@ The queue log tells us who is still in the queue, but not whether a help entry
 is currently being helped or is still waiting.
 To answer that, we combine the active queue reconstructed from [[queue_log]]
 with the currently active interactions from [[interaction_log]].
+The two logs must agree on how a student is identified, or no queue entry
+will ever match its interaction.
+The server names the student by username in both logs (and never sends a
+[[ugkthid]] in either), so username is the primary key; [[ugkthid]] remains
+as a fallback for payloads that carry only that.
 <<helper functions>>=
 def queue_entry_key(entry):
   """Return a stable identity key for one queue-log [[entry]]."""
-  ugkthid = entry.get("ugkthid")
-  if ugkthid:
-    return ("ugkthid", ugkthid)
-
   username = entry.get("username")
   if username:
     return ("username", username)
+
+  ugkthid = entry.get("ugkthid")
+  if ugkthid:
+    return ("ugkthid", ugkthid)
 
   raise ValueError(f"queue log entry lacks identity: {entry!r}")
 
@@ -1285,13 +1290,13 @@ def reconstruct_active_queue_entries(queue_log):
 
 def interaction_entry_key(entry):
   """Return a stable identity key for one interaction-log [[entry]]."""
-  ugkthid = entry.get("student_ugkthid")
-  if ugkthid:
-    return ("ugkthid", ugkthid)
-
   username = entry.get("student_username")
   if username:
     return ("username", username)
+
+  ugkthid = entry.get("student_ugkthid")
+  if ugkthid:
+    return ("ugkthid", ugkthid)
 
   raise ValueError(f"interaction log entry lacks identity: {entry!r}")
 
@@ -1584,7 +1589,7 @@ def test_reconstruct_current_queue():
   ], [
     {
       "helper_name": "Ada Lovelace",
-      "student_ugkthid": "u1linus",
+      "student_username": "linus",
       "started_at": "2026-03-01T10:25:00Z",
       "ended_at": None,
     },
@@ -2192,14 +2197,19 @@ show_ugkthid_opt = typer.Option("--ugkthid",
 
 The commands that expose queue participants should hide [[ugkthid]] by
 default, but let the user opt in when they need identifiers.
+The interaction log is the exception: the server identifies both parties by
+username ([[RawHelpEvent]] in the server's [[db/help_events.rs]]) and never
+sends a [[ugkthid]], so we show the usernames unconditionally---they are the
+only unique identifier in the log and are no more sensitive than the
+usernames the queue log already shows.
 <<helper functions>>=
 BOOKING_FIELDS = ["ugkthid", "slot_time", "entry_type"]
 ASSISTANT_FIELDS = ["username"]
 INTERACTION_LOG_FIELDS = [
   "helper_name",
-  "helper_ugkthid",
+  "helper_username",
   "student_name",
-  "student_ugkthid",
+  "student_username",
   "started_at",
   "ended_at",
   "duration_secs",
@@ -2404,16 +2414,14 @@ def cli_interaction_log(
     queue: Annotated[str, queue_arg],
     from_date: Annotated[Optional[str], from_opt] = None,
     until: Annotated[Optional[str], until_opt] = None,
-    interaction_type: Annotated[Optional[str], interaction_type_opt] = None,
-    show_ugkthid: Annotated[bool, show_ugkthid_opt] = False):
+    interaction_type: Annotated[Optional[str], interaction_type_opt] = None):
   """Read the interaction log for one queue."""
   print_records(get_session().get_interaction_log(
       queue,
       from_date=from_date,
       until=until,
       interaction_type=interaction_type),
-      INTERACTION_LOG_FIELDS,
-      show_ugkthid=show_ugkthid)
+      INTERACTION_LOG_FIELDS)
 
 
 @log_cli.command(name="queue")
@@ -2628,9 +2636,9 @@ class FakeStayawhileSession:
                        interaction_type))
     return [{
       "helper_name": "Ada Lovelace",
-      "helper_ugkthid": "u1helper",
+      "helper_username": "ada",
       "student_name": "Grace Hopper",
-      "student_ugkthid": "u1student",
+      "student_username": "student1",
       "started_at": "2026-03-01T10:00:00Z",
       "ended_at": None,
       "duration_secs": 600,
@@ -3264,43 +3272,18 @@ def test_cli_reads_interaction_log(monkeypatch):
   )]
   assert parse_csv_output(result.stdout) == [[
     "helper_name",
+    "helper_username",
     "student_name",
+    "student_username",
     "started_at",
     "ended_at",
     "duration_secs",
     "help",
   ], [
     "Ada Lovelace",
+    "ada",
     "Grace Hopper",
-    "2026-03-01 10:00",
-    "",
-    "10m",
-    "true",
-  ]]
-
-
-def test_cli_reads_interaction_log_with_ugkthid(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
-
-  result = runner.invoke(kthutils.stayawhile.cli,
-                         ["log", "interactions", "Queue", "--ugkthid"])
-
-  assert result.exit_code == 0
-  assert parse_csv_output(result.stdout) == [[
-    "helper_name",
-    "helper_ugkthid",
-    "student_name",
-    "student_ugkthid",
-    "started_at",
-    "ended_at",
-    "duration_secs",
-    "help",
-  ], [
-    "Ada Lovelace",
-    "u1helper",
-    "Grace Hopper",
-    "u1student",
+    "student1",
     "2026-03-01 10:00",
     "",
     "10m",
