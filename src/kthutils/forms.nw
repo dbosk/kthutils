@@ -1279,6 +1279,13 @@ else
 fi
 @
 
+When we extract the restlabb results, we must be logged into KTH.
+We can trigger that log in with [[ladok]].
+<<[[restlabb.sh]]>>=
+ME=de709f81-a867-11e7-8dbf-78e86dc2470c
+until ladok student $ME 2>&1 >/dev/null; do true; done
+@ This way we will not proceed until the MFA login has succeeded.
+
 Next we extract the new values since the last run (using the [[next]] command) 
 and [[grep]] for the relevant lines:
 namely those mentioning me or any of my courses.
