@@ -819,46 +819,90 @@ courses in the same way; only the columns the fields live in differ.
 We therefore lift the body of the format string into its own chunk,
 [[<<rewriter format string body>>]], so both rewriters share a single
 definition and cannot drift apart when we tweak the reporting commands.
+
+The body passes through two interpreters before it runs:
+first the shell executing this setup script, then Python's [[str.format]]
+when a row is rewritten.
+Each has its own escaping (backslashes and [[$]] for the shell, doubled
+braces for [[format]]), and the body is a shell script itself, full of
+[[$]], quotes and line continuations.
+Escaping all of that for the setup-time shell would make the chunk
+unreadable and easy to break.
+We therefore feed the body through a quoted heredoc: with the delimiter
+quoted, the shell copies the text verbatim into the configuration, so the
+chunk below is exactly what ends up in the config and only the [[format]]
+braces remain to think about.
 <<[[restlabbsetup.sh]]>>=
-kthutils config ${RESTLABB_REWRITER}.format_string -s "
+kthutils config ${RESTLABB_REWRITER}.format_string -s "$(cat <<'_EOF'
 <<rewriter format string body>>
-"
+_EOF
+)"
 @
 
-The body echoes the parsed fields for the log, then---unless the grader
+The body echoes the fields for the log, then---unless the grader
 already reported the result in Canvas---runs [[canvaslms grade]], and
 finally reports the aggregated result to Ladok.
+
+The fields that go through a regex (the course nick and year, the student,
+the grader, and the grade, assignment and assignment group extracted from
+the module column) can be mis-parsed when a TA writes something we did not
+anticipate.
+When that happens we fix the value by hand before running the commands, and
+we want to fix it in one place, not at every use.
+So each such field is assigned to a shell variable once and the commands
+only use the variable.
+Fields copied verbatim from a column, such as [[in_canvas]] (\enquote{Ja}
+or \enquote{Nej}) and [[passed]], cannot be mis-parsed, so they stay inline.
+
+We place each assignment directly after the echo of the raw column it was
+parsed from: the reader then sees the input and the parsed result next to
+each other and can check the parse on the spot.
+The module column feeds three parsed fields, so all three follow the
+[[Module:]] line.
+The student and grader columns are only used through their regexes, so
+there the assignment comes first and the echo prints the variable.
+Assigned values are single-quoted since a parsed value can contain shell
+metacharacters (an assignment reads [[Laboration .(1|2).]]), and every use
+is double-quoted for the same reason.
+Since all rows are printed into one stream, each block re-assigns every
+variable before use, so the blocks stay independent when pasted together.
 <<rewriter format string body>>=
 echo 'Time:         {time}'
 echo 'Course:       {course}'
+course='{course_nick}{year}'
 echo 'Module:       {module}'
-echo 'Student:      {student}'
+assignment='{assignment}'
+assignment_group='{assignment_group}'
+grade='{grade}'
+student='{student}'
+echo "Student:      $student"
 echo 'Passed:       {passed}'
 echo 'Comments:     {comments}'
-echo 'Grader:       {grader}'
+grader='{grader}'
+echo "Grader:       $grader"
 echo 'In Canvas:    {in_canvas}'
 if [ '{in_canvas}' = 'Ja' ]; then
   echo 'Already in Canvas.'
 elif [ '{passed}' = 'Godkänt' ]; then
-  canvaslms grade \\
-    -c '{course_nick}{year}' \\
-    -a '{assignment}' \\
-    -u '{student}' \\
-    -g '{grade}' \\
-    -m 'OK {grader}'
+  canvaslms grade \
+    -c "$course" \
+    -a "$assignment" \
+    -u "$student" \
+    -g "$grade" \
+    -m "OK $grader"
 fi
 echo 'Canvas:'
-canvaslms submissions \\
-  -c '{course_nick}{year}' \\
-  -a '{assignment}' \\
-  -u '{student}'
+canvaslms submissions \
+  -c "$course" \
+  -a "$assignment" \
+  -u "$student"
 echo
-canvaslms results \\
-  -c '{course_nick}{year}' \\
-  -A '{assignment_group}' \\
-  -u '{student}' \\
-  -S canvaslms.grades.conjunctavgsurvey \\
-| sed -E 's/ ?[HV]T[0-9]{{2}}( \(.*\))?//' \\
+canvaslms results \
+  -c "$course" \
+  -A "$assignment_group" \
+  -u "$student" \
+  -S canvaslms.grades.conjunctavgsurvey \
+| sed -E 's/ ?[HV]T[0-9]{{2}}( \(.*\))?//' \
 | ladok -v report -f
 echo
 @
@@ -1179,9 +1223,10 @@ We clear any previous configuration first, in case we re-run these lines after
 an update.
 <<[[restlabbsetup.sh]]>>=
 kthutils config ${LABWEEK_REWRITER} -s ""
-kthutils config ${LABWEEK_REWRITER}.format_string -s "
+kthutils config ${LABWEEK_REWRITER}.format_string -s "$(cat <<'_EOF'
 <<rewriter format string body>>
-"
+_EOF
+)"
 @
 
 The verbatim columns and the shared regexes only differ from Restlabb in their
