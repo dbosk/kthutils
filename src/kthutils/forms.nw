@@ -1198,7 +1198,7 @@ Each June we also run a \emph{lab week}, recording results in a separate KTH
 Form that we always name [[labweek<YEAR>]] (e.g.\ [[labweek2026]]).
 It reports results for the same courses in the same way as Restlabb, so it
 reuses the same format string and the same regexes.
-Only two things differ, and both follow from the form's layout.
+Only three things differ, and all follow from the form's layout.
 
 First, the columns sit in different positions.
 The lab week form lets a pair of students redovisa together, so on top of the
@@ -1218,6 +1218,12 @@ picks columns~3 and~6 (the two kth-mail columns), and a list of two
 regexes---one extracting the first address, one the second---is joined into a
 parenthesised alternation when both match (and left as a bare address when
 only the first does).
+
+Third, the lab week form has no \enquote{passed?} question:
+the TAs only record results that passed, so every row is a pass.
+The shared format string still tests [[{passed}]] against \enquote{Godkänt}
+before grading in Canvas, so we supply that as a fixed [[value]] rather than
+from a column (see the [[value]] substitution in \cref{RewriteRow}).
 
 We clear any previous configuration first, in case we re-run these lines after
 an update.
@@ -1249,6 +1255,7 @@ kthutils config ${LABWEEK_REWRITER}.substitutions.year.column -s 8
 kthutils config ${LABWEEK_REWRITER}.substitutions.year.regex \
   -s "<<year regex>>"
 kthutils config ${LABWEEK_REWRITER}.substitutions.in_canvas.column -s 12
+kthutils config ${LABWEEK_REWRITER}.substitutions.passed.value -s Godkänt
 kthutils config ${LABWEEK_REWRITER}.substitutions.grade.column -s 10
 kthutils config ${LABWEEK_REWRITER}.substitutions.grade.regex \
   <<grade regexes>>
@@ -1508,6 +1515,7 @@ delimiter: Annotated[str, delimiter_arg] = "\t",
 @
 
 \subsubsection{Rewriting a row}
+\label{RewriteRow}
 
 Now we want to do the actual rewriting.
 <<API for KTH Forms>>=
@@ -1591,6 +1599,18 @@ def test_rewrite_row_column_slice():
   }
   result = kthutils.forms.rewrite_row(row, rewriter)
   assert result == "Range: col1\tcol2"
+
+def test_rewrite_row_constant_value():
+  # A value substitution ignores the row entirely.
+  row = ["data", "Godkänt"]
+  rewriter = {
+    "format_string": "Passed: {passed}",
+    "substitutions": {
+      "passed": {"value": "Nej"}
+    }
+  }
+  result = kthutils.forms.rewrite_row(row, rewriter)
+  assert result == "Passed: Nej"
 @
 
 The lab week rewriter (\cref{LabWeekRewriter}) relies on a stepped slice and a
@@ -1657,10 +1677,22 @@ character.
 \item[regex] The regex to apply to the data in the column.
 This should have the form [[s/regex/replacement/]].
 The [[/]] can be any character, same as in [[sed]].
+\item[value] A fixed string to use as the substitution, ignoring the row.
+Format strings are shared between forms (\cref{LabWeekRewriter}), and a form
+may lack a column that the format string still refers to.
+Rather than dropping the field from the shared format string, or faking it
+with a regex that rewrites anything to a constant, the rewriter for that
+form supplies the value directly.
 \end{description}
+A [[value]] substitution needs neither column nor regex, so we handle it
+first and skip the rest of the loop body.
 <<create [[substitutions]] from [[row]] and [[rewriter]]>>=
 substitutions = {}
 for variable, var_subst in rewriter["substitutions"].items():
+  if "value" in var_subst:
+    substitutions[variable] = var_subst["value"]
+    continue
+
   if "column" in var_subst:
     <<make [[data]] contain the columns from [[row]]>>
   else:
