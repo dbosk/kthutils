@@ -1127,9 +1127,10 @@ response through unchanged.
 <<[[StayawhileSession]] methods>>=
 def list_bookings(self, queue):
   """Return the bookings for [[queue]]."""
-  return self._request("GET",
-                       self._queue_path(queue, "bookings"),
-                       use_api_key=True)
+  return [normalize_booking(booking)
+          for booking in self._request("GET",
+                                       self._queue_path(queue, "bookings"),
+                                       use_api_key=True)]
 
 
 def upsert_bookings(self, queue, bookings):
@@ -1155,10 +1156,51 @@ def clear_bookings(self, queue, from_date=None, until=None):
 
 def get_my_booking(self, queue):
   """Return the caller's booking for [[queue]]."""
-  return self._request("GET",
-                       self._queue_path(queue, "my_booking"))
+  booking = self._request("GET", self._queue_path(queue, "my_booking"))
+  if isinstance(booking, dict):
+    return normalize_booking(booking)
+  return booking
 
 
+@
+
+The server does not return bookings in the shape it accepts them.
+An upload uses [[ugkthid]] and [[entry_type]], but the listing
+([[BookingView]] in the server's [[models/booking.rs]]) returns the same
+identifier as [[provider_id]] and the entry type as a boolean [[help]],
+together with the student's [[username]] and [[realname]].
+Everything in this module (the listing, the queue view's booking promotion,
+the [[ugkthid]] hiding in the output) speaks the upload vocabulary, so we
+translate once, here, rather than teaching every consumer both spellings.
+We rename [[provider_id]] rather than copy it, so that the identifier stays
+hidden by default like every other [[ugkthid]] field.
+Records that already use the upload names pass through unchanged.
+<<helper functions>>=
+def normalize_booking(booking):
+  """Return `booking` with `ugkthid` and `entry_type` as in an upload."""
+  booking = dict(booking)
+  if "provider_id" in booking:
+    booking.setdefault("ugkthid", booking.pop("provider_id"))
+  if "entry_type" not in booking and "help" in booking:
+    booking["entry_type"] = "help" if booking.pop("help") else "present"
+  return booking
+@
+
+<<test functions>>=
+def test_normalize_booking_uses_upload_names():
+  booking = {"id": 7, "provider_id": "u1abc123", "username": "janl4",
+             "realname": "Jan Li", "slot_time": "2026-10-05T11:15:00Z",
+             "help": False}
+
+  assert kthutils.stayawhile.normalize_booking(booking) == {
+    "id": 7, "ugkthid": "u1abc123", "username": "janl4",
+    "realname": "Jan Li", "slot_time": "2026-10-05T11:15:00Z",
+    "entry_type": "present",
+  }
+  assert kthutils.stayawhile.normalize_booking(
+      dict(booking, help=True))["entry_type"] == "help"
+  assert kthutils.stayawhile.normalize_booking(
+      {"ugkthid": "u1abc123"}) == {"ugkthid": "u1abc123"}
 @
 
 The upload endpoint expects a JSON array.
@@ -1786,17 +1828,30 @@ BOOKING_PROMOTION_LEAD = datetime.timedelta(minutes=5)
 BOOKING_PROMOTION_GRACE = datetime.timedelta(minutes=30)
 @
 
+A booking and a queue entry belong to the same student when they share an
+identifier.
+The queue log names students only by [[username]] (it selects
+[[users::username]] in the server's [[db/user_events.rs]]), while a booking
+has both a [[username]] and the [[ugkthid]] it was uploaded with.
+We therefore index each booking under every identifier it has, and look a
+queue entry up by each of its own; tagging the identifiers with their kind
+keeps a username from ever matching a [[ugkthid]] by accident.
 <<helper functions>>=
+def booking_identities(record):
+  """Return the tagged identifiers by which `record` names a student."""
+  return [(key, record[key]) for key in ("username", "ugkthid")
+          if record.get(key)]
+
+
 def apply_booking_promotion(active_queue, bookings, now=None):
   """Reorder queue entries when a matching booking is imminent."""
   if now is None:
     now = datetime.datetime.now(datetime.timezone.utc)
 
-  booking_by_ugkthid = {}
+  booking_by_identity = {}
   for booking in bookings:
-    ugkthid = booking.get("ugkthid")
-    if ugkthid:
-      booking_by_ugkthid[ugkthid] = booking
+    for identity in booking_identities(booking):
+      booking_by_identity[identity] = booking
 
   promoted = []
   rest = []
@@ -1804,7 +1859,10 @@ def apply_booking_promotion(active_queue, bookings, now=None):
   for original_index, entry in enumerate(active_queue):
     current = dict(entry)
     ugkthid = current.get("ugkthid")
-    booking = booking_by_ugkthid.get(ugkthid) if ugkthid else None
+    booking = next((booking_by_identity[identity]
+                    for identity in booking_identities(current)
+                    if identity in booking_by_identity),
+                   None)
     if booking is None:
       rest.append((original_index, current))
       continue
@@ -2061,6 +2119,26 @@ def test_apply_booking_promotion_promotes_matching_booking():
 
   assert [entry["username"] for entry in queue] == ["grace", "ada"]
   assert queue[0]["booking_time"] == "2026-03-01T10:06:00Z"
+  assert warnings == []
+
+
+def test_apply_booking_promotion_matches_queue_log_usernames():
+  booking = kthutils.stayawhile.normalize_booking({
+    "provider_id": "u1grace",
+    "username": "grace",
+    "slot_time": "2026-03-01T10:06:00Z",
+    "help": False,
+  })
+  queue, warnings = kthutils.stayawhile.apply_booking_promotion(
+      [{"username": "ada", "time": "2026-03-01T10:00:00Z",
+        "help": False, "_event_index": 0},
+       {"username": "grace", "time": "2026-03-01T10:01:00Z",
+        "help": False, "_event_index": 1}],
+      [booking],
+      now=datetime.datetime(2026, 3, 1, 10, 1,
+                            tzinfo=datetime.timezone.utc))
+
+  assert [entry["username"] for entry in queue] == ["grace", "ada"]
   assert warnings == []
 
 
@@ -3076,8 +3154,14 @@ username ([[RawHelpEvent]] in the server's [[db/help_events.rs]]) and never
 sends a [[ugkthid]], so we show the usernames unconditionally---they are the
 only unique identifier in the log and are no more sensitive than the
 usernames the queue log already shows.
+The same holds for the booking list: a teacher reads it to see who is booked
+when, so it leads with the student's username and name.
+The caller's own booking comes from a different server record that carries
+no names (it is the caller's), so it gets a shorter field list.
 <<helper functions>>=
-BOOKING_FIELDS = ["ugkthid", "slot_time", "entry_type"]
+BOOKING_FIELDS = ["username", "realname", "ugkthid", "slot_time",
+                  "entry_type"]
+MY_BOOKING_FIELDS = ["ugkthid", "slot_time", "entry_type"]
 ASSISTANT_FIELDS = ["username"]
 INTERACTION_LOG_FIELDS = [
   "helper_name",
@@ -3237,7 +3321,7 @@ def cli_my_booking(queue: Annotated[str, queue_arg],
   """Show the caller's own booking for one queue."""
   booking = get_session().get_my_booking(queue)
   if isinstance(booking, dict):
-    print_records([booking], BOOKING_FIELDS, show_ugkthid=show_ugkthid)
+    print_records([booking], MY_BOOKING_FIELDS, show_ugkthid=show_ugkthid)
   else:
     print_json(booking, show_ugkthid=show_ugkthid)
 
@@ -3678,6 +3762,8 @@ class FakeStayawhileSession:
     self.calls.append(("list_bookings", queue))
     return [{
       "ugkthid": "u1abc123",
+      "username": "janl4",
+      "realname": "Jan Li",
       "slot_time": "2026-03-01T10:00:00Z",
       "entry_type": "help",
     }]
@@ -4037,8 +4123,8 @@ def test_cli_lists_bookings_without_ugkthid(monkeypatch):
 
   assert result.exit_code == 0
   assert parse_csv_output(result.stdout) == [
-    ["slot_time", "entry_type"],
-    ["2026-03-01 10:00", "help"],
+    ["username", "realname", "slot_time", "entry_type"],
+    ["janl4", "Jan Li", "2026-03-01 10:00", "help"],
   ]
 
 
@@ -4051,8 +4137,8 @@ def test_cli_lists_bookings_with_ugkthid(monkeypatch):
 
   assert result.exit_code == 0
   assert parse_csv_output(result.stdout) == [
-    ["ugkthid", "slot_time", "entry_type"],
-    ["u1abc123", "2026-03-01 10:00", "help"],
+    ["username", "realname", "ugkthid", "slot_time", "entry_type"],
+    ["janl4", "Jan Li", "u1abc123", "2026-03-01 10:00", "help"],
   ]
 
 
