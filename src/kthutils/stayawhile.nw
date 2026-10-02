@@ -1127,9 +1127,10 @@ response through unchanged.
 <<[[StayawhileSession]] methods>>=
 def list_bookings(self, queue):
   """Return the bookings for [[queue]]."""
-  return self._request("GET",
-                       self._queue_path(queue, "bookings"),
-                       use_api_key=True)
+  return [normalize_booking(booking)
+          for booking in self._request("GET",
+                                       self._queue_path(queue, "bookings"),
+                                       use_api_key=True)]
 
 
 def upsert_bookings(self, queue, bookings):
@@ -1155,10 +1156,51 @@ def clear_bookings(self, queue, from_date=None, until=None):
 
 def get_my_booking(self, queue):
   """Return the caller's booking for [[queue]]."""
-  return self._request("GET",
-                       self._queue_path(queue, "my_booking"))
+  booking = self._request("GET", self._queue_path(queue, "my_booking"))
+  if isinstance(booking, dict):
+    return normalize_booking(booking)
+  return booking
 
 
+@
+
+The server does not return bookings in the shape it accepts them.
+An upload uses [[ugkthid]] and [[entry_type]], but the listing
+([[BookingView]] in the server's [[models/booking.rs]]) returns the same
+identifier as [[provider_id]] and the entry type as a boolean [[help]],
+together with the student's [[username]] and [[realname]].
+Everything in this module (the listing, the queue view's booking promotion,
+the [[ugkthid]] hiding in the output) speaks the upload vocabulary, so we
+translate once, here, rather than teaching every consumer both spellings.
+We rename [[provider_id]] rather than copy it, so that the identifier stays
+hidden by default like every other [[ugkthid]] field.
+Records that already use the upload names pass through unchanged.
+<<helper functions>>=
+def normalize_booking(booking):
+  """Return `booking` with `ugkthid` and `entry_type` as in an upload."""
+  booking = dict(booking)
+  if "provider_id" in booking:
+    booking.setdefault("ugkthid", booking.pop("provider_id"))
+  if "entry_type" not in booking and "help" in booking:
+    booking["entry_type"] = "help" if booking.pop("help") else "present"
+  return booking
+@
+
+<<test functions>>=
+def test_normalize_booking_uses_upload_names():
+  booking = {"id": 7, "provider_id": "u1abc123", "username": "janl4",
+             "realname": "Jan Li", "slot_time": "2026-10-05T11:15:00Z",
+             "help": False}
+
+  assert kthutils.stayawhile.normalize_booking(booking) == {
+    "id": 7, "ugkthid": "u1abc123", "username": "janl4",
+    "realname": "Jan Li", "slot_time": "2026-10-05T11:15:00Z",
+    "entry_type": "present",
+  }
+  assert kthutils.stayawhile.normalize_booking(
+      dict(booking, help=True))["entry_type"] == "help"
+  assert kthutils.stayawhile.normalize_booking(
+      {"ugkthid": "u1abc123"}) == {"ugkthid": "u1abc123"}
 @
 
 The upload endpoint expects a JSON array.
@@ -1260,6 +1302,244 @@ def test_load_json_input(tmp_path):
 
   assert kthutils.stayawhile.load_json_input(str(bookings_file)) == [
     {"ugkthid": "u1abc123"}
+  ]
+@
+
+
+\subsection{Bookings from Canvas}
+
+Students usually book their lab slots through a Canvas appointment group, so
+the bookings already exist in Canvas.
+Rather than talking to the Canvas API ourselves, we read what
+[[canvaslms calendar list --bookings]] prints, so that a teacher can write
+\begin{verbatim}
+canvaslms calendar list -c prgi26 --bookings \
+  | kthutils stayawhile bookings upsert Queue - --format canvaslms
+\end{verbatim}
+The [[canvaslms]] tool already handles course selection, time windows and
+Canvas authentication, and its output is a stable, documented table, so the
+shell pipe is all the integration we need.
+That output looks like this (tab-separated):
+\begin{verbatim}
+Redovisning  2026-10-05 13:15  2026-10-05 13:30  Jan Li (janl4@kth.se)
+Redovisning  2026-10-05 14:15  2026-10-05 14:30  4 free slots
+\end{verbatim}
+Each booked student gets a row of their own, with the participant written as
+[[Name (login_id)]].
+A slot that still has room also gets a row saying how many places are free.
+With [[--show-context]], two more columns follow; we only ever read the first
+four, so those are ignored.
+
+The participant pattern anchors on the \emph{last} parenthesised group, since
+the greedy [[.*]] gives the name everything before it.
+A student whose name contains parentheses is therefore still parsed
+correctly.
+The free-slot rows are an expected part of the output, so we drop them
+silently; any other row we cannot read gets a warning instead, since it
+means that either the input was not what we expected or canvaslms changed
+its format.
+<<constants>>=
+CANVASLMS_PARTICIPANT = re.compile(r"^(?P<name>.*) \((?P<login>[^()]+)\)$")
+CANVASLMS_FREE_SLOTS = re.compile(r"^\d+ free slots?$")
+<<imports>>=
+import re
+@
+
+Canvas login ids at KTH are e-mail addresses such as [[janl4@kth.se]],
+while Stay A While accepts a plain username (or a [[u1...]] id) in the
+[[ugkthid]] field and resolves it against its user table and LDAP.
+We therefore strip the [[@kth.se]] domain.
+Any other login (for instance an external student's address) we pass on
+unchanged rather than guessing: the server reports the identifiers it cannot
+resolve in [[skipped]], and the CLI shows those to the user.
+
+The start time is local wall-clock time, exactly the spelling that
+[[parse_local_time]] reads, and [[format_api_timestamp]] then gives the
+server an unambiguous UTC timestamp.
+Because [[parse_local_time]] applies the zone rules of each slot's own date,
+a December lab gets CET even when the bookings are uploaded in October.
+A start time we cannot parse raises [[ValueError]]: a booking at the wrong
+time is worse than no booking, so we stop rather than skip it.
+<<helper functions>>=
+def canvaslms_login_to_username(login):
+  """Return the KTH username for a Canvas `login`, such as `janl4@kth.se`."""
+  if login.endswith(KTH_LOGIN_DOMAIN):
+    return login[:-len(KTH_LOGIN_DOMAIN)]
+  return login
+
+
+def parse_canvaslms_bookings(lines, tz=None):
+  """Return bookings from `canvaslms calendar list --bookings` output.
+
+  `lines` yields tab-separated rows of title, start, end and participant,
+  possibly followed by context columns. Free-slot rows are skipped, other
+  rows without a `Name (login)` participant are skipped with a warning.
+  Start times are read in `tz`, defaulting to the local zone. Raises
+  `ValueError` for an unparsable start time.
+  """
+  bookings = []
+  for row in csv.reader(lines, delimiter="\t"):
+    if not row:
+      continue
+    participant = row[3] if len(row) >= 4 else ""
+    if CANVASLMS_FREE_SLOTS.match(participant):
+      continue
+    match = CANVASLMS_PARTICIPANT.match(participant)
+    if match is None:
+      logging.warning("skipping canvaslms row without a booked student: %s",
+                      "\t".join(row))
+      continue
+    bookings.append({
+      "ugkthid": canvaslms_login_to_username(match.group("login")),
+      "slot_time": format_api_timestamp(parse_local_time(row[1], tz=tz)),
+    })
+  return bookings
+<<constants>>=
+KTH_LOGIN_DOMAIN = "@kth.se"
+@
+
+The upload command reads either format from a file or from standard input.
+For canvaslms we open the file with [[newline=""]], as the [[csv]] module
+requires.
+<<helper functions>>=
+def load_bookings(source, fmt="json"):
+  """Load bookings from `source` (a path, or `-` for stdin) in `fmt`.
+
+  `fmt` is `json` for a JSON array of bookings or `canvaslms` for the
+  output of `canvaslms calendar list --bookings`.
+  """
+  if fmt == "canvaslms":
+    if source == "-":
+      return parse_canvaslms_bookings(sys.stdin)
+    with open(source, encoding="utf-8", newline="") as input_file:
+      return parse_canvaslms_bookings(input_file)
+  return load_json_input(source)
+@
+
+Let's verify the parser on rows like the ones canvaslms prints.
+The test suite pins [[parse_local_time]] to UTC, so the expected slot times
+equal the printed ones; the zone conversion itself is tested together with
+[[parse_local_time]].
+<<test functions>>=
+def test_parse_canvaslms_bookings(caplog):
+  lines = [
+    "Redovisning\t2026-10-05 13:15\t2026-10-05 13:30\tJan Li (janl4@kth.se)",
+    "Redovisning\t2026-10-05 14:00\t2026-10-05 14:15\t2 free slots",
+    "Redovisning\t2026-10-05 14:15\t2026-10-05 14:30\t1 free slot",
+    "Redovisning\t2026-10-05 14:30\t2026-10-05 14:45"
+      "\tAnna (Nisse) Berg (aberg@kth.se)\tcourse_1\tprgi26",
+    "Redovisning\t2026-10-05 14:45\t2026-10-05 15:00"
+      "\tExternal Student (ext@example.com)",
+    "",
+    "garbage",
+  ]
+
+  bookings = kthutils.stayawhile.parse_canvaslms_bookings(lines)
+
+  assert bookings == [
+    {"ugkthid": "janl4", "slot_time": "2026-10-05T13:15:00Z"},
+    {"ugkthid": "aberg", "slot_time": "2026-10-05T14:30:00Z"},
+    {"ugkthid": "ext@example.com", "slot_time": "2026-10-05T14:45:00Z"},
+  ]
+  assert "garbage" in caplog.text
+  assert "free slot" not in caplog.text
+
+
+def test_parse_canvaslms_bookings_rejects_bad_time():
+  with pytest.raises(ValueError):
+    kthutils.stayawhile.parse_canvaslms_bookings(
+        ["Redovisning\tsoon\tlater\tJan Li (janl4@kth.se)"])
+
+
+def test_load_bookings_reads_canvaslms_file(tmp_path):
+  bookings_file = tmp_path / "bookings.tsv"
+  bookings_file.write_text(
+      "Redovisning\t2026-10-05 13:15\t2026-10-05 13:30"
+      "\tJan Li (janl4@kth.se)\n")
+
+  bookings = kthutils.stayawhile.load_bookings(str(bookings_file),
+                                               "canvaslms")
+
+  assert [booking["ugkthid"] for booking in bookings] == ["janl4"]
+@
+
+
+\subsection{Replacing a day's bookings}
+\label{sec:replace-bookings}
+
+The server keys a booking on the student and the slot time
+([[on_conflict]] on queue, provider id and slot time in the server's
+[[db/bookings.rs]]).
+An upload therefore only ever adds or updates: when a student moves their
+Canvas booking from 13:15 to 14:30, uploading again adds the 14:30 booking
+and leaves the 13:15 one in place.
+In the queue view, that student would then be promoted at both times.
+
+To make the queue match Canvas, the CLI can first clear the bookings of
+every day that occurs in the input and then upload.
+We clear one day at a time, not the range from the first to the last day, so
+that days the input does not mention (for instance a lab week whose bookings
+were uploaded from another appointment group) are left alone.
+A day on which every booking was cancelled does not occur in the input and
+is therefore not cleared; that case needs an explicit [[bookings clear]].
+The days are Stockholm days because that is how the clear endpoint
+interprets its [[from]] and [[until]] dates.
+Like [[parse_local_time]], we let [[tz]] default to the machine's zone.
+<<helper functions>>=
+def booking_dates(bookings, tz=None):
+  """Return the sorted local dates (`YYYY-MM-DD`) of the `bookings`."""
+  dates = set()
+  for booking in bookings:
+    slot_time = parse_timestamp(booking.get("slot_time"))
+    if slot_time is not None:
+      dates.add(slot_time.astimezone(tz).date().isoformat())
+  return sorted(dates)
+@
+
+The days are taken in the given zone, here a fixed summer offset, so a
+booking late in the UTC evening belongs to the next Swedish day.
+<<test functions>>=
+CEST = datetime.timezone(datetime.timedelta(hours=2))
+
+
+def test_booking_dates_are_distinct_local_days():
+  bookings = [
+    {"ugkthid": "a", "slot_time": "2026-10-05T11:15:00Z"},
+    {"ugkthid": "b", "slot_time": "2026-10-05T12:30:00Z"},
+    {"ugkthid": "c", "slot_time": "2026-10-07T22:30:00Z"},
+  ]
+
+  assert kthutils.stayawhile.booking_dates(bookings, tz=CEST) == [
+    "2026-10-05", "2026-10-08"
+  ]
+@
+
+
+\subsection{The entry type of uploaded bookings}
+
+A Canvas booking does not say whether the student comes to present or to
+get help.
+The server treats a booking without [[entry_type]] as a presentation, which
+fits the usual \enquote{Redovisning} appointment groups.
+For help-slot appointment groups, the CLI lets the user give a default entry
+type.
+It only fills in records that lack one, so a JSON file that sets
+[[entry_type]] per booking keeps its own values.
+<<helper functions>>=
+def with_default_entry_type(bookings, entry_type):
+  """Return `bookings` with `entry_type` set where they have none."""
+  return [booking if booking.get("entry_type")
+          else dict(booking, entry_type=entry_type)
+          for booking in bookings]
+@
+
+<<test functions>>=
+def test_with_default_entry_type_keeps_explicit_values():
+  bookings = [{"ugkthid": "a"}, {"ugkthid": "b", "entry_type": "present"}]
+
+  assert kthutils.stayawhile.with_default_entry_type(bookings, "help") == [
+    {"ugkthid": "a", "entry_type": "help"},
+    {"ugkthid": "b", "entry_type": "present"},
   ]
 @
 
@@ -1548,17 +1828,30 @@ BOOKING_PROMOTION_LEAD = datetime.timedelta(minutes=5)
 BOOKING_PROMOTION_GRACE = datetime.timedelta(minutes=30)
 @
 
+A booking and a queue entry belong to the same student when they share an
+identifier.
+The queue log names students only by [[username]] (it selects
+[[users::username]] in the server's [[db/user_events.rs]]), while a booking
+has both a [[username]] and the [[ugkthid]] it was uploaded with.
+We therefore index each booking under every identifier it has, and look a
+queue entry up by each of its own; tagging the identifiers with their kind
+keeps a username from ever matching a [[ugkthid]] by accident.
 <<helper functions>>=
+def booking_identities(record):
+  """Return the tagged identifiers by which `record` names a student."""
+  return [(key, record[key]) for key in ("username", "ugkthid")
+          if record.get(key)]
+
+
 def apply_booking_promotion(active_queue, bookings, now=None):
   """Reorder queue entries when a matching booking is imminent."""
   if now is None:
     now = datetime.datetime.now(datetime.timezone.utc)
 
-  booking_by_ugkthid = {}
+  booking_by_identity = {}
   for booking in bookings:
-    ugkthid = booking.get("ugkthid")
-    if ugkthid:
-      booking_by_ugkthid[ugkthid] = booking
+    for identity in booking_identities(booking):
+      booking_by_identity[identity] = booking
 
   promoted = []
   rest = []
@@ -1566,7 +1859,10 @@ def apply_booking_promotion(active_queue, bookings, now=None):
   for original_index, entry in enumerate(active_queue):
     current = dict(entry)
     ugkthid = current.get("ugkthid")
-    booking = booking_by_ugkthid.get(ugkthid) if ugkthid else None
+    booking = next((booking_by_identity[identity]
+                    for identity in booking_identities(current)
+                    if identity in booking_by_identity),
+                   None)
     if booking is None:
       rest.append((original_index, current))
       continue
@@ -1823,6 +2119,26 @@ def test_apply_booking_promotion_promotes_matching_booking():
 
   assert [entry["username"] for entry in queue] == ["grace", "ada"]
   assert queue[0]["booking_time"] == "2026-03-01T10:06:00Z"
+  assert warnings == []
+
+
+def test_apply_booking_promotion_matches_queue_log_usernames():
+  booking = kthutils.stayawhile.normalize_booking({
+    "provider_id": "u1grace",
+    "username": "grace",
+    "slot_time": "2026-03-01T10:06:00Z",
+    "help": False,
+  })
+  queue, warnings = kthutils.stayawhile.apply_booking_promotion(
+      [{"username": "ada", "time": "2026-03-01T10:00:00Z",
+        "help": False, "_event_index": 0},
+       {"username": "grace", "time": "2026-03-01T10:01:00Z",
+        "help": False, "_event_index": 1}],
+      [booking],
+      now=datetime.datetime(2026, 3, 1, 10, 1,
+                            tzinfo=datetime.timezone.utc))
+
+  assert [entry["username"] for entry in queue] == ["grace", "ada"]
   assert warnings == []
 
 
@@ -2740,7 +3056,9 @@ queue_arg = typer.Argument(help="Queue name as shown in Stay A While.")
 username_arg = typer.Argument(help="KTH login name, without @kth.se.")
 api_key_id_arg = typer.Argument(help="Identifier of the API key to revoke.")
 bookings_source_arg = typer.Argument(
-    help=("JSON file with bookings, or - to read JSON from stdin. "
+    help=("JSON file with bookings, or - to read from stdin. "
+          "With --format canvaslms, the output of "
+          "canvaslms calendar list --bookings instead. "
           "Use ugkthid for either a u1... id or a plain username. "
           "entry_type is optional and defaults to present. "
           "Example: "
@@ -2799,6 +3117,36 @@ only_opt = typer.Option(
 import enum
 @
 
+The booking upload reads JSON by default.
+We chose an explicit [[--format]] over guessing from the first character:
+a guess would silently treat a truncated or mistyped JSON file as a
+canvaslms table and upload nothing, while the flag makes the user's intent
+part of the command line.
+The entry type and the [[--replace]] flag are explained together with
+[[with_default_entry_type]] and [[booking_dates]] in the bookings section.
+<<option and argument definitions>>=
+class BookingFormat(str, enum.Enum):
+  json = "json"
+  canvaslms = "canvaslms"
+
+
+class EntryType(str, enum.Enum):
+  help = "help"
+  present = "present"
+
+
+booking_format_opt = typer.Option(
+    "--format",
+    help=("Input format: json, or canvaslms for the output of "
+          "canvaslms calendar list --bookings."))
+entry_type_opt = typer.Option(
+    help=("Entry type for bookings that do not set one, help or present. "
+          "The server defaults to present."))
+replace_opt = typer.Option(
+    help=("First clear the queue's bookings on every day that occurs in "
+          "the input, so that those days match the input exactly."))
+@
+
 The commands that expose queue participants should hide [[ugkthid]] by
 default, but let the user opt in when they need identifiers.
 The interaction log is the exception: the server identifies both parties by
@@ -2806,8 +3154,14 @@ username ([[RawHelpEvent]] in the server's [[db/help_events.rs]]) and never
 sends a [[ugkthid]], so we show the usernames unconditionally---they are the
 only unique identifier in the log and are no more sensitive than the
 usernames the queue log already shows.
+The same holds for the booking list: a teacher reads it to see who is booked
+when, so it leads with the student's username and name.
+The caller's own booking comes from a different server record that carries
+no names (it is the caller's), so it gets a shorter field list.
 <<helper functions>>=
-BOOKING_FIELDS = ["ugkthid", "slot_time", "entry_type"]
+BOOKING_FIELDS = ["username", "realname", "ugkthid", "slot_time",
+                  "entry_type"]
+MY_BOOKING_FIELDS = ["ugkthid", "slot_time", "entry_type"]
 ASSISTANT_FIELDS = ["username"]
 INTERACTION_LOG_FIELDS = [
   "helper_name",
@@ -2927,16 +3281,22 @@ def cli_list_bookings(queue: Annotated[str, queue_arg],
 
 
 @bookings_cli.command(name="upsert")
-def cli_upsert_bookings(queue: Annotated[str, queue_arg],
-                        source: Annotated[str, bookings_source_arg]):
-  """Upload bookings from a JSON document."""
+def cli_upsert_bookings(
+    queue: Annotated[str, queue_arg],
+    source: Annotated[str, bookings_source_arg],
+    fmt: Annotated[BookingFormat, booking_format_opt] = BookingFormat.json,
+    entry_type: Annotated[Optional[EntryType], entry_type_opt] = None,
+    replace: Annotated[bool, replace_opt] = False):
+  """Upload bookings from JSON or from canvaslms calendar output."""
   try:
+    <<read and prepare the bookings to upload>>
     session = get_session()
-    bookings = load_json_input(source)
-    session.upsert_bookings(queue, bookings)
+    <<clear the days to replace>>
+    result = session.upsert_bookings(queue, bookings)
   except Exception as err:
     logging.error("booking upload failed for %s: %s", queue, err)
     raise typer.Exit(code=1)
+  <<warn about unresolved booking identifiers>>
 
 
 @bookings_cli.command(name="clear")
@@ -2961,7 +3321,7 @@ def cli_my_booking(queue: Annotated[str, queue_arg],
   """Show the caller's own booking for one queue."""
   booking = get_session().get_my_booking(queue)
   if isinstance(booking, dict):
-    print_records([booking], BOOKING_FIELDS, show_ugkthid=show_ugkthid)
+    print_records([booking], MY_BOOKING_FIELDS, show_ugkthid=show_ugkthid)
   else:
     print_json(booking, show_ugkthid=show_ugkthid)
 
@@ -3042,6 +3402,46 @@ def cli_remove_assistant(queue: Annotated[str, queue_arg],
                   username,
                   err)
     raise typer.Exit(code=1)
+@
+
+\subsection{The booking upload command}
+
+Uploading bookings is the one booking command with more to it than a
+session call, since it may delete bookings before it uploads.
+The order of the steps is what keeps that safe.
+We read and parse the whole input before we touch the server, so a
+malformed file or an unparsable start time stops the command before any
+booking has been cleared.
+Input without bookings, for instance canvaslms output listing only free
+slots, ends the command without a request: clearing on its behalf would be
+pointless and uploading an empty list does nothing.
+<<read and prepare the bookings to upload>>=
+bookings = load_bookings(source, fmt.value)
+if entry_type is not None:
+  bookings = with_default_entry_type(bookings, entry_type.value)
+dates_to_clear = booking_dates(bookings) if replace else []
+if not bookings:
+  return
+@
+
+Only then do we clear the days to replace (\cref{sec:replace-bookings}), one
+request per day.
+<<clear the days to replace>>=
+for date in dates_to_clear:
+  session.clear_bookings(queue, from_date=date, until=date)
+@
+
+The server uploads the bookings it can resolve and lists the identifiers it
+cannot in [[skipped]].
+Since the rest of the upload went through, that is not a failure, but the
+user must learn about it: a skipped student has no booking and will not be
+promoted in the queue.
+This matters most for Canvas input, where we pass non-KTH logins on
+unchanged.
+<<warn about unresolved booking identifiers>>=
+if isinstance(result, dict):
+  print_warnings(f"not booked, unknown user: {identifier}"
+                 for identifier in result.get("skipped") or [])
 @
 
 \subsection{Check-in history commands}
@@ -3310,6 +3710,7 @@ arguments to API calls.
 class FakeStayawhileSession:
   def __init__(self):
     self.calls = []
+    self.skipped_bookings = []
 
   def get_user(self):
     self.calls.append(("get_user",))
@@ -3361,13 +3762,17 @@ class FakeStayawhileSession:
     self.calls.append(("list_bookings", queue))
     return [{
       "ugkthid": "u1abc123",
+      "username": "janl4",
+      "realname": "Jan Li",
       "slot_time": "2026-03-01T10:00:00Z",
       "entry_type": "help",
     }]
 
   def upsert_bookings(self, queue, bookings):
     self.calls.append(("upsert_bookings", queue, bookings))
-    return {"updated": len(bookings)}
+    return {"error": None,
+            "bookings": bookings,
+            "skipped": self.skipped_bookings}
 
   def clear_bookings(self, queue, from_date=None, until=None):
     self.calls.append(("clear_bookings", queue, from_date, until))
@@ -3718,8 +4123,8 @@ def test_cli_lists_bookings_without_ugkthid(monkeypatch):
 
   assert result.exit_code == 0
   assert parse_csv_output(result.stdout) == [
-    ["slot_time", "entry_type"],
-    ["2026-03-01 10:00", "help"],
+    ["username", "realname", "slot_time", "entry_type"],
+    ["janl4", "Jan Li", "2026-03-01 10:00", "help"],
   ]
 
 
@@ -3732,8 +4137,8 @@ def test_cli_lists_bookings_with_ugkthid(monkeypatch):
 
   assert result.exit_code == 0
   assert parse_csv_output(result.stdout) == [
-    ["ugkthid", "slot_time", "entry_type"],
-    ["u1abc123", "2026-03-01 10:00", "help"],
+    ["username", "realname", "ugkthid", "slot_time", "entry_type"],
+    ["janl4", "Jan Li", "u1abc123", "2026-03-01 10:00", "help"],
   ]
 
 
@@ -3816,6 +4221,89 @@ def test_cli_upserts_bookings(monkeypatch, tmp_path):
     [{"ugkthid": "u1abc123", "slot_time": "2026-03-01T10:00:00Z"}],
   )]
   assert result.stdout == ""
+
+
+CANVASLMS_BOOKINGS = (
+  "Redovisning\t2026-10-05 13:15\t2026-10-05 13:30\tJan Li (janl4@kth.se)\n"
+  "Redovisning\t2026-10-05 14:00\t2026-10-05 14:15\t2 free slots\n"
+  "Redovisning\t2026-10-07 13:15\t2026-10-07 13:30\tOlle B (ob@kth.se)\n"
+)
+
+
+def test_cli_upserts_canvaslms_bookings_from_stdin(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(
+      kthutils.stayawhile.cli,
+      ["bookings", "upsert", "Queue", "-", "--format", "canvaslms"],
+      input=CANVASLMS_BOOKINGS)
+
+  assert result.exit_code == 0
+  assert len(fake.calls) == 1
+  name, queue, bookings = fake.calls[0]
+  assert (name, queue) == ("upsert_bookings", "Queue")
+  assert [booking["ugkthid"] for booking in bookings] == ["janl4", "ob"]
+  assert all("entry_type" not in booking for booking in bookings)
+@
+
+With [[--replace]], each day in the input must be cleared once, and before
+the upload, otherwise the clearing would remove the new bookings too.
+<<test functions>>=
+def test_cli_replace_clears_each_day_before_upload(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(
+      kthutils.stayawhile.cli,
+      ["bookings", "upsert", "Queue", "-",
+       "--format", "canvaslms", "--replace", "--entry-type", "help"],
+      input=CANVASLMS_BOOKINGS)
+
+  assert result.exit_code == 0
+  assert [call[:4] for call in fake.calls[:2]] == [
+    ("clear_bookings", "Queue", "2026-10-05", "2026-10-05"),
+    ("clear_bookings", "Queue", "2026-10-07", "2026-10-07"),
+  ]
+  assert fake.calls[2][0] == "upsert_bookings"
+  assert [booking["entry_type"] for booking in fake.calls[2][2]] == [
+    "help", "help"
+  ]
+  assert len(fake.calls) == 3
+
+
+def test_cli_replace_clears_nothing_on_bad_input(monkeypatch):
+  fake = FakeStayawhileSession()
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+
+  result = runner.invoke(
+      kthutils.stayawhile.cli,
+      ["bookings", "upsert", "Queue", "-",
+       "--format", "canvaslms", "--replace"],
+      input=CANVASLMS_BOOKINGS + "Redovisning\tsoon\tlater\tA (a@kth.se)\n")
+
+  assert result.exit_code == 1
+  assert fake.calls == []
+
+
+def test_cli_upsert_warns_about_skipped_identifiers(monkeypatch, tmp_path):
+  fake = FakeStayawhileSession()
+  fake.skipped_bookings = ["ext@example.com"]
+  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+  printed = []
+  monkeypatch.setattr(kthutils.stayawhile, "print_warnings",
+                      lambda warnings: printed.extend(warnings))
+  bookings_file = tmp_path / "bookings.json"
+  bookings_file.write_text(
+      '[{"ugkthid": "ext@example.com", "slot_time": "2026-03-01T10:00:00Z"}]')
+
+  result = runner.invoke(
+      kthutils.stayawhile.cli,
+      ["bookings", "upsert", "Queue", str(bookings_file)])
+
+  assert result.exit_code == 0
+  assert result.stdout == ""
+  assert printed == ["not booked, unknown user: ext@example.com"]
 
 
 def test_cli_clears_bookings_silently(monkeypatch):
