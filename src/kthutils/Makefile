@@ -8,6 +8,7 @@ MODULES+=	onedrive.py
 MODULES+=	stayawhile.py
 
 EXTRAS+=	restlabb.sh restlabbsetup.sh
+EXTRAS+=	stayawhilebookings.sh
 
 .PHONY: all
 all: ${MODULES} ${EXTRAS}
@@ -25,6 +26,10 @@ iprange.sh: iprange.nw
 
 restlabb.sh restlabbsetup.sh: forms.nw
 	${NOTANGLE.sh}
+
+stayawhilebookings.sh: stayawhile.nw
+	${NOTANGLE.sh}
+	chmod +x $@
 
 .PHONY: clean
 clean:
