@@ -4923,7 +4923,14 @@ We write a script, [[<<[[stayawhilebookings.sh]]>>]], for that.
 It syncs the presentation slots of two courses:
 \begin{description}
 \item[Programmeringsteknik] Canvas course [[prgi]]$YY$, queue [[Prgi]], and
-  the appointment group titled \enquote{Redovisning}.
+  every kind of presentation group: plain \enquote{Redovisning}, the lab,
+  specification and review presentations (\enquote{Redovisning lab3},
+  \enquote{Redovisning spec}, \enquote{Redovisning granskning}) and the
+  project presentations (\enquote{Redovisning P-uppgift}).
+  They differ in slot length---15 minutes, but 30 for the project---which is
+  set when the groups are created (in the course's
+  [[adm/redovisningar]] script), not here: the queue stores only when a slot
+  starts, so the sync treats them all alike.
 \item[Tillämpad kryptografi] Canvas course [[tilkry]]$YY$, queue [[DD2520]],
   and only the group titled \enquote{LAB1 presentations}.
   The course has other appointment groups---the oral examination of
@@ -5064,7 +5071,8 @@ A failure in one must not stop the other, so we only remember it and exit
 non-zero at the end, which makes cron mail us the error messages.
 <<[[stayawhilebookings.sh]]>>=
 STATUS=0
-sync_bookings "prgi${AC_YEAR}" Prgi '^Redovisning$' || STATUS=1
+sync_bookings "prgi${AC_YEAR}" Prgi \
+  '^Redovisning( (lab.*|spec|granskning)| [Pp]-uppgift)?$' || STATUS=1
 sync_bookings "tilkry${YEAR}" DD2520 '^LAB1 presentations$' || STATUS=1
 exit ${STATUS}
 @
