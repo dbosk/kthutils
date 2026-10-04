@@ -4927,6 +4927,12 @@ It syncs the presentation slots of two courses:
   specification and review presentations (\enquote{Redovisning lab3},
   \enquote{Redovisning spec}, \enquote{Redovisning granskning}) and the
   project presentations (\enquote{Redovisning P-uppgift}).
+  The qualifier may also be written in parentheses, as in
+  \enquote{Redovisning (lab3)}.
+  The pattern writes literal parentheses as the bracket expressions
+  [[[(]]] and [[[)]]] rather than escaping them, because [[awk -v]]
+  processes backslash escapes in the value and would turn [[\(]] into a
+  grouping parenthesis.
   They differ in slot length---15 minutes, but 30 for the project---which is
   set when the groups are created (in the course's
   [[adm/redovisningar]] script), not here: the queue stores only when a slot
@@ -5072,7 +5078,8 @@ non-zero at the end, which makes cron mail us the error messages.
 <<[[stayawhilebookings.sh]]>>=
 STATUS=0
 sync_bookings "prgi${AC_YEAR}" Prgi \
-  '^Redovisning( (lab.*|spec|granskning)| [Pp]-uppgift)?$' || STATUS=1
+  '^Redovisning( [(]?(lab.*|spec|granskning|[Pp]-uppgift)[)]?)?$' \
+  || STATUS=1
 sync_bookings "tilkry${YEAR}" DD2520 '^LAB1 presentations$' || STATUS=1
 exit ${STATUS}
 @
