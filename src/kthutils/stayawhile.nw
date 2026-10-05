@@ -4909,3 +4909,177 @@ def test_cli_view_promotes_booked_students(monkeypatch):
      "2026-03-01 10:00", "", "", ""],
   ]
 @
+
+
+\section{Syncing Canvas bookings from cron}
+\label{sec:bookings-cron}
+
+The commands above upload Canvas bookings when someone runs the pipe from
+\cref{sec:replace-bookings} by hand.
+For the queue view to promote a booked student, though, the queue must know
+about bookings made minutes before the slot, so we want cron to keep the
+queues in step with Canvas.
+We write a script, [[<<[[stayawhilebookings.sh]]>>]], for that.
+It syncs the presentation slots of two courses:
+\begin{description}
+\item[Programmeringsteknik] Canvas course [[prgi]]$YY$, queue [[Prgi]], and
+  every kind of presentation group: plain \enquote{Redovisning}, the lab,
+  specification and review presentations (\enquote{Redovisning lab3},
+  \enquote{Redovisning spec}, \enquote{Redovisning granskning}) and the
+  project presentations (\enquote{Redovisning P-uppgift}).
+  The qualifier may also be written in parentheses, as in
+  \enquote{Redovisning (lab3)}.
+  The pattern writes literal parentheses as the bracket expressions
+  [[[(]]] and [[[)]]] rather than escaping them, because [[awk -v]]
+  processes backslash escapes in the value and would turn [[\(]] into a
+  grouping parenthesis.
+  They differ in slot length---15 minutes, but 30 for the project---which is
+  set when the groups are created (in the course's
+  [[adm/redovisningar]] script), not here: the queue stores only when a slot
+  starts, so the sync treats them all alike.
+\item[Tillämpad kryptografi] Canvas course [[tilkry]]$YY$, queue [[DD2520]],
+  and only the group titled \enquote{LAB1 presentations}.
+  The course has other appointment groups---the oral examination of
+  INL1, the mandatory seminars and the ProVerif lab sessions---but students
+  do not come to the queue for those.
+\end{description}
+A cron line such as
+\begin{verbatim}
+*/5 * * * * ${HOME}/devel/edu/kthutils/src/kthutils/stayawhilebookings.sh
+\end{verbatim}
+runs it every five minutes.
+The script is silent when all goes well, so cron only sends mail when
+something needs attention: a failed request, or a student whose Canvas login
+the queue cannot resolve.
+
+Like [[restlabb.sh]], the script runs from cron and must therefore source our
+[[.profile]] to get the Canvas token and the [[PATH]] we use interactively.
+<<[[stayawhilebookings.sh]]>>=
+#!/bin/bash
+
+source ${HOME}/.profile
+@
+
+\subsection{Which course instance to sync}
+
+The course codes in Canvas carry the year, so the script computes them
+rather than us editing it every term.
+The two courses count their year differently.
+Programmeringsteknik starts in August, and [[prgi26]] runs from August 2026
+to June 2027; its year is the year in which the academic year starts.
+Tillämpad kryptografi starts in the spring, so [[tilkry27]] is simply the
+course of 2027.
+We switch academic year in July, as [[restlabb.sh]] does: there are no
+presentations in the summer, and looking forward then means the new course
+is synced as soon as its first slots appear.
+As in [[restlabb.sh]], we remove the month's leading zero, since [[test]]
+would otherwise read [[08]] and [[09]] as invalid octal numbers.
+<<[[stayawhilebookings.sh]]>>=
+YEAR=$(date +%y)
+MONTH=$(date +%m | sed "s/^0//")  # Remove leading zero
+if [[ $MONTH -lt 7 ]]; then
+  AC_YEAR=$((YEAR-1))
+else
+  AC_YEAR=${YEAR}
+fi
+@
+
+\subsection{The window to sync}
+
+We sync the bookings of the coming two weeks, from the start of today.
+Students book presentation slots a week or so ahead; bookings further away
+are synced on a later run, long before they matter for the queue.
+<<[[stayawhilebookings.sh]]>>=
+SYNC_DAYS=14
+FROM=$(date +%F)
+UNTIL=$(date -d "+${SYNC_DAYS} days" +%F)
+@
+
+Canvas and the queue must see the same window, otherwise we would clear a
+day that we do not upload again.
+The clear endpoint reads [[--until]] as the end of that Stockholm day, so we
+ask canvaslms for slots up to 23:59 on the same day.
+Starting at midnight rather than now also sends today's earlier slots
+again.
+That is harmless: the server's clear only ever deletes future bookings, and
+upserting an unchanged booking changes nothing.
+
+\subsection{Syncing one course}
+
+Each course is synced by the same function, given the Canvas course, the
+queue and a regular expression for the titles of the appointment groups to
+sync.
+It returns non-zero when something failed, so that the caller can report
+it.
+<<[[stayawhilebookings.sh]]>>=
+sync_bookings() {
+  local course="$1" queue="$2" titles="$3" rows
+  <<read the presentation slots from Canvas>>
+  <<stop if the window has no presentation slots>>
+  <<replace the queue's bookings in the window>>
+}
+@
+
+We read the slots into a variable instead of piping canvaslms straight into
+the queue, because we must know that the read succeeded before we clear
+anything.
+A failed read (no network, an expired Canvas token) then leaves the queue's
+bookings as they were.
+The title is the first column of canvaslms's output, so [[awk]] can filter
+on it directly.
+<<read the presentation slots from Canvas>>=
+rows=$(canvaslms calendar list -c "${course}" --bookings \
+         --start-time "${FROM}" --end-time "${UNTIL} 23:59") \
+  || { echo "${course}: reading bookings from Canvas failed" >&2; return 1; }
+rows=$(printf '%s\n' "${rows}" | awk -F'\t' -v re="${titles}" '$1 ~ re')
+@
+
+Clearing the whole window, rather than using [[--replace]], also removes
+the bookings of a day on which every student cancelled
+(\cref{sec:replace-bookings}).
+That is only safe when Canvas actually describes the window.
+A cancelled booking leaves a free-slot row behind, so as long as the
+appointment group has slots in the window, the rows are not empty.
+Empty rows instead mean that there is nothing to sync: the course is
+outside its term, the course of the new year does not exist in Canvas
+yet---for which canvaslms prints nothing and still succeeds---or the title
+pattern no longer matches.
+In all those cases we leave the queue alone.
+This guard is what lets cron run both courses all year round.
+<<stop if the window has no presentation slots>>=
+if [[ -z "${rows}" ]]; then
+  return 0
+fi
+@
+
+Then we clear the window and upload what Canvas has.
+Canvas does not say what a booking is for, but these groups are all
+presentations, so we set the entry type explicitly.
+The upload skips its request when every slot is free.
+Clearing and uploading are two requests: if the upload fails, the queue has
+no bookings in the window until the next run succeeds.
+We accept that rather than build a transaction the server does not offer,
+since the next run is minutes away and the failure is reported.
+<<replace the queue's bookings in the window>>=
+kthutils stayawhile bookings clear "${queue}" \
+    --from "${FROM}" --until "${UNTIL}" \
+  || { echo "${queue}: clearing bookings failed" >&2; return 1; }
+printf '%s\n' "${rows}" \
+| kthutils stayawhile bookings upsert "${queue}" - \
+    --format canvaslms --entry-type present \
+  || { echo "${queue}: uploading bookings failed" >&2; return 1; }
+@
+
+\subsection{The courses}
+
+Finally we sync both courses.
+A failure in one must not stop the other, so we only remember it and exit
+non-zero at the end, which makes cron mail us the error messages.
+<<[[stayawhilebookings.sh]]>>=
+STATUS=0
+sync_bookings "prgi${AC_YEAR}" Prgi \
+  '^Redovisning( [(]?(lab.*|spec|granskning|[Pp]-uppgift)[)]?)?$' \
+  || STATUS=1
+sync_bookings "tilkry${YEAR}" DD2520 '^LAB1 presentations$' || STATUS=1
+exit ${STATUS}
+@
