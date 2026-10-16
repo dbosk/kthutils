@@ -19,6 +19,12 @@ kthutils.pdf: ../src/kthutils
 ../src/kthutils::
 	${MAKE} -C $@ all
 
+# The woven .tex files must depend on their .nw sources: the generic rule
+# below has no prerequisites, so it only runs when a .tex is missing and
+# would leave a stale weave in place after a .nw edit.
+../src/kthutils/%.tex: ../src/kthutils/%.nw
+	${MAKE} -C ../src/kthutils $*.tex
+
 ../%::
 	${MAKE} -C $(dir $@) $(notdir $@)
 
