@@ -845,13 +845,21 @@ def _extract_folder_relative_path(parsed) -> str:
 
 Query parameters sometimes contain a full URL and sometimes only a path. We
 drop a trailing slash, but keep the root slash itself.
+
+Every caller passes text that is already decoded once: query values come
+from [[urllib.parse.parse_qs]], which decodes them, and paths are unquoted
+before the call. Decoding again here would corrupt names that contain a
+literal percent escape: [[100%2525]] in a URL names the folder
+[[100%25]], not [[100%]]. The one exception is a full URL inside a query
+value. Its path carries the URL's own encoding layer, so that path is
+decoded exactly once, here.
 <<functions>>=
 def _normalise_folder_relative_path(path: str) -> str:
   """Return ``path`` as a normalised server-relative folder path."""
-  decoded_path = urllib.parse.unquote(path)
-  parsed = urllib.parse.urlsplit(decoded_path)
+  decoded_path = path
+  parsed = urllib.parse.urlsplit(path)
   if parsed.scheme or parsed.netloc:
-    decoded_path = parsed.path
+    decoded_path = urllib.parse.unquote(parsed.path)
   if decoded_path.lower().endswith(ALL_ITEMS_PATH_SUFFIX.lower()):
     decoded_path = decoded_path[:-len(ALL_ITEMS_PATH_SUFFIX)]
   if decoded_path.endswith("/") and decoded_path != "/":
@@ -1025,6 +1033,33 @@ def test_parse_sharepoint_allitems_root_url():
   assert location.site_url == "https://kth.sharepoint.com/sites/example"
   assert location.server_relative_path == \
       "/sites/example/Shared Documents"
+
+
+def test_parse_sharepoint_folder_url_decodes_once():
+  location = kthutils.onedrive.parse_sharepoint_folder_url(
+      "https://kth.sharepoint.com/sites/example/Shared%20Documents/100%2525")
+
+  assert location.server_relative_path == \
+      "/sites/example/Shared Documents/100%25"
+
+
+def test_parse_sharepoint_shared_link_decodes_once():
+  location = kthutils.onedrive.parse_sharepoint_url(
+      "https://kth.sharepoint.com/shared?id=%2Fsites%2Fexample"
+      "%2FShared%20Documents%2F100%2525.pdf")
+
+  assert location.server_relative_path == \
+      "/sites/example/Shared Documents/100%25.pdf"
+
+
+def test_parse_sharepoint_allitems_full_url_id():
+  location = kthutils.onedrive.parse_sharepoint_folder_url(
+      "https://kth.sharepoint.com/sites/example/Shared%20Documents/Forms/"
+      "AllItems.aspx?id=https%3A%2F%2Fkth.sharepoint.com%2Fsites%2Fexample"
+      "%2FShared%2520Documents%2FPlans")
+
+  assert location.server_relative_path == \
+      "/sites/example/Shared Documents/Plans"
 
 
 def test_parse_sharepoint_folder_doc_aspx_requires_copy_link():
