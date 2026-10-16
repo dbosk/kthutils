@@ -81,6 +81,7 @@ onedrive_cli = kthutils.onedrive.cli
 <<overview tests>>
 <<location tests>>
 <<base-url tests>>
+<<personal path tests>>
 <<file URL parsing tests>>
 <<folder URL parsing tests>>
 <<REST endpoint tests>>
@@ -364,13 +365,16 @@ def get_base_url():
 CONFIG_BASE_URL = "onedrive.base_url"
 @
 
-We expand short-hands before we inspect whether the input is already an
-absolute URL. Bare names become site or personal-site roots, [[kth:]] and
+We first translate the many ways of writing a personal OneDrive path into
+one canonical form (see \cref{sec:personal-path-variants}), then expand
+short-hands, and only then inspect whether the input is already an absolute
+URL. Bare names become site or personal-site roots, [[kth:]] and
 [[kth-my:]] choose the host explicitly, and raw server-relative paths still
 resolve against the configured personal host or the main SharePoint host.
 <<functions>>=
 def _resolve_sharepoint_url(url: str) -> str:
   """Return ``url`` as an absolute SharePoint URL when possible."""
+  url = _translate_personal_path(url)
   url = _expand_sharepoint_shorthand(url)
   parsed = urllib.parse.urlsplit(url)
   if parsed.scheme and parsed.netloc:
@@ -399,6 +403,174 @@ SHORTHAND_HOST_ROOTS = {
     "kth": SHAREPOINT_HOST_ROOT,
     "kth-my": ONEDRIVE_HOST_ROOT,
 }
+@
+
+\subsection{Personal path variants}
+\label{sec:personal-path-variants}
+
+People write the same personal OneDrive folder in many ways. All of these
+name the same folder:
+\begin{itemize}
+\item [[/personal/jdoe_ug_kth_se/Documents/Plans]], the form SharePoint
+  itself uses;
+\item [[/personal/jdoe@ug.kth.se/Documents/Plans]], with the e-mail address
+  that people know instead of the site name derived from it;
+\item [[jdoe@ug.kth.se/Documents/Plans]] or [[/jdoe_ug_kth_se/Documents/Plans]],
+  without the [[personal]] prefix;
+\item [[%2Fpersonal%2Fjdoe_ug_kth_se%2FDocuments%2FPlans]], copied from the
+  [[id]] parameter of a browser URL, where every slash is percent-encoded.
+\end{itemize}
+The parsers further down expect the first form only. Before this
+translation step, the encoded variants were even misread: they contain no
+literal slash, so the bare-name short-hand in [[_expand_sharepoint_shorthand]]
+took the whole string for a site name and prefixed it with
+[[/personal/]], producing [[/personal//personal/...]].
+
+We therefore translate the variants first, before any short-hand logic
+sees the input. SharePoint derives the personal site name from the user
+principal name by replacing [[@]] and [[.]] with underscores, so we can
+compute it from the e-mail address. A first segment that is neither
+[[personal]], [[sites]] nor [[teams]] counts as a user when it contains an
+[[@]] or ends in [[_kth_se]]; anything else is left untouched so that bare
+site names and genuine errors behave as before.
+
+We decode the path once, since only the decoded form has slashes to split
+on, and encode it again before returning. The later parsers call
+[[urllib.parse.unquote]] once themselves, so a re-encoded result is decoded
+exactly once overall. Without re-encoding, a file named [[100%25]] that
+arrived as [[100%2525]] would be decoded twice and become [[100%]].
+Re-encoding also leaves already encoded input such as
+[[TCS%20Webpage%20updates]] unchanged. We only touch the path part, so
+query parameters such as an [[AllItems.aspx?id=...]] keep their own
+encoding.
+
+Inputs without the [[personal]] prefix carry no host at all. We turn them
+into [[kth-my:]] short-hands, which resolve to the OneDrive host without
+any configuration, just as a bare [[jdoe_ug_kth_se]] always has. Explicit
+[[/personal/...]] paths keep using the configured base URL.
+<<functions>>=
+def _translate_personal_path(url: str) -> str:
+  """Return ``url`` with personal OneDrive path variants made canonical."""
+  if url.startswith(ONEDRIVE_SHORTHAND):
+    path = _translate_personal_path(url[len(ONEDRIVE_SHORTHAND):])
+    if path.startswith(ONEDRIVE_SHORTHAND):
+      return path
+    return ONEDRIVE_SHORTHAND + path
+  if SCHEME_PREFIX_RE.match(url):
+    return url
+
+  parsed = urllib.parse.urlsplit(url)
+  parts = urllib.parse.unquote(parsed.path).lstrip("/").split("/")
+  if parts[0] == "personal" and len(parts) > 1:
+    host_prefix = ""
+    parts[1] = _personal_site_name(parts[1])
+  elif parts[0] in SHAREPOINT_SITE_ROOTS:
+    host_prefix = ""
+  elif _is_personal_site_name(parts[0]):
+    host_prefix = ONEDRIVE_SHORTHAND
+    parts = ["personal", _personal_site_name(parts[0])] + parts[1:]
+  else:
+    return url
+
+  path = urllib.parse.quote("/" + "/".join(parts), safe="/")
+  return host_prefix + urllib.parse.urlunsplit(("",
+                                                "",
+                                                path,
+                                                parsed.query,
+                                                parsed.fragment))
+
+
+def _is_personal_site_name(segment: str) -> bool:
+  """Return whether ``segment`` names a user rather than a site."""
+  return "@" in segment or segment.endswith(PERSONAL_SITE_SUFFIX)
+
+
+def _personal_site_name(segment: str) -> str:
+  """Return the OneDrive site name for a user name or e-mail address."""
+  if "@" in segment:
+    return re.sub(r"[@.]", "_", segment)
+  return segment
+<<constants>>=
+SCHEME_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+PERSONAL_SITE_SUFFIX = "_kth_se"
+ONEDRIVE_SHORTHAND = "kth-my:"
+@
+
+Full URLs and [[kth:]] short-hands are returned unchanged by the scheme
+check: a browser URL is already in SharePoint's own form, and [[kth:]]
+addresses team sites, not personal ones. The [[kth-my:]] short-hand is
+different, since it exists to address personal sites and so invites the
+same variants, for example [[kth-my:jdoe@ug.kth.se/Documents]]. We translate the
+part after the prefix recursively and put the prefix back unless the
+translation already added it.
+
+Let's verify that every variant ends up as the same folder. A student
+account and a staff account ([[jdoe@kth.se]]) differ only in the domain
+part, and an encoded team-site path also benefits from the decoding step.
+<<personal path tests>>=
+@pytest.mark.parametrize("path", [
+    "/personal/jdoe@ug.kth.se/Documents/Amanuenses TCS",
+    "%2Fpersonal%2Fjdoe_ug_kth_se%2FDocuments%2FAmanuenses TCS",
+    "/jdoe@ug.kth.se/Documents/Amanuenses TCS",
+    "%2Fjdoe_ug_kth_se%2FDocuments%2FAmanuenses TCS",
+    "jdoe_ug_kth_se%2FDocuments%2FAmanuenses TCS",
+    "jdoe@ug.kth.se/Documents/Amanuenses TCS",
+    "/personal/jdoe_ug_kth_se/Documents/Amanuenses%20TCS",
+])
+def test_parse_personal_path_variants(monkeypatch, path):
+  monkeypatch.setattr(kthutils.onedrive,
+                      "get_base_url",
+                      lambda: "https://kth-my.sharepoint.com")
+  location = kthutils.onedrive.parse_sharepoint_folder_url(path)
+
+  assert location.site_url == \
+      "https://kth-my.sharepoint.com/personal/jdoe_ug_kth_se"
+  assert location.server_relative_path == \
+      "/personal/jdoe_ug_kth_se/Documents/Amanuenses TCS"
+
+
+@pytest.mark.parametrize("url", [
+    "kth-my:jdoe@ug.kth.se/Documents/Amanuenses TCS",
+    "kth-my:/personal/jdoe@ug.kth.se/Documents/Amanuenses TCS",
+    "kth-my:personal/jdoe_ug_kth_se/Documents/Amanuenses%20TCS",
+    "kth-my:jdoe_ug_kth_se%2FDocuments%2FAmanuenses TCS",
+    "https://kth-my.sharepoint.com/personal/jdoe_ug_kth_se"
+    "/Documents/Amanuenses%20TCS",
+])
+def test_parse_personal_shorthand_and_url_variants(url):
+  location = kthutils.onedrive.parse_sharepoint_folder_url(url)
+
+  assert location.site_url == \
+      "https://kth-my.sharepoint.com/personal/jdoe_ug_kth_se"
+  assert location.server_relative_path == \
+      "/personal/jdoe_ug_kth_se/Documents/Amanuenses TCS"
+
+
+def test_parse_staff_personal_file_path():
+  location = kthutils.onedrive.parse_sharepoint_url(
+      "jdoe@kth.se/Documents/TCS/plan.docx")
+
+  assert location.site_url == \
+      "https://kth-my.sharepoint.com/personal/jdoe_kth_se"
+  assert location.server_relative_path == \
+      "/personal/jdoe_kth_se/Documents/TCS/plan.docx"
+
+
+def test_parse_encoded_site_folder_path():
+  location = kthutils.onedrive.parse_sharepoint_folder_url(
+      "%2Fsites%2Fexample%2FShared%20Documents%2FPlans")
+
+  assert location.site_url == "https://kth.sharepoint.com/sites/example"
+  assert location.server_relative_path == \
+      "/sites/example/Shared Documents/Plans"
+
+
+def test_parse_encoded_personal_path_decodes_once():
+  location = kthutils.onedrive.parse_sharepoint_url(
+      "%2Fjdoe_ug_kth_se%2FDocuments%2F100%2525.txt")
+
+  assert location.server_relative_path == \
+      "/personal/jdoe_ug_kth_se/Documents/100%25.txt"
 @
 
 These configuration tests stay small, but they keep the user-facing error
