@@ -1125,6 +1125,38 @@ def _upload_url(location: SharePointLocation, overwrite: bool) -> str:
       f"Files/add(url='{name}',overwrite={str(overwrite).lower()})")
 @
 
+Before uploading we sometimes need to know what already exists at the
+destination: whether it is a folder to upload into, and whether a file would
+be overwritten. SharePoint has an [[Exists]] property on both files and
+folders, but the two endpoints answer differently. The folder endpoint always
+answers 200 with [[true]] or [[false]], also for files and missing paths. The
+file endpoint answers [[true]] for a file and 404 for a folder or a missing
+path. We therefore treat a 404 as [[false]] rather than as an error.
+<<functions>>=
+def _exists_url(location: SharePointLocation, kind: str) -> str:
+  """Return the REST endpoint telling whether ``location`` exists.
+
+  ``kind`` is ``"File"`` or ``"Folder"``.
+  """
+  path = _escape_odata_string(location.server_relative_path)
+  return (
+      f"{location.site_url}/_api/web/"
+      f"Get{kind}ByServerRelativeUrl('{path}')/Exists")
+
+
+def _exists_from_payload(payload) -> bool:
+  """Return the boolean from a SharePoint ``Exists`` response payload."""
+  if "value" in payload:
+    return bool(payload["value"])
+  try:
+    return bool(payload["d"]["Exists"])
+  except KeyError as exc:
+    raise ValueError("SharePoint did not say whether the path exists") \
+        from exc
+<<constants>>=
+HTTP_NOT_FOUND = 404
+@
+
 Folder listings still rely on [[RenderListDataAsStream]] because it works for
 shared OneDrive folders where the simpler [[/Files]] and [[/Folders]] child
 collections can return access errors even after authentication.
@@ -1288,6 +1320,15 @@ def test_upload_url_uses_folder_and_file_name():
       "GetFolderByServerRelativeUrl('"
       "/sites/example/Shared Documents/Plans')/"
       "Files/add(url='Exam memo.pdf',overwrite=false)")
+
+
+def test_exists_url_addresses_file_or_folder():
+  location = kthutils.onedrive.parse_sharepoint_folder_url(site_folder_url)
+
+  assert kthutils.onedrive._exists_url(location, "Folder") == (
+      "https://kth.sharepoint.com/sites/example/_api/web/"
+      "GetFolderByServerRelativeUrl('"
+      "/sites/example/Shared Documents/Plans')/Exists")
 
 
 def test_render_list_data_request_uses_library_and_folder_paths():
@@ -1723,19 +1764,40 @@ def get_download_name_by_url(self, url: str) -> str:
   raise ValueError("SharePoint file metadata did not include a name")
 @
 
-Uploads still require a path-based target, because SharePoint's upload
-endpoint addresses the destination folder rather than an existing file id.
+Uploads behave like [[cp]]. When the destination is an existing folder, the
+file is created inside it under the [[name]] the caller supplies (the CLI
+passes the local file name). Otherwise the destination is the file path
+itself. Before this, [[put]] always took the last path segment as the file
+name. An upload to [[.../Amanuenses TCS/P2 2026]] then tried to create a
+file named [[P2 2026]] next to the folder of that name, and SharePoint
+answered with a bare 500 error.
+
+We cannot tell a folder from a file by looking at the path: [[P2 2026]] and
+[[plan.docx]] are both valid folder names. So we ask SharePoint, but only
+when a [[name]] was given. Callers that pass a file path and no name skip
+the extra request.
+
+Overwriting is opt-in. A file that already exists stops the upload with
+[[FileExistsError]] before any bytes are sent. SharePoint's own
+[[overwrite=false]] would also refuse, but only with an HTTP error that does
+not say why. The upload request itself still passes [[overwrite=false]], so
+a file created between our check and the upload is not replaced either.
 <<[[OneDriveSession]] methods>>=
 def put_by_url(self,
                url: str,
                data: bytes,
-               overwrite: bool = True) -> None:
-  """Upload ``data`` to the file addressed by ``url``."""
-  location = parse_sharepoint_url(url)
-  if location.server_relative_path is None:
-    raise ValueError(
-        "Cannot upload using a SharePoint file-ID URL; use a direct "
-        "file path or copy link instead.")
+               overwrite: bool = False,
+               name: Optional[str] = None) -> None:
+  """Upload ``data`` to the file addressed by ``url``.
+
+  If ``name`` is given and ``url`` addresses an existing folder, the file
+  is created in that folder under ``name``. Raises `FileExistsError` if the
+  file exists and ``overwrite`` is false.
+  """
+  location = self._upload_location(url, name)
+  if not overwrite and self._exists(location, "File"):
+    raise FileExistsError(
+        f"{location.server_relative_path} already exists")
   logger.debug("Uploading %s to %s (overwrite=%s, bytes=%s)",
                location.server_relative_path,
                location.site_url,
@@ -1752,6 +1814,89 @@ def put_by_url(self,
                response.status_code,
                location.server_relative_path)
   response.raise_for_status()
+@
+
+The folder probe only applies to inputs that the folder parser accepts and
+that are not site roots. A site root is not a document library, so a file
+cannot go there, and the file parser below rejects it with a clearer
+message than SharePoint would give.
+<<[[OneDriveSession]] methods>>=
+def _upload_location(self,
+                     url: str,
+                     name: Optional[str]) -> SharePointLocation:
+  """Return the location of the file that uploading to ``url`` creates."""
+  if name is not None:
+    try:
+      folder = parse_sharepoint_folder_url(url)
+    except ValueError:
+      folder = None
+    if (folder is not None
+        and not _is_site_root_path(folder.server_relative_path)
+        and self._exists(folder, "Folder")):
+      return SharePointLocation(
+          site_url=folder.site_url,
+          server_relative_path=f"{folder.server_relative_path}/{name}")
+
+  location = parse_sharepoint_url(url)
+  if location.server_relative_path is None:
+    raise ValueError(
+        "Cannot upload using a SharePoint file-ID URL; use a direct "
+        "file path or copy link instead.")
+  return location
+@
+
+<<[[OneDriveSession]] methods>>=
+def _exists(self, location: SharePointLocation, kind: str) -> bool:
+  """Return whether the file or folder (``kind``) at ``location`` exists."""
+  self._ensure_login_handlers(location)
+  response = self.__session.request(
+      "GET",
+      _exists_url(location, kind),
+      headers={"Accept": ODATA_VERBOSE_ACCEPT})
+  logger.debug("SharePoint %s exists response status %s for %s",
+               kind.lower(),
+               response.status_code,
+               location.server_relative_path)
+  if response.status_code == HTTP_NOT_FOUND:
+    return False
+  response.raise_for_status()
+  return _exists_from_payload(response.json())
+@
+
+The offline upload tests replay [[Exists]] answers that were observed on the
+live service, and the upload logic depends on them: a missing file must give
+404 rather than an error, and a folder must be told apart from a file. If
+SharePoint changes this, the offline tests would keep passing. This live test
+asks the real service the same questions in the caller's own OneDrive,
+addressed by the login name from the credentials (a [[...@ug.kth.se]]
+address, which the path translation turns into the site name). It asserts
+only booleans, so a failure prints no file names.
+<<transfer tests>>=
+@pytest.mark.live
+@pytest.mark.kth_live
+def test_live_exists_answers_match_replayed_ones():
+  username, _ = kthutils.credentials.get_credentials()
+  session = kthutils.onedrive.OneDriveSession()
+  documents = kthutils.onedrive.parse_sharepoint_folder_url(
+      f"kth-my:{username}/Documents")
+  missing = kthutils.onedrive.SharePointLocation(
+      site_url=documents.site_url,
+      server_relative_path=(documents.server_relative_path
+                            + "/kthutils-live-test-no-such-path"))
+  files = [item for item in session._list_folder_items(documents)
+           if item["kind"] == "file"]
+  if not files:
+    pytest.skip("the Documents library has no file at its top level")
+  existing_file = kthutils.onedrive.SharePointLocation(
+      site_url=documents.site_url,
+      server_relative_path=files[0]["server_relative_path"])
+
+  assert session._exists(documents, "Folder") is True
+  assert session._exists(documents, "File") is False
+  assert session._exists(missing, "Folder") is False
+  assert session._exists(missing, "File") is False
+  assert session._exists(existing_file, "File") is True
+  assert session._exists(existing_file, "Folder") is False
 @
 
 Page publishing follows the same authenticated-session pattern as uploads,
@@ -2138,6 +2283,7 @@ def test_get_by_url_requests_sharepoint_value_endpoint(monkeypatch):
 
 def test_put_by_url_requests_digest_then_upload(monkeypatch):
   fake_http = FakeHTTPSession([
+      FakeResponse(status_code=404),
       FakeResponse(json_data={
           "d": {
               "GetContextWebInformation": {
@@ -2164,6 +2310,16 @@ def test_put_by_url_requests_digest_then_upload(monkeypatch):
   session.put_by_url(site_file_url, b"payload", overwrite=False)
 
   assert fake_http.requests == [{
+      "method": "GET",
+      "url": (
+          "https://kth.sharepoint.com/sites/example/_api/web/"
+          "GetFileByServerRelativeUrl('"
+          "/sites/example/Shared Documents/Plans/Exam memo.pdf')/Exists"),
+      "headers": {"Accept": "application/json;odata=verbose"},
+      "params": None,
+      "json": None,
+      "data": None,
+  }, {
       "method": "POST",
       "url": "https://kth.sharepoint.com/sites/example/_api/contextinfo",
       "headers": {"Accept": "application/json;odata=verbose"},
@@ -2182,6 +2338,92 @@ def test_put_by_url_requests_digest_then_upload(monkeypatch):
       "json": None,
       "data": b"payload",
   }]
+@
+
+When the destination is an existing folder, the upload lands inside it under
+the given name, and an explicit file name still wins when no such folder
+exists. An existing file stops the upload before anything is sent.
+<<transfer tests>>=
+def upload_session(monkeypatch, responses):
+  fake_http = FakeHTTPSession(responses)
+  session = kthutils.onedrive.OneDriveSession(session=fake_http,
+                                              username="alice",
+                                              password="secret")
+  monkeypatch.setattr(kthutils.onedrive.weblogin.microsoft,
+                      "MicrosoftLogin",
+                      FakeMicrosoftLogin)
+  monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
+                      "SAMLlogin",
+                      FakeSAMLlogin)
+  monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
+                      "UGlogin",
+                      FakeUGlogin)
+  return session, fake_http
+
+
+DIGEST_RESPONSE = FakeResponse(json_data={
+    "d": {"GetContextWebInformation": {"FormDigestValue": "digest-value"}}
+})
+
+
+def test_put_by_url_into_existing_folder(monkeypatch):
+  session, fake_http = upload_session(monkeypatch, [
+      FakeResponse(json_data={"d": {"Exists": True}}),
+      DIGEST_RESPONSE,
+      FakeResponse(),
+  ])
+
+  session.put_by_url(site_folder_url, b"payload",
+                     overwrite=True, name="memo.txt")
+
+  assert fake_http.requests[0]["url"] == (
+      "https://kth.sharepoint.com/sites/example/_api/web/"
+      "GetFolderByServerRelativeUrl('"
+      "/sites/example/Shared Documents/Plans')/Exists")
+  assert fake_http.requests[-1]["url"] == (
+      "https://kth.sharepoint.com/sites/example/_api/web/"
+      "GetFolderByServerRelativeUrl('"
+      "/sites/example/Shared Documents/Plans')/"
+      "Files/add(url='memo.txt',overwrite=true)")
+
+
+def test_put_by_url_to_file_path_ignores_name(monkeypatch):
+  session, fake_http = upload_session(monkeypatch, [
+      FakeResponse(json_data={"d": {"Exists": False}}),
+      DIGEST_RESPONSE,
+      FakeResponse(),
+  ])
+
+  session.put_by_url(site_file_url, b"payload",
+                     overwrite=True, name="local.pdf")
+
+  assert fake_http.requests[-1]["url"] == (
+      "https://kth.sharepoint.com/sites/example/_api/web/"
+      "GetFolderByServerRelativeUrl('"
+      "/sites/example/Shared Documents/Plans')/"
+      "Files/add(url='Exam memo.pdf',overwrite=true)")
+
+
+def test_put_by_url_rejects_site_root_without_asking(monkeypatch):
+  session, fake_http = upload_session(monkeypatch, [])
+
+  with pytest.raises(ValueError, match="not a site root"):
+    session.put_by_url("kth:example", b"payload", name="memo.txt")
+
+  assert fake_http.requests == []
+
+
+def test_put_by_url_refuses_to_overwrite_existing_file(monkeypatch):
+  session, fake_http = upload_session(monkeypatch, [
+      FakeResponse(json_data={"d": {"Exists": True}}),
+      FakeResponse(json_data={"d": {"Exists": True}}),
+  ])
+
+  with pytest.raises(FileExistsError, match="memo.txt already exists"):
+    session.put_by_url(site_folder_url, b"payload", name="memo.txt")
+
+  assert [request["method"] for request in fake_http.requests] == \
+      ["GET", "GET"]
 
 
 def test_list_by_url_requests_sharepoint_list_view_endpoint(monkeypatch):
@@ -2585,6 +2827,9 @@ url_arg = typer.Argument(help="SharePoint URL or server-relative path to a "
                                "file.")
 folder_url_arg = typer.Argument(help="SharePoint URL or server-relative path "
                                      "to a folder.")
+upload_url_arg = typer.Argument(help="SharePoint URL or server-relative path "
+                                     "to the destination file or to an "
+                                     "existing folder.")
 site_url_arg = typer.Argument(help="SharePoint site URL, shorthand, or "
                                    "server-relative path.")
 output_arg = typer.Argument(help="Local output path. Defaults to the remote "
@@ -2600,7 +2845,9 @@ html_path_arg = typer.Argument(help="Local HTML file to publish.",
                                readable=True,
                                resolve_path=True)
 overwrite_opt = typer.Option("--overwrite/--no-overwrite",
-                             help="Replace an existing remote file.")
+                             help="Replace an existing remote file. By "
+                                  "default an existing file stops the "
+                                  "upload.")
 long_opt = typer.Option("-l",
                         "--long",
                         help="Show size and modification time when available.")
@@ -2702,17 +2949,29 @@ def cli_folders(url: Annotated[str, folder_url_arg],
   print(f"{total_dirs} directories")
 @
 
-Uploads still only need the local bytes plus the remote URL.
+Uploads pass the local file name along so that, like [[cp]], an existing
+folder as destination keeps that name. Overwriting must be asked for: a
+refused upload is easy to redo with [[--overwrite]], while a replaced file
+on OneDrive is not easy to get back.
 <<command definitions>>=
 @cli.command(name="put")
 def cli_put(local_path: Annotated[pathlib.Path, local_path_arg],
-            url: Annotated[str, url_arg],
-            overwrite: Annotated[bool, overwrite_opt] = True):
-  """Upload a local file to OneDrive or SharePoint."""
+            url: Annotated[str, upload_url_arg],
+            overwrite: Annotated[bool, overwrite_opt] = False):
+  """Upload a local file to OneDrive or SharePoint.
+
+  If the destination is an existing folder, the file keeps its local name
+  inside it.
+  """
   logger.debug("Reading local upload payload from %s", local_path)
-  OneDriveSession().put_by_url(url,
-                               local_path.read_bytes(),
-                               overwrite=overwrite)
+  try:
+    OneDriveSession().put_by_url(url,
+                                 local_path.read_bytes(),
+                                 overwrite=overwrite,
+                                 name=local_path.name)
+  except FileExistsError as err:
+    logger.error("%s; use --overwrite to replace it", err)
+    raise typer.Exit(code=1)
 @
 
 Page publishing derives reasonable defaults from the HTML file name, but it
@@ -2769,10 +3028,11 @@ def test_cli_put_reads_local_file(monkeypatch, tmp_path):
   local_path.write_bytes(b"hello")
 
   class FakeOneDriveSession:
-    def put_by_url(self, url, data, overwrite=True):
+    def put_by_url(self, url, data, overwrite=False, name=None):
       uploaded["url"] = url
       uploaded["data"] = data
       uploaded["overwrite"] = overwrite
+      uploaded["name"] = name
 
   monkeypatch.setattr(kthutils.onedrive,
                       "OneDriveSession",
@@ -2782,15 +3042,34 @@ def test_cli_put_reads_local_file(monkeypatch, tmp_path):
                       lambda: "https://kth-my.sharepoint.com")
 
   result = runner.invoke(onedrive_cli,
-                         ["put", str(local_path), personal_file_path,
-                          "--no-overwrite"])
+                         ["put", str(local_path), personal_file_path])
 
   assert result.exit_code == 0
   assert uploaded == {
       "url": personal_file_path,
       "data": b"hello",
       "overwrite": False,
+      "name": "memo.txt",
   }
+
+
+def test_cli_put_reports_existing_file(monkeypatch, tmp_path):
+  local_path = tmp_path / "memo.txt"
+  local_path.write_bytes(b"hello")
+
+  class FakeOneDriveSession:
+    def put_by_url(self, url, data, overwrite=False, name=None):
+      raise FileExistsError("/sites/example/Plans/memo.txt already exists")
+
+  monkeypatch.setattr(kthutils.onedrive,
+                      "OneDriveSession",
+                      lambda: FakeOneDriveSession())
+
+  result = runner.invoke(onedrive_cli,
+                         ["put", str(local_path), site_folder_url])
+
+  assert result.exit_code == 1
+  assert isinstance(result.exception, SystemExit)
 
 
 def test_cli_ls_prints_type_and_name(monkeypatch):
