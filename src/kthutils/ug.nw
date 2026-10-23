@@ -77,6 +77,8 @@ pytestmark = [pytest.mark.live, pytest.mark.kth_live]
 def ug(kth_session):
   return kth_session(kthutils.ug.UGsession)
 
+<<test helpers>>
+
 <<test functions>>
 @
 
@@ -628,14 +630,90 @@ def cli_remove_members(group_regex: str = group_regex_arg,
 
 \subsection{Tests}
 
-We can test this by adding and removing a user from a group.
-<<test functions>>=
-def test_add_group_members():
-  group = ug.add_group_members(["u13aecix"], "u2i9xt3r")
-  assert "u13aecix" in group["members"]
+We test adding and removing by adding a user to a real group and removing
+them again.
+This writes to UG, so the test is marked [[mutates]] and runs only with
+[[make -C tests live-writes]].
+Both methods replace the \emph{whole} member list with a set computed from the
+list they just read.
+A bug in either, or someone editing the group at the same moment, could
+therefore drop members that the test never meant to touch.
+The test is built so that it cannot harm the group:
+\begin{description}
+\item[No group by default] The group and the member come from the
+  environment variables [[KTHUTILS_TEST_UG_GROUP]] (a group's KTH ID) and
+  [[KTHUTILS_TEST_UG_MEMBER]] (a username), which are never committed.
+  Without them, the test is skipped.
+\item[Never an existing member] If the member already belongs to the group,
+  the test is skipped, since removing them would change the group.
+\item[Everyone kept] After each step the test requires that everyone who was
+  a member before still is.
+\item[An independent record] The record of who was a member is not taken
+  through the methods under test.
+  It is the [[members]] list of the group object itself, from
+  [[list_editable_groups]].
+  [[list_editable_groups]] caches its answer in the session, so the fixture
+  clears that cache before every read; otherwise the teardown would see the
+  members as they were before the test and repair nothing.
+  If [[list_group_members]] disagrees with that list---it might page its
+  results or include indirect members---the test is skipped.
+  Otherwise the methods under test would compute their member sets from an
+  incomplete listing and could drop members while the test passed.
+\item[Repair in teardown] Whatever happened, the fixture writes back the
+  members it finds without the test member, together with everyone who was
+  a member before.
+  It does so with one [[set_group_members]] call, which writes exactly the
+  list it is given, rather than with the add and remove methods under test.
+  So a member the test added is removed, and a member who went missing comes
+  back.
+\end{description}
+A dedicated sandbox group is the best target; any group that the caller
+administers works, since the test leaves it as it found it.
+The assertions test named booleans rather than comparing the sets directly,
+because pytest prints both sides of a failed comparison: a failure prints no
+one's KTH ID.
+<<test helpers>>=
+def direct_member_kthids(ug, group_kthid):
+  ug.cache.clear()
+  for group in ug.list_editable_groups():
+    if group["kthid"] == group_kthid:
+      return set(group["members"])
+  pytest.skip("the test group is not editable by the caller")
 
-def test_remove_group_members():
-  group = ug.remove_group_members(["u13aecix"], "u2i9xt3r")
-  assert "u13aecix" not in group["members"]
+
+@pytest.fixture
+def ug_group_and_new_member(ug):
+  group = os.environ.get("KTHUTILS_TEST_UG_GROUP")
+  username = os.environ.get("KTHUTILS_TEST_UG_MEMBER")
+  if not group or not username:
+    pytest.skip("set KTHUTILS_TEST_UG_GROUP and KTHUTILS_TEST_UG_MEMBER")
+  member = ug.usernames_to_kthids([username])[0]
+  before = direct_member_kthids(ug, group)
+  listed = {user["kthid"] for user in ug.list_group_members(group)}
+  if listed != before:
+    pytest.skip("list_group_members disagrees with the group's members")
+  if member in before:
+    pytest.skip("the test member already belongs to the group")
+
+  yield group, member, before
+
+  now = direct_member_kthids(ug, group)
+  repaired = (now - {member}) | before
+  if repaired != now:
+    ug.set_group_members(repaired, group)
+<<test functions>>=
+@pytest.mark.mutates
+def test_add_and_remove_group_member(ug, ug_group_and_new_member):
+  group, member, before = ug_group_and_new_member
+
+  added = set(ug.add_group_members([member], group)["members"])
+  everyone_kept = before <= added
+  member_added = member in added
+  assert everyone_kept, "adding dropped existing members"
+  assert member_added, "the member was not added"
+
+  removed = set(ug.remove_group_members([member], group)["members"])
+  restored = removed == before == direct_member_kthids(ug, group)
+  assert restored, "removing did not give back the original members"
 @
 
