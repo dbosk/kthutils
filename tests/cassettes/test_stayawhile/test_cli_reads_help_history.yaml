@@ -1,0 +1,47 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.32.4
+    method: GET
+    uri: https://queue.eecs.kth.se/api/my_help_history
+  response:
+    body:
+      string: '[{"duration_secs": 44, "ended_at": "2026-08-24T07:45:28.085310Z", "help":
+        true, "helper": "Person-c51996", "queue": "Prgi", "started_at": "2026-08-24T07:44:43.130152Z"},
+        {"duration_secs": 140, "ended_at": "2026-03-27T13:39:56.480787Z", "help":
+        true, "helper": "Person-c51996", "queue": "DD2520", "started_at": "2026-03-27T13:37:36.186293Z"},
+        {"duration_secs": 134, "ended_at": "2026-03-27T13:35:31.472194Z", "help":
+        true, "helper": "Person-c51996", "queue": "DD2520", "started_at": "2026-03-27T13:33:16.855042Z"},
+        {"duration_secs": 12, "ended_at": "2026-03-27T13:24:14.132607Z", "help": true,
+        "helper": "Person-c51996", "queue": "DD2520", "started_at": "2026-03-27T13:24:01.643405Z"}]'
+    headers:
+      Accept-Ranges:
+      - bytes
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '684'
+      Content-Type:
+      - application/json
+      Date:
+      - Fri, 23 Oct 2026 09:43:46 GMT
+      Server:
+      - nginx/1.18.0 (Ubuntu)
+      permissions-policy:
+      - interest-cohort=()
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+    status:
+      code: 200
+      message: OK
+version: 1

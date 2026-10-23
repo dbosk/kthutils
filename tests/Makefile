@@ -16,23 +16,29 @@ TESTS=	$(shell ${find_tests})
 
 DEBUG=
 
-NONLIVE_MARK_EXPR=	-m "not live"
-LIVE_MARK_EXPR=		-m "live"
+PYTESTFLAGS=
 
-# The default test run is hermetic: it deselects tests marked `live`, so it
-# never touches KTH or other external services. Use the `live`/`kth_live`
-# targets to run the end-to-end tests against the real services.
+# The default run replays recorded responses with the network blocked
+# (`addopts` in pyproject.toml); tests marked `live` are skipped.  The
+# live targets talk to the real services: they need the KTH credentials,
+# STAYAWHILE_API_KEY and, since recorded tests re-record into a temporary
+# directory to check for drift, TEST_PSEUDONYM_KEY.  Tests marked
+# `mutates` change a service and run only with `live-writes`.
 .PHONY: all
 all: $(foreach files,${TESTS},$(shell echo ${files} | cut -d: -f1))
-	poetry run pytest ${NONLIVE_MARK_EXPR} $(if ${DEBUG},--pdb)
+	poetry run pytest ${PYTESTFLAGS} $(if ${DEBUG},--pdb)
 
 .PHONY: live
 live: $(foreach files,${TESTS},$(shell echo ${files} | cut -d: -f1))
-	poetry run pytest ${LIVE_MARK_EXPR} $(if ${DEBUG},--pdb)
+	poetry run pytest --live ${PYTESTFLAGS} $(if ${DEBUG},--pdb)
+
+.PHONY: live-writes
+live-writes: $(foreach files,${TESTS},$(shell echo ${files} | cut -d: -f1))
+	poetry run pytest --live --live-writes ${PYTESTFLAGS} $(if ${DEBUG},--pdb)
 
 .PHONY: kth_live
 kth_live: $(foreach files,${TESTS},$(shell echo ${files} | cut -d: -f1))
-	poetry run pytest -m "kth_live" $(if ${DEBUG},--pdb)
+	poetry run pytest --live -m "kth_live" ${PYTESTFLAGS} $(if ${DEBUG},--pdb)
 
 $(foreach files,${TESTS},$(eval $(call def_target, ${files})))
 

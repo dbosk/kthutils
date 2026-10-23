@@ -1,0 +1,212 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.32.4
+    method: GET
+    uri: https://queue.eecs.kth.se/api/queues/Prgi/assistants
+  response:
+    body:
+      string: '[{"created_at": "2026-03-02T22:51:23.010838Z", "id": 5639, "provider_id":
+        "user-13fd5a", "realname": "Person-591519", "username": "user-71bbe7"}, {"created_at":
+        "2026-03-02T22:51:23.010838Z", "id": 9199, "provider_id": "user-a83c9d", "realname":
+        "Person-f2c530", "username": "user-36ef47"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 289, "provider_id": "user-3565ed", "realname": "Person-589a19", "username":
+        "user-e86e80"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 1039,
+        "provider_id": "user-059874", "realname": "Person-a6b55c", "username": "user-ecc494"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 2406, "provider_id": "user-405fcb",
+        "realname": "Person-eeaa53", "username": "user-e14e4f"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 12844, "provider_id": "user-d69bed", "realname": "Person-e87d56", "username":
+        "user-4d40db"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 8905,
+        "provider_id": "user-744153", "realname": "Person-35d178", "username": "user-863da6"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 9620, "provider_id": "user-c1d181",
+        "realname": "Person-f22a4e", "username": "user-47bb92"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 1041, "provider_id": "user-2282d3", "realname": "Person-539e6f", "username":
+        "user-6f1a51"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 5255,
+        "provider_id": "user-295ea5", "realname": "Person-611f2a", "username": "user-9773e8"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 5087, "provider_id": "user-4ec841",
+        "realname": "Person-a89e01", "username": "user-997351"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 1339, "provider_id": "user-9cbae2", "realname": "Person-319b30", "username":
+        "user-c05267"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 12557,
+        "provider_id": "user-271ead", "realname": "Person-6b9779", "username": "user-6c33d9"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 563, "provider_id": "user-a8c7e8",
+        "realname": "Person-02cc3b", "username": "user-ce8a86"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 3124, "provider_id": "user-372c46", "realname": "Person-7d1562", "username":
+        "user-4c28f0"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 6005,
+        "provider_id": "user-f7e2f2", "realname": "Person-41ca50", "username": "user-bcc52e"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 6973, "provider_id": "user-183589",
+        "realname": "Person-ed6900", "username": "user-ef54cc"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 2573, "provider_id": "user-c20059", "realname": "Person-14c2af", "username":
+        "user-59b635"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 2543,
+        "provider_id": "user-8968f2", "realname": "Person-bb3517", "username": "user-abe474"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 3534, "provider_id": "user-cd0355",
+        "realname": "Person-fd9e75", "username": "user-152b66"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 3430, "provider_id": "user-8f9f8e", "realname": "Person-39c46b", "username":
+        "user-92607f"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 2380,
+        "provider_id": "user-c3b387", "realname": "Person-7a7187", "username": "user-c65696"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 2267, "provider_id": "user-29a65e",
+        "realname": "Person-ef853c", "username": "user-d7d2b1"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 135, "provider_id": "user-ae32bf", "realname": "Person-ed5913", "username":
+        "user-44a463"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 5274,
+        "provider_id": "user-cd25a5", "realname": "Person-b6805f", "username": "user-b432ee"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 9343, "provider_id": "user-3a4abe",
+        "realname": "Person-9de5c1", "username": "user-ba6cfa"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 2868, "provider_id": "user-eee52a", "realname": "Person-69570e", "username":
+        "user-8153cb"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 2687,
+        "provider_id": "user-ab0923", "realname": "Person-eb41d4", "username": "user-1bb449"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 7023, "provider_id": "user-a695a7",
+        "realname": "Person-64fdc4", "username": "user-4960cb"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 3194, "provider_id": "user-955766", "realname": "Person-282f91", "username":
+        "user-dcd97a"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 4581,
+        "provider_id": "user-b43d17", "realname": "Person-714017", "username": "user-c2715d"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 2127, "provider_id": "user-4e1f55",
+        "realname": "Person-6d3a47", "username": "user-34478b"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 4174, "provider_id": "user-f5e0e4", "realname": "Person-6f224d", "username":
+        "user-662e1c"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 2106,
+        "provider_id": "user-4a8a6e", "realname": "Person-3d7b83", "username": "user-46c175"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 2349, "provider_id": "user-0c3caa",
+        "realname": "Person-639f0a", "username": "user-908cbf"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 4330, "provider_id": "user-e754af", "realname": "Person-75b0b2", "username":
+        "user-1004d3"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 469, "provider_id":
+        "user-8ff8d4", "realname": "Person-91a9fb", "username": "user-5ecc96"}, {"created_at":
+        "2026-03-02T22:51:23.010838Z", "id": 578, "provider_id": "user-9cb84f", "realname":
+        "Person-9bea94", "username": "user-b775fc"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 1227, "provider_id": "user-c471cd", "realname": "Person-0606c5", "username":
+        "user-7edc60"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 11741,
+        "provider_id": "user-942a91", "realname": "Person-d3bd31", "username": "user-a05e41"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 11123, "provider_id":
+        "user-0729a0", "realname": "Person-1497bf", "username": "user-fb90a9"}, {"created_at":
+        "2026-03-02T22:51:23.010838Z", "id": 11187, "provider_id": "user-d3ca8f",
+        "realname": "Person-013c1a", "username": "user-758f34"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 8311, "provider_id": "user-695586", "realname": "Person-86d455", "username":
+        "user-3ced98"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 8870,
+        "provider_id": "user-e2fda7", "realname": "Person-36ca17", "username": "user-197652"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 1111, "provider_id": "user-719b03",
+        "realname": "Person-dd9988", "username": "user-e9f4b3"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 4971, "provider_id": "user-dc3941", "realname": "Person-1c3b56", "username":
+        "user-e47e67"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 1752,
+        "provider_id": "user-8c34a4", "realname": "Person-4ba3e3", "username": "user-7fb854"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 1155, "provider_id": "user-03b607",
+        "realname": "Person-5af2ea", "username": "user-caca84"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 13054, "provider_id": "user-982955", "realname": "Person-a484d5", "username":
+        "user-540823"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 7975,
+        "provider_id": "user-44d8ba", "realname": "Person-6e08f7", "username": "user-f743f1"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 12538, "provider_id":
+        "user-828555", "realname": "Person-6b408c", "username": "user-5678dc"}, {"created_at":
+        "2026-03-02T22:51:23.010838Z", "id": 9055, "provider_id": "user-b4dac9", "realname":
+        "Person-a01c02", "username": "user-a75a30"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 8261, "provider_id": "user-2489fe", "realname": "Person-701ebe", "username":
+        "user-b592ce"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 11413,
+        "provider_id": "user-095bd1", "realname": "Person-a2ed83", "username": "user-300ffd"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 6583, "provider_id": "user-efd4d8",
+        "realname": "Person-0f043b", "username": "user-f58961"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 7109, "provider_id": "user-69b639", "realname": "Person-64da70", "username":
+        "user-97026d"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 926, "provider_id":
+        "user-c7624f", "realname": "Person-2e62e0", "username": "user-578669"}, {"created_at":
+        "2026-03-02T22:51:23.010838Z", "id": 427, "provider_id": "user-3ee0d0", "realname":
+        "Person-171200", "username": "user-4e05c9"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 13772, "provider_id": "user-f32756", "realname": "Person-2fca0b", "username":
+        "user-c1a1a6"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 13763,
+        "provider_id": "user-5b7415", "realname": "Person-014df2", "username": "user-9ae56e"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 1078, "provider_id": "user-bdfdd8",
+        "realname": "Person-73e5f1", "username": "user-181632"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 811, "provider_id": "user-c44390", "realname": "Person-9ee215", "username":
+        "user-58b85e"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 935, "provider_id":
+        "user-cded5d", "realname": "Person-cfd6f9", "username": "user-60b7c4"}, {"created_at":
+        "2026-03-02T22:51:23.010838Z", "id": 1668, "provider_id": "user-1b2096", "realname":
+        "Person-a84483", "username": "user-367497"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 425, "provider_id": "user-4ce139", "realname": "Person-87d639", "username":
+        "user-2a7396"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 2289,
+        "provider_id": "user-525606", "realname": "Person-25ff00", "username": "user-d41407"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 5718, "provider_id": "user-2528dc",
+        "realname": "Person-1bf90e", "username": "user-7a62a4"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 5923, "provider_id": "user-381cb1", "realname": "Person-361f0d", "username":
+        "user-8b9b0d"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 6580,
+        "provider_id": "user-ad06ce", "realname": "Person-aeb2b2", "username": "user-39ef33"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 1679, "provider_id": "user-93188c",
+        "realname": "Person-0fb314", "username": "user-d8711a"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 2918, "provider_id": "user-9b55c9", "realname": "Person-c2b72c", "username":
+        "user-762504"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 2409,
+        "provider_id": "user-557a95", "realname": "Person-e63178", "username": "user-ea14a0"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 962, "provider_id": "user-15875c",
+        "realname": "Person-b02192", "username": "user-157ad0"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 1505, "provider_id": "user-e04db6", "realname": "Person-e911ae", "username":
+        "user-f45c56"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 8943,
+        "provider_id": "user-fd07e2", "realname": "Person-518d6b", "username": "user-7797e9"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 10697, "provider_id":
+        "user-f0d080", "realname": "Person-c14e90", "username": "user-b09025"}, {"created_at":
+        "2026-03-02T22:51:23.010838Z", "id": 6847, "provider_id": "user-243220", "realname":
+        "Person-b75281", "username": "user-55e4bc"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 4415, "provider_id": "user-d4f0a6", "realname": "Person-4636a4", "username":
+        "user-0d0395"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 5937,
+        "provider_id": "user-99c1fe", "realname": "Person-78b50c", "username": "user-8d9d19"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 13046, "provider_id":
+        "user-c59a3e", "realname": "Person-9b3b68", "username": "user-a1a4a2"}, {"created_at":
+        "2026-03-02T22:51:23.010838Z", "id": 8081, "provider_id": "user-5b521f", "realname":
+        "Person-defadd", "username": "user-3cb469"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 10629, "provider_id": "user-6cf1c3", "realname": "Person-bf67d6", "username":
+        "user-50711e"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 8367,
+        "provider_id": "user-674138", "realname": "Person-4035be", "username": "user-8028e2"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 8365, "provider_id": "user-5b2ebf",
+        "realname": "Person-7d8175", "username": "user-8155d7"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 11132, "provider_id": "user-e8c298", "realname": "Person-7a29e9", "username":
+        "user-951f38"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 7757,
+        "provider_id": "user-538511", "realname": "Person-9bae8d", "username": "user-a8170e"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 12502, "provider_id":
+        "user-e3e7fb", "realname": "Person-0189c7", "username": "user-7534b1"}, {"created_at":
+        "2026-03-02T22:51:23.010838Z", "id": 11159, "provider_id": "user-2c7bf4",
+        "realname": "Person-0b9236", "username": "user-02edf7"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 11925, "provider_id": "user-1edeaa", "realname": "Person-3d27c0", "username":
+        "user-0dc4ea"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 11863,
+        "provider_id": "user-935a9c", "realname": "Person-4d9174", "username": "user-9bd8dc"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 2450, "provider_id": "user-9ad0ff",
+        "realname": "Person-c04cf0", "username": "user-3462a1"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 10457, "provider_id": "user-be9d8e", "realname": "Person-57ad00", "username":
+        "user-539e1e"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 15964,
+        "provider_id": "user-a47029", "realname": "Person-c6c07f", "username": "user-7f6487"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 8581, "provider_id": "user-38f31b",
+        "realname": "Person-43d0f5", "username": "user-db13d2"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 16611, "provider_id": "user-f6b3bb", "realname": "Person-6a2f5e", "username":
+        "user-25c907"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 11276,
+        "provider_id": "user-98b045", "realname": "Person-213cc7", "username": "user-b5096b"},
+        {"created_at": "2026-03-02T22:51:23.010838Z", "id": 8182, "provider_id": "user-357595",
+        "realname": "Person-b7e187", "username": "user-2f3ff4"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 7309, "provider_id": "user-3e08d1", "realname": "Person-bb3208", "username":
+        "user-e7906d"}, {"created_at": "2026-03-02T22:51:23.010838Z", "id": 12998,
+        "provider_id": "user-2d9701", "realname": "Person-ce5596", "username": "user-ba2f4f"},
+        {"created_at": "2026-08-28T11:19:48.089347Z", "id": 17443, "provider_id":
+        "user-85e694", "realname": "Person-f87c01", "username": "user-e35820"}, {"created_at":
+        "2026-03-02T22:51:23.010838Z", "id": 14201, "provider_id": "user-228a36",
+        "realname": "Person-070005", "username": "user-a17bda"}, {"created_at": "2026-03-02T22:51:23.010838Z",
+        "id": 6502, "provider_id": "user-cf9502", "realname": "Person-67236f", "username":
+        "user-2152b8"}]'
+    headers:
+      Accept-Ranges:
+      - bytes
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '14804'
+      Content-Type:
+      - application/json
+      Date:
+      - Fri, 23 Oct 2026 09:43:46 GMT
+      Server:
+      - nginx/1.18.0 (Ubuntu)
+      permissions-policy:
+      - interest-cohort=()
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+    status:
+      code: 200
+      message: OK
+version: 1

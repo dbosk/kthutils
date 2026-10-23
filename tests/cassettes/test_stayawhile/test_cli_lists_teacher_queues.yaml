@@ -1,0 +1,50 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.32.4
+    method: GET
+    uri: https://queue.eecs.kth.se/api/queues/mine
+  response:
+    body:
+      string: '{"queues": [{"hiding": false, "id": 2, "info": "[redacted free text]",
+        "locked": true, "motd": "", "name": "INDA", "show_helper_to_assistants": false},
+        {"hiding": false, "id": 76, "info": "", "locked": true, "motd": "", "name":
+        "DD2520", "show_helper_to_assistants": true}, {"hiding": false, "id": 84,
+        "info": "[redacted free text]", "locked": false, "motd": "", "name": "DD1301",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 7, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "Prgi", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 71, "info": "[redacted free text]", "locked":
+        false, "motd": "", "name": "Prgm", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 1, "info": "[redacted free text]", "locked": true, "motd": "",
+        "name": "Tilda", "show_helper_to_assistants": false}]}'
+    headers:
+      Accept-Ranges:
+      - bytes
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '841'
+      Content-Type:
+      - application/json
+      Date:
+      - Fri, 23 Oct 2026 09:43:46 GMT
+      Server:
+      - nginx/1.18.0 (Ubuntu)
+      permissions-policy:
+      - interest-cohort=()
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+    status:
+      code: 200
+      message: OK
+version: 1

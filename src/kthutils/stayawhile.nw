@@ -66,8 +66,10 @@ import csv
 import datetime
 import json
 import pytest
+import re
 import types
 import typer.testing
+import weblogin
 import kthutils.stayawhile
 
 runner = typer.testing.CliRunner(mix_stderr=False)
@@ -516,6 +518,46 @@ class FakeUGlogin:
             and self.login_trigger_url == other.login_trigger_url)
 @
 
+\subsection{Recorded responses}\label{sec:recorded-responses}
+
+The fakes above answer with bodies that we wrote by hand, and such a body
+only encodes what we \emph{believe} the service returns.
+When the service differs, the code and its tests agree with each other and
+both are wrong.
+For the read endpoints we therefore also replay responses recorded from the
+real service.
+They live as cassettes in [[tests/cassettes/test_stayawhile]], written by
+[[pytest-recording]] with every person in them replaced by a keyed pseudonym
+([[tests/vcr_support.py]]).
+A test marked [[vcr]] replays its cassette offline by default.
+With [[make -C tests live]] the same test runs against the real service and
+the run reports whether the structure of the responses has drifted from the
+recording.
+Since one test body must pass in both modes, these tests assert properties
+that hold on any day's data, not exact values.
+
+The recorded session is a real [[StayawhileSession]]: only the network
+traffic is replayed.
+It authenticates with the API key, which [[service_token]] takes from
+[[STAYAWHILE_API_KEY]] when talking to the service and replaces by a dummy in
+replay, since cassettes contain no credentials.
+The queue is one that the maintainer teaches in, so that the token endpoints
+answer.
+<<test helpers>>=
+RECORDED_QUEUE = "Prgi"
+
+
+@pytest.fixture
+def recorded_session(service_token):
+  return kthutils.stayawhile.StayawhileSession(
+      api_key=service_token,
+      session=weblogin.AutologinSession([]))
+
+
+def parse_timestamp(text):
+  return datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+@
+
 <<test functions>>=
 def test_find_api_key_returns_none_when_not_configured(monkeypatch):
   monkeypatch.delenv("STAYAWHILE_API_KEY", raising=False)
@@ -771,10 +813,15 @@ def get_user(self):
 
 [[/api/queues]] is public and should work without triggering a browser login at
 all, so we pass [[use_auth=False]].
+The service wraps the list in an object, [[{"queues": [...]}]], as it does for
+the caller's own queues below.
+We return the list itself, which is what callers iterate over and what the
+CLI prints as a table; passed on wrapped, the whole list ended up as a single
+table cell.
 <<[[StayawhileSession]] methods>>=
 def list_queues(self):
   """Return all public queues."""
-  return self._request("GET", "/api/queues", use_auth=False)
+  return self._request("GET", "/api/queues", use_auth=False)["queues"]
 @
 
 \subsection{Teacher-facing metadata and presence}
@@ -797,7 +844,8 @@ The lock endpoint uses [[POST]] to lock and [[DELETE]] to unlock.
 <<[[StayawhileSession]] methods>>=
 def list_my_queues(self):
   """Return queues where the caller is a teacher."""
-  return self._request("GET", "/api/queues/mine", use_api_key=True)
+  return self._request("GET", "/api/queues/mine",
+                       use_api_key=True)["queues"]
 
 
 def list_teachers(self, queue):
@@ -857,8 +905,8 @@ def test_identity_queue_and_presence_requests():
       "ugkthid": "u1alice",
       "teacher_in": ["Queue"],
     }),
-    FakeResponse(json_data=[{"name": "Queue"}]),
-    FakeResponse(json_data=[{"name": "Queue"}]),
+    FakeResponse(json_data={"queues": [{"name": "Queue"}]}),
+    FakeResponse(json_data={"queues": [{"name": "Queue"}]}),
     FakeResponse(json_data=[{"username": "teacher1"}]),
     FakeResponse(json_data=[{"username": "teacher1"}]),
     FakeResponse(json_data={"checked_in": True}),
@@ -900,6 +948,26 @@ def test_identity_queue_and_presence_requests():
   assert fake_http.requests[5]["url"].endswith("/checkin")
   assert fake_http.requests[6]["method"] == "DELETE"
   assert fake_http.requests[6]["url"].endswith("/checkin")
+@
+
+The recorded responses (\cref{sec:recorded-responses}) show what the queue
+listings look like on the real service.
+Both methods should return the list of queues, and every queue the caller
+teaches in is also a public queue.
+<<test functions>>=
+@pytest.mark.vcr
+def test_queue_listings_return_the_queues(recorded_session):
+  public = recorded_session.list_queues()
+  mine = recorded_session.list_my_queues()
+
+  both_lists = isinstance(public, list) and isinstance(mine, list)
+  assert both_lists
+  all_named = all("name" in queue for queue in public + mine)
+  assert all_named
+  my_names = {queue["name"] for queue in mine}
+  teaches_recorded_queue = RECORDED_QUEUE in my_names
+  mine_are_public = my_names <= {queue["name"] for queue in public}
+  assert teaches_recorded_queue and mine_are_public
 
 
 def test_queue_lock_requests():
@@ -1188,13 +1256,13 @@ def normalize_booking(booking):
 
 <<test functions>>=
 def test_normalize_booking_uses_upload_names():
-  booking = {"id": 7, "provider_id": "u1abc123", "username": "janl4",
-             "realname": "Jan Li", "slot_time": "2026-10-05T11:15:00Z",
+  booking = {"id": 7, "provider_id": "u1abc123", "username": "tolvan",
+             "realname": "Tolvan Tolvansson", "slot_time": "2026-10-05T11:15:00Z",
              "help": False}
 
   assert kthutils.stayawhile.normalize_booking(booking) == {
-    "id": 7, "ugkthid": "u1abc123", "username": "janl4",
-    "realname": "Jan Li", "slot_time": "2026-10-05T11:15:00Z",
+    "id": 7, "ugkthid": "u1abc123", "username": "tolvan",
+    "realname": "Tolvan Tolvansson", "slot_time": "2026-10-05T11:15:00Z",
     "entry_type": "present",
   }
   assert kthutils.stayawhile.normalize_booking(
@@ -1282,16 +1350,45 @@ def test_clear_bookings_can_return_deleted_count():
 
   assert sa.clear_bookings("Queue") == {"deleted": 2}
 
+@
 
-def test_token_endpoint_requires_api_key(monkeypatch):
+A token endpoint without a configured key must fail with the helpful error
+from [[get_api_key]] before any request is sent.
+The test relies on the isolation fixtures in [[tests/conftest.py]]: the
+environment lacks [[STAYAWHILE_API_KEY]] and the configuration is empty, so
+the real lookup finds no key.
+It once replaced [[get_api_key]] by a stub instead, after the session had
+been created; but the constructor had already looked up the developer's own
+key, the stub was never reached, and the test failed on every machine with a
+key configured.
+<<test functions>>=
+def test_token_endpoint_requires_api_key():
   fake_http = FakeHTTPSession()
   sa = kthutils.stayawhile.StayawhileSession(session=fake_http)
 
-  monkeypatch.setattr(kthutils.stayawhile, "get_api_key",
-                      lambda: (_ for _ in ()).throw(ValueError("missing token")))
-
-  with pytest.raises(ValueError, match="missing token"):
+  with pytest.raises(ValueError, match="Stay A While API key"):
     sa.list_bookings("Queue")
+  assert fake_http.requests == []
+@
+
+Against the recorded responses, every booking identifies its student by UG
+KTH ID, carries a slot time in ISO format, which the rest of the module
+parses, and is either a presentation or a help booking.
+<<test functions>>=
+@pytest.mark.vcr
+def test_list_bookings_recorded(recorded_session):
+  bookings = recorded_session.list_bookings(RECORDED_QUEUE)
+
+  is_list = isinstance(bookings, list)
+  assert is_list
+  students_identified = all(booking["ugkthid"] for booking in bookings)
+  slot_times_parse = all(parse_timestamp(booking["slot_time"])
+                         for booking in bookings)
+  known_entry_types = all(booking["entry_type"] in {"present", "help"}
+                          for booking in bookings)
+  ids_unique = len({booking["id"] for booking in bookings}) == len(bookings)
+  assert students_identified and slot_times_parse
+  assert known_entry_types and ids_unique
 @
 
 We can also verify that the JSON loader accepts files.
@@ -1321,7 +1418,7 @@ Canvas authentication, and its output is a stable, documented table, so the
 shell pipe is all the integration we need.
 That output looks like this (tab-separated):
 \begin{verbatim}
-Redovisning  2026-10-05 13:15  2026-10-05 13:30  Jan Li (janl4@kth.se)
+Redovisning  2026-10-05 13:15  2026-10-05 13:30  Tolvan Tolvansson (tolvan@kth.se)
 Redovisning  2026-10-05 14:15  2026-10-05 14:30  4 free slots
 \end{verbatim}
 Each booked student gets a row of their own, with the participant written as
@@ -1345,7 +1442,7 @@ CANVASLMS_FREE_SLOTS = re.compile(r"^\d+ free slots?$")
 import re
 @
 
-Canvas login ids at KTH are e-mail addresses such as [[janl4@kth.se]],
+Canvas login ids at KTH are e-mail addresses such as [[tolvan@kth.se]],
 while Stay A While accepts a plain username (or a [[u1...]] id) in the
 [[ugkthid]] field and resolves it against its user table and LDAP.
 We therefore strip the [[@kth.se]] domain.
@@ -1362,7 +1459,7 @@ A start time we cannot parse raises [[ValueError]]: a booking at the wrong
 time is worse than no booking, so we stop rather than skip it.
 <<helper functions>>=
 def canvaslms_login_to_username(login):
-  """Return the KTH username for a Canvas `login`, such as `janl4@kth.se`."""
+  """Return the KTH username for a Canvas `login`, such as `tolvan@kth.se`."""
   if login.endswith(KTH_LOGIN_DOMAIN):
     return login[:-len(KTH_LOGIN_DOMAIN)]
   return login
@@ -1423,11 +1520,11 @@ equal the printed ones; the zone conversion itself is tested together with
 <<test functions>>=
 def test_parse_canvaslms_bookings(caplog):
   lines = [
-    "Redovisning\t2026-10-05 13:15\t2026-10-05 13:30\tJan Li (janl4@kth.se)",
+    "Redovisning\t2026-10-05 13:15\t2026-10-05 13:30\tTolvan Tolvansson (tolvan@kth.se)",
     "Redovisning\t2026-10-05 14:00\t2026-10-05 14:15\t2 free slots",
     "Redovisning\t2026-10-05 14:15\t2026-10-05 14:30\t1 free slot",
     "Redovisning\t2026-10-05 14:30\t2026-10-05 14:45"
-      "\tAnna (Nisse) Berg (aberg@kth.se)\tcourse_1\tprgi26",
+      "\tAnna (Nisse) Tian Tiansson (tian@kth.se)\tcourse_1\tprgi26",
     "Redovisning\t2026-10-05 14:45\t2026-10-05 15:00"
       "\tExternal Student (ext@example.com)",
     "",
@@ -1437,8 +1534,8 @@ def test_parse_canvaslms_bookings(caplog):
   bookings = kthutils.stayawhile.parse_canvaslms_bookings(lines)
 
   assert bookings == [
-    {"ugkthid": "janl4", "slot_time": "2026-10-05T13:15:00Z"},
-    {"ugkthid": "aberg", "slot_time": "2026-10-05T14:30:00Z"},
+    {"ugkthid": "tolvan", "slot_time": "2026-10-05T13:15:00Z"},
+    {"ugkthid": "tian", "slot_time": "2026-10-05T14:30:00Z"},
     {"ugkthid": "ext@example.com", "slot_time": "2026-10-05T14:45:00Z"},
   ]
   assert "garbage" in caplog.text
@@ -1448,19 +1545,19 @@ def test_parse_canvaslms_bookings(caplog):
 def test_parse_canvaslms_bookings_rejects_bad_time():
   with pytest.raises(ValueError):
     kthutils.stayawhile.parse_canvaslms_bookings(
-        ["Redovisning\tsoon\tlater\tJan Li (janl4@kth.se)"])
+        ["Redovisning\tsoon\tlater\tTolvan Tolvansson (tolvan@kth.se)"])
 
 
 def test_load_bookings_reads_canvaslms_file(tmp_path):
   bookings_file = tmp_path / "bookings.tsv"
   bookings_file.write_text(
       "Redovisning\t2026-10-05 13:15\t2026-10-05 13:30"
-      "\tJan Li (janl4@kth.se)\n")
+      "\tTolvan Tolvansson (tolvan@kth.se)\n")
 
   bookings = kthutils.stayawhile.load_bookings(str(bookings_file),
                                                "canvaslms")
 
-  assert [booking["ugkthid"] for booking in bookings] == ["janl4"]
+  assert [booking["ugkthid"] for booking in bookings] == ["tolvan"]
 @
 
 
@@ -1591,6 +1688,20 @@ def test_assistant_requests():
   assert fake_http.requests[0]["url"].endswith("/assistants")
   assert fake_http.requests[1]["json"] == {"username": "abcde"}
   assert fake_http.requests[2]["url"].endswith("/assistants/abcde")
+@
+
+On the recorded responses, each assistant is listed once, by a non-empty
+username, which is what [[stayawhile assistants rm]] takes.
+<<test functions>>=
+@pytest.mark.vcr
+def test_list_assistants_recorded(recorded_session):
+  assistants = recorded_session.list_assistants(RECORDED_QUEUE)
+
+  usernames = [assistant["username"] for assistant in assistants]
+  any_assistants = len(usernames) > 0
+  every_username_given = all(usernames)
+  usernames_unique = len(usernames) == len(set(usernames))
+  assert any_assistants and every_username_given and usernames_unique
 @
 
 
@@ -2321,6 +2432,27 @@ def test_log_requests_and_filters():
     "from": "2026-01-01",
     "until": "2026-03-27",
   }
+@
+
+The recorded help history holds consistent intervals: a finished help
+session never ends before it starts, and its [[duration_secs]] agrees with
+its timestamps to within a second.
+<<test functions>>=
+@pytest.mark.vcr
+def test_help_history_recorded(recorded_session):
+  history = recorded_session.get_my_help_history()
+
+  is_list = isinstance(history, list)
+  help_flags_are_booleans = all(isinstance(entry["help"], bool)
+                                for entry in history)
+  assert is_list and help_flags_are_booleans
+  finished = [entry for entry in history if entry["ended_at"]]
+  for entry in finished:
+    started = parse_timestamp(entry["started_at"])
+    ended = parse_timestamp(entry["ended_at"])
+    assert ended >= started
+    assert abs((ended - started).total_seconds()
+               - entry["duration_secs"]) <= 1
 @
 
 
@@ -3719,19 +3851,6 @@ class FakeStayawhileSession:
       "ugkthid": "u1alice",
     }
 
-  def list_queues(self):
-    self.calls.append(("list_queues",))
-    return [{
-      "name": "Queue",
-      "open": True,
-    }]
-
-  def list_my_queues(self):
-    self.calls.append(("list_my_queues",))
-    return [{
-      "name": "Queue",
-    }]
-
   def lock_queue(self, queue):
     self.calls.append(("lock_queue", queue))
 
@@ -3762,8 +3881,8 @@ class FakeStayawhileSession:
     self.calls.append(("list_bookings", queue))
     return [{
       "ugkthid": "u1abc123",
-      "username": "janl4",
-      "realname": "Jan Li",
+      "username": "tolvan",
+      "realname": "Tolvan Tolvansson",
       "slot_time": "2026-03-01T10:00:00Z",
       "entry_type": "help",
     }]
@@ -3784,10 +3903,6 @@ class FakeStayawhileSession:
       "slot_time": "2026-03-01T10:00:00Z",
       "entry_type": "help",
     }
-
-  def list_assistants(self, queue):
-    self.calls.append(("list_assistants", queue))
-    return [{"username": "abcde"}]
 
   def list_checked_in(self, queue):
     self.calls.append(("list_checked_in", queue))
@@ -3892,16 +4007,6 @@ class FakeStayawhileSession:
       "queue_length": 3,
       "help_amount": 1,
       "present_amount": 2,
-    }]
-
-  def get_my_help_history(self):
-    self.calls.append(("get_my_help_history",))
-    return [{
-      "queue": "Queue",
-      "started_at": "2026-03-01T10:00:00Z",
-      "ended_at": "2026-03-01T10:10:00Z",
-      "duration_secs": 600,
-      "helper": "Ada Lovelace",
     }]
 
   def get_ta_checkins(self, queue, username, from_time=None, until=None):
@@ -4124,7 +4229,7 @@ def test_cli_lists_bookings_without_ugkthid(monkeypatch):
   assert result.exit_code == 0
   assert parse_csv_output(result.stdout) == [
     ["username", "realname", "slot_time", "entry_type"],
-    ["janl4", "Jan Li", "2026-03-01 10:00", "help"],
+    ["tolvan", "Tolvan Tolvansson", "2026-03-01 10:00", "help"],
   ]
 
 
@@ -4138,36 +4243,51 @@ def test_cli_lists_bookings_with_ugkthid(monkeypatch):
   assert result.exit_code == 0
   assert parse_csv_output(result.stdout) == [
     ["username", "realname", "ugkthid", "slot_time", "entry_type"],
-    ["janl4", "Jan Li", "u1abc123", "2026-03-01 10:00", "help"],
+    ["tolvan", "Tolvan Tolvansson", "u1abc123", "2026-03-01 10:00", "help"],
   ]
 
+@
 
-def test_cli_lists_public_queues(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+The commands that only read go through a real session on recorded responses
+(\cref{sec:recorded-responses}) instead of [[FakeStayawhileSession]].
+That fake answered with what we believed each method returns, and it was
+wrong for the queue listings: the real methods returned the service's
+wrapper object, and [[queues ls]] and [[queues mine]] printed the whole list
+as one table cell, while the tests against the fake passed.
+We still replace [[get_session]], which would build a session from the
+developer's configuration and KTH login, by the recorded session; everything
+below it, from the method to the HTTP request, is the real code.
+The same tests run against the live service with [[make -C tests live]], so
+the assertions check the shape of the table and test named booleans, which
+print no one's data when they fail.
+<<test functions>>=
+@pytest.mark.vcr
+def test_cli_lists_public_queues(monkeypatch, recorded_session):
+  monkeypatch.setattr(kthutils.stayawhile, "get_session",
+                      lambda: recorded_session)
 
   result = runner.invoke(kthutils.stayawhile.cli, ["queues", "ls"])
 
   assert result.exit_code == 0
-  assert fake.calls == [("list_queues",)]
-  assert parse_csv_output(result.stdout) == [
-    ["name", "open"],
-    ["Queue", "true"],
-  ]
+  header, *rows = parse_csv_output(result.stdout)
+  assert "name" in header and "locked" in header
+  names = [row[header.index("name")] for row in rows]
+  assert len(names) > 1 and RECORDED_QUEUE in names
 
 
-def test_cli_lists_teacher_queues(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+@pytest.mark.vcr
+def test_cli_lists_teacher_queues(monkeypatch, recorded_session):
+  monkeypatch.setattr(kthutils.stayawhile, "get_session",
+                      lambda: recorded_session)
 
   result = runner.invoke(kthutils.stayawhile.cli, ["queues", "mine"])
 
   assert result.exit_code == 0
-  assert fake.calls == [("list_my_queues",)]
-  assert parse_csv_output(result.stdout) == [
-    ["name"],
-    ["Queue"],
-  ]
+  header, *rows = parse_csv_output(result.stdout)
+  assert "name" in header
+  names = [row[header.index("name")] for row in rows]
+  assert RECORDED_QUEUE in names
+  assert len(names) == len(set(names))
 
 
 def test_cli_locks_and_unlocks_queues(monkeypatch):
@@ -4224,9 +4344,9 @@ def test_cli_upserts_bookings(monkeypatch, tmp_path):
 
 
 CANVASLMS_BOOKINGS = (
-  "Redovisning\t2026-10-05 13:15\t2026-10-05 13:30\tJan Li (janl4@kth.se)\n"
+  "Redovisning\t2026-10-05 13:15\t2026-10-05 13:30\tTolvan Tolvansson (tolvan@kth.se)\n"
   "Redovisning\t2026-10-05 14:00\t2026-10-05 14:15\t2 free slots\n"
-  "Redovisning\t2026-10-07 13:15\t2026-10-07 13:30\tOlle B (ob@kth.se)\n"
+  "Redovisning\t2026-10-07 13:15\t2026-10-07 13:30\tElvan Elvansson (elvan@kth.se)\n"
 )
 
 
@@ -4243,7 +4363,7 @@ def test_cli_upserts_canvaslms_bookings_from_stdin(monkeypatch):
   assert len(fake.calls) == 1
   name, queue, bookings = fake.calls[0]
   assert (name, queue) == ("upsert_bookings", "Queue")
-  assert [booking["ugkthid"] for booking in bookings] == ["janl4", "ob"]
+  assert [booking["ugkthid"] for booking in bookings] == ["tolvan", "elvan"]
   assert all("entry_type" not in booking for booking in bookings)
 @
 
@@ -4361,18 +4481,21 @@ def test_cli_reads_my_booking_with_ugkthid(monkeypatch):
   ]
 
 
-def test_cli_lists_assistants(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+@pytest.mark.vcr
+def test_cli_lists_assistants(monkeypatch, recorded_session):
+  monkeypatch.setattr(kthutils.stayawhile, "get_session",
+                      lambda: recorded_session)
 
-  result = runner.invoke(kthutils.stayawhile.cli, ["assistants", "ls", "Queue"])
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["assistants", "ls", RECORDED_QUEUE])
 
   assert result.exit_code == 0
-  assert fake.calls == [("list_assistants", "Queue")]
-  assert parse_csv_output(result.stdout) == [
-    ["username"],
-    ["abcde"],
-  ]
+  header, *rows = parse_csv_output(result.stdout)
+  assert header == ["username"]
+  any_rows = len(rows) > 0
+  one_nonempty_username_per_row = all(len(row) == 1 and row[0]
+                                      for row in rows)
+  assert any_rows and one_nonempty_username_per_row
 
 
 def test_cli_adds_and_removes_assistants_silently(monkeypatch):
@@ -4725,27 +4848,30 @@ def test_cli_reads_interaction_log(monkeypatch):
   ]]
 
 
-def test_cli_reads_help_history(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+@pytest.mark.vcr
+def test_cli_reads_help_history(monkeypatch, recorded_session):
+  monkeypatch.setattr(kthutils.stayawhile, "get_session",
+                      lambda: recorded_session)
 
   result = runner.invoke(kthutils.stayawhile.cli, ["history", "mine"])
 
   assert result.exit_code == 0
-  assert fake.calls == [("get_my_help_history",)]
-  assert parse_csv_output(result.stdout) == [[
-    "queue",
-    "started_at",
-    "ended_at",
-    "duration_secs",
-    "helper",
-  ], [
-    "Queue",
-    "2026-03-01 10:00",
-    "2026-03-01 10:10",
-    "10m",
-    "Ada Lovelace",
-  ]]
+  header, *rows = parse_csv_output(result.stdout)
+  assert header == [
+    "queue", "started_at", "ended_at", "duration_secs", "helper",
+  ]
+  timestamp = re.compile(r"(\d{4}-\d{2}-\d{2} )?\d{2}:\d{2}")
+  duration = re.compile(r"(\d+h)?( ?\d+m)?( ?\d+s)?")
+  complete_rows = all(len(row) == len(header) for row in rows)
+  started_formatted = all(timestamp.fullmatch(row[1]) for row in rows)
+  ended_formatted_or_empty = all(not row[2] or timestamp.fullmatch(row[2])
+                                 for row in rows)
+  durations_formatted = all(row[3] and duration.fullmatch(row[3])
+                            for row in rows if row[2])
+  any_rows = len(rows) > 0
+  assert any_rows and complete_rows
+  assert started_formatted and ended_formatted_or_empty
+  assert durations_formatted
 
 
 def test_cli_reads_queue_log_without_ugkthid(monkeypatch):

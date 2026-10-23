@@ -94,7 +94,7 @@ onedrive_cli = kthutils.onedrive.cli
 
 <<test setup>>=
 copy_link_url = (
-    "https://kth-my.sharepoint.com/:w:/r/personal/annamam_ug_kth_se/"
+    "https://kth-my.sharepoint.com/:w:/r/personal/tolvan_ug_kth_se/"
     "Documents/TCS/TCS%20Webpage%20updates/"
     "Draft%20descriptions%20for%20research%20areas.docx"
 )
@@ -136,11 +136,11 @@ doc2_url = (
     "?sourcedoc=%7B1234-5678%7D&file=Exam%20memo.pdf&action=default"
 )
 personal_file_path = (
-    "/personal/annamam_ug_kth_se/Documents/TCS/TCS%20Webpage%20updates/"
+    "/personal/tolvan_ug_kth_se/Documents/TCS/TCS%20Webpage%20updates/"
     "Draft%20descriptions%20for%20research%20areas.docx"
 )
 personal_folder_path = (
-    "/personal/annamam_ug_kth_se/Documents/TCS/TCS%20Webpage%20updates/"
+    "/personal/tolvan_ug_kth_se/Documents/TCS/TCS%20Webpage%20updates/"
 )
 @
 
@@ -320,15 +320,15 @@ This helper object is easy to verify without any HTTP at all.
 <<location tests>>=
 def test_sharepoint_location_splits_file_and_folder():
   location = kthutils.onedrive.SharePointLocation(
-      site_url="https://kth-my.sharepoint.com/personal/annamam_ug_kth_se",
+      site_url="https://kth-my.sharepoint.com/personal/tolvan_ug_kth_se",
       server_relative_path=(
-          "/personal/annamam_ug_kth_se/Documents/TCS/plan.docx"))
+          "/personal/tolvan_ug_kth_se/Documents/TCS/plan.docx"))
 
   assert location.name == "plan.docx"
   assert location.folder_relative_path == \
-      "/personal/annamam_ug_kth_se/Documents/TCS"
+      "/personal/tolvan_ug_kth_se/Documents/TCS"
   assert location.library_relative_path == \
-      "/personal/annamam_ug_kth_se/Documents"
+      "/personal/tolvan_ug_kth_se/Documents"
 @
 
 
@@ -507,6 +507,11 @@ translation already added it.
 Let's verify that every variant ends up as the same folder. A student
 account and a staff account ([[jdoe@kth.se]]) differ only in the domain
 part, and an encoded team-site path also benefits from the decoding step.
+A personal path needs the base URL. The tests set it the way a user would,
+through [[ONEDRIVE_BASE_URL]], rather than replacing [[get_base_url]], so the
+real lookup runs too. The variable is otherwise removed from every test's
+environment ([[tests/conftest.py]]), so the developer's own setting cannot
+change the result.
 <<personal path tests>>=
 @pytest.mark.parametrize("path", [
     "/personal/jdoe@ug.kth.se/Documents/Amanuenses TCS",
@@ -518,9 +523,7 @@ part, and an encoded team-site path also benefits from the decoding step.
     "/personal/jdoe_ug_kth_se/Documents/Amanuenses%20TCS",
 ])
 def test_parse_personal_path_variants(monkeypatch, path):
-  monkeypatch.setattr(kthutils.onedrive,
-                      "get_base_url",
-                      lambda: "https://kth-my.sharepoint.com")
+  monkeypatch.setenv("ONEDRIVE_BASE_URL", "https://kth-my.sharepoint.com")
   location = kthutils.onedrive.parse_sharepoint_folder_url(path)
 
   assert location.site_url == \
@@ -716,9 +719,9 @@ def test_parse_sharepoint_copy_link():
   location = kthutils.onedrive.parse_sharepoint_url(copy_link_url)
 
   assert location.site_url == \
-      "https://kth-my.sharepoint.com/personal/annamam_ug_kth_se"
+      "https://kth-my.sharepoint.com/personal/tolvan_ug_kth_se"
   assert location.server_relative_path == (
-      "/personal/annamam_ug_kth_se/Documents/TCS/"
+      "/personal/tolvan_ug_kth_se/Documents/TCS/"
       "TCS Webpage updates/"
       "Draft descriptions for research areas.docx")
 
@@ -732,15 +735,13 @@ def test_parse_sharepoint_site_url():
 
 
 def test_parse_sharepoint_server_relative_path(monkeypatch):
-  monkeypatch.setattr(kthutils.onedrive,
-                      "get_base_url",
-                      lambda: "https://kth-my.sharepoint.com")
+  monkeypatch.setenv("ONEDRIVE_BASE_URL", "https://kth-my.sharepoint.com")
   location = kthutils.onedrive.parse_sharepoint_url(personal_file_path)
 
   assert location.site_url == \
-      "https://kth-my.sharepoint.com/personal/annamam_ug_kth_se"
+      "https://kth-my.sharepoint.com/personal/tolvan_ug_kth_se"
   assert location.server_relative_path == (
-      "/personal/annamam_ug_kth_se/Documents/TCS/"
+      "/personal/tolvan_ug_kth_se/Documents/TCS/"
       "TCS Webpage updates/"
       "Draft descriptions for research areas.docx")
 
@@ -756,12 +757,12 @@ def test_parse_sharepoint_kth_shorthand_file_url():
 
 def test_parse_sharepoint_kth_my_shorthand_file_url():
   location = kthutils.onedrive.parse_sharepoint_url(
-      "kth-my:annamam_ug_kth_se/Documents/TCS/plan.docx")
+      "kth-my:tolvan_ug_kth_se/Documents/TCS/plan.docx")
 
   assert location.site_url == \
-      "https://kth-my.sharepoint.com/personal/annamam_ug_kth_se"
+      "https://kth-my.sharepoint.com/personal/tolvan_ug_kth_se"
   assert location.server_relative_path == \
-      "/personal/annamam_ug_kth_se/Documents/TCS/plan.docx"
+      "/personal/tolvan_ug_kth_se/Documents/TCS/plan.docx"
 
 
 def test_parse_sharepoint_shared_file_url():
@@ -965,16 +966,14 @@ def test_parse_sharepoint_folder_copy_link():
 
 
 def test_parse_sharepoint_folder_server_relative_path(monkeypatch):
-  monkeypatch.setattr(kthutils.onedrive,
-                      "get_base_url",
-                      lambda: "https://kth-my.sharepoint.com")
+  monkeypatch.setenv("ONEDRIVE_BASE_URL", "https://kth-my.sharepoint.com")
   location = kthutils.onedrive.parse_sharepoint_folder_url(
       personal_folder_path)
 
   assert location.site_url == \
-      "https://kth-my.sharepoint.com/personal/annamam_ug_kth_se"
+      "https://kth-my.sharepoint.com/personal/tolvan_ug_kth_se"
   assert location.server_relative_path == \
-      "/personal/annamam_ug_kth_se/Documents/TCS/TCS Webpage updates"
+      "/personal/tolvan_ug_kth_se/Documents/TCS/TCS Webpage updates"
 
 
 def test_parse_sharepoint_bare_site_name_folder_url():
@@ -986,12 +985,12 @@ def test_parse_sharepoint_bare_site_name_folder_url():
 
 def test_parse_sharepoint_bare_personal_name_folder_url():
   location = kthutils.onedrive.parse_sharepoint_folder_url(
-      "annamam_ug_kth_se")
+      "tolvan_ug_kth_se")
 
   assert location.site_url == \
-      "https://kth-my.sharepoint.com/personal/annamam_ug_kth_se"
+      "https://kth-my.sharepoint.com/personal/tolvan_ug_kth_se"
   assert location.server_relative_path == \
-      "/personal/annamam_ug_kth_se"
+      "/personal/tolvan_ug_kth_se"
 
 
 def test_parse_sharepoint_allitems_id_url():
@@ -1289,9 +1288,9 @@ def test_download_url_uses_server_relative_path():
   location = kthutils.onedrive.parse_sharepoint_url(copy_link_url)
 
   assert kthutils.onedrive._download_url(location) == (
-      "https://kth-my.sharepoint.com/personal/annamam_ug_kth_se/_api/"
+      "https://kth-my.sharepoint.com/personal/tolvan_ug_kth_se/_api/"
       "web/GetFileByServerRelativeUrl('"
-      "/personal/annamam_ug_kth_se/Documents/TCS/"
+      "/personal/tolvan_ug_kth_se/Documents/TCS/"
       "TCS Webpage updates/"
       "Draft descriptions for research areas.docx')/$value")
 
@@ -2261,17 +2260,15 @@ def test_get_by_url_requests_sharepoint_value_endpoint(monkeypatch):
   monkeypatch.setattr(kthutils.onedrive.weblogin.kth,
                       "UGlogin",
                       FakeUGlogin)
-  monkeypatch.setattr(kthutils.onedrive,
-                      "get_base_url",
-                      lambda: "https://kth-my.sharepoint.com")
+  monkeypatch.setenv("ONEDRIVE_BASE_URL", "https://kth-my.sharepoint.com")
 
   assert session.get_by_url(personal_file_path) == b"report"
   assert fake_http.requests == [{
       "method": "GET",
       "url": (
-          "https://kth-my.sharepoint.com/personal/annamam_ug_kth_se/_api/"
+          "https://kth-my.sharepoint.com/personal/tolvan_ug_kth_se/_api/"
           "web/GetFileByServerRelativeUrl('"
-          "/personal/annamam_ug_kth_se/Documents/TCS/"
+          "/personal/tolvan_ug_kth_se/Documents/TCS/"
           "TCS Webpage updates/"
           "Draft descriptions for research areas.docx')/$value"),
       "headers": None,
@@ -3010,9 +3007,7 @@ def test_cli_get_uses_remote_name_by_default(monkeypatch, tmp_path):
   monkeypatch.setattr(kthutils.onedrive,
                       "OneDriveSession",
                       lambda: FakeOneDriveSession())
-  monkeypatch.setattr(kthutils.onedrive,
-                      "get_base_url",
-                      lambda: "https://kth-my.sharepoint.com")
+  monkeypatch.setenv("ONEDRIVE_BASE_URL", "https://kth-my.sharepoint.com")
   monkeypatch.chdir(tmp_path)
 
   result = runner.invoke(onedrive_cli, ["get", personal_file_path])
@@ -3037,9 +3032,7 @@ def test_cli_put_reads_local_file(monkeypatch, tmp_path):
   monkeypatch.setattr(kthutils.onedrive,
                       "OneDriveSession",
                       lambda: FakeOneDriveSession())
-  monkeypatch.setattr(kthutils.onedrive,
-                      "get_base_url",
-                      lambda: "https://kth-my.sharepoint.com")
+  monkeypatch.setenv("ONEDRIVE_BASE_URL", "https://kth-my.sharepoint.com")
 
   result = runner.invoke(onedrive_cli,
                          ["put", str(local_path), personal_file_path])
@@ -3081,9 +3074,7 @@ def test_cli_ls_prints_type_and_name(monkeypatch):
   monkeypatch.setattr(kthutils.onedrive,
                       "OneDriveSession",
                       lambda: FakeOneDriveSession())
-  monkeypatch.setattr(kthutils.onedrive,
-                      "get_base_url",
-                      lambda: "https://kth-my.sharepoint.com")
+  monkeypatch.setenv("ONEDRIVE_BASE_URL", "https://kth-my.sharepoint.com")
 
   result = runner.invoke(onedrive_cli, ["ls", personal_folder_path])
 
@@ -3134,9 +3125,7 @@ def test_cli_ls_long_prints_detailed_listing(monkeypatch):
   monkeypatch.setattr(kthutils.onedrive,
                       "OneDriveSession",
                       lambda: FakeOneDriveSession())
-  monkeypatch.setattr(kthutils.onedrive,
-                      "get_base_url",
-                      lambda: "https://kth-my.sharepoint.com")
+  monkeypatch.setenv("ONEDRIVE_BASE_URL", "https://kth-my.sharepoint.com")
 
   result = runner.invoke(onedrive_cli, ["ls", "--long", personal_folder_path])
 
@@ -3187,33 +3176,33 @@ def test_cli_tree_prints_recursive_listing(monkeypatch):
       return [(
           "TCS Webpage updates",
           kthutils.onedrive.SharePointLocation(
-              site_url="https://kth-my.sharepoint.com/personal/annamam_ug_kth_se",
-              server_relative_path="/personal/annamam_ug_kth_se/Documents/TCS/TCS Webpage updates"),
+              site_url="https://kth-my.sharepoint.com/personal/tolvan_ug_kth_se",
+              server_relative_path="/personal/tolvan_ug_kth_se/Documents/TCS/TCS Webpage updates"),
       )]
 
     def _list_folder_items(self, location):
       mapping = {
-          "/personal/annamam_ug_kth_se/Documents/TCS/TCS Webpage updates": [
+          "/personal/tolvan_ug_kth_se/Documents/TCS/TCS Webpage updates": [
               {
                   "kind": "dir",
                   "name": "Plans",
-                  "server_relative_path": "/personal/annamam_ug_kth_se/Documents/TCS/TCS Webpage updates/Plans",
+                  "server_relative_path": "/personal/tolvan_ug_kth_se/Documents/TCS/TCS Webpage updates/Plans",
                   "size": None,
                   "modified": None,
               },
               {
                   "kind": "file",
                   "name": "Overview.pdf",
-                  "server_relative_path": "/personal/annamam_ug_kth_se/Documents/TCS/TCS Webpage updates/Overview.pdf",
+                  "server_relative_path": "/personal/tolvan_ug_kth_se/Documents/TCS/TCS Webpage updates/Overview.pdf",
                   "size": 1536,
                   "modified": None,
               },
           ],
-          "/personal/annamam_ug_kth_se/Documents/TCS/TCS Webpage updates/Plans": [
+          "/personal/tolvan_ug_kth_se/Documents/TCS/TCS Webpage updates/Plans": [
               {
                   "kind": "file",
                   "name": "Exam memo.pdf",
-                  "server_relative_path": "/personal/annamam_ug_kth_se/Documents/TCS/TCS Webpage updates/Plans/Exam memo.pdf",
+                  "server_relative_path": "/personal/tolvan_ug_kth_se/Documents/TCS/TCS Webpage updates/Plans/Exam memo.pdf",
                   "size": 2048,
                   "modified": None,
               },
@@ -3224,9 +3213,7 @@ def test_cli_tree_prints_recursive_listing(monkeypatch):
   monkeypatch.setattr(kthutils.onedrive,
                       "OneDriveSession",
                       lambda: FakeOneDriveSession())
-  monkeypatch.setattr(kthutils.onedrive,
-                      "get_base_url",
-                      lambda: "https://kth-my.sharepoint.com")
+  monkeypatch.setenv("ONEDRIVE_BASE_URL", "https://kth-my.sharepoint.com")
 
   result = runner.invoke(onedrive_cli, ["tree", personal_folder_path])
 
@@ -3247,54 +3234,52 @@ def test_cli_folders_prints_folder_tree_only(monkeypatch):
       return [(
           "TCS Webpage updates",
           kthutils.onedrive.SharePointLocation(
-              site_url="https://kth-my.sharepoint.com/personal/annamam_ug_kth_se",
-              server_relative_path="/personal/annamam_ug_kth_se/Documents/TCS/TCS Webpage updates"),
+              site_url="https://kth-my.sharepoint.com/personal/tolvan_ug_kth_se",
+              server_relative_path="/personal/tolvan_ug_kth_se/Documents/TCS/TCS Webpage updates"),
       )]
 
     def _list_folder_items(self, location):
       mapping = {
-          "/personal/annamam_ug_kth_se/Documents/TCS/TCS Webpage updates": [
+          "/personal/tolvan_ug_kth_se/Documents/TCS/TCS Webpage updates": [
               {
                   "kind": "dir",
                   "name": "Forms",
-                  "server_relative_path": "/personal/annamam_ug_kth_se/Documents/TCS/TCS Webpage updates/Forms",
+                  "server_relative_path": "/personal/tolvan_ug_kth_se/Documents/TCS/TCS Webpage updates/Forms",
                   "size": None,
                   "modified": None,
               },
               {
                   "kind": "dir",
                   "name": "Plans",
-                  "server_relative_path": "/personal/annamam_ug_kth_se/Documents/TCS/TCS Webpage updates/Plans",
+                  "server_relative_path": "/personal/tolvan_ug_kth_se/Documents/TCS/TCS Webpage updates/Plans",
                   "size": None,
                   "modified": None,
               },
               {
                   "kind": "file",
                   "name": "Overview.pdf",
-                  "server_relative_path": "/personal/annamam_ug_kth_se/Documents/TCS/TCS Webpage updates/Overview.pdf",
+                  "server_relative_path": "/personal/tolvan_ug_kth_se/Documents/TCS/TCS Webpage updates/Overview.pdf",
                   "size": 1536,
                   "modified": None,
               },
           ],
-          "/personal/annamam_ug_kth_se/Documents/TCS/TCS Webpage updates/Plans": [
+          "/personal/tolvan_ug_kth_se/Documents/TCS/TCS Webpage updates/Plans": [
               {
                   "kind": "dir",
                   "name": "Archive",
-                  "server_relative_path": "/personal/annamam_ug_kth_se/Documents/TCS/TCS Webpage updates/Plans/Archive",
+                  "server_relative_path": "/personal/tolvan_ug_kth_se/Documents/TCS/TCS Webpage updates/Plans/Archive",
                   "size": None,
                   "modified": None,
               },
           ],
-          "/personal/annamam_ug_kth_se/Documents/TCS/TCS Webpage updates/Plans/Archive": [],
+          "/personal/tolvan_ug_kth_se/Documents/TCS/TCS Webpage updates/Plans/Archive": [],
       }
       return mapping[location.server_relative_path]
 
   monkeypatch.setattr(kthutils.onedrive,
                       "OneDriveSession",
                       lambda: FakeOneDriveSession())
-  monkeypatch.setattr(kthutils.onedrive,
-                      "get_base_url",
-                      lambda: "https://kth-my.sharepoint.com")
+  monkeypatch.setenv("ONEDRIVE_BASE_URL", "https://kth-my.sharepoint.com")
 
   result = runner.invoke(onedrive_cli, ["folders", personal_folder_path])
 
