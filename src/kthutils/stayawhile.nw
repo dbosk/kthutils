@@ -66,6 +66,7 @@ import csv
 import datetime
 import json
 import pytest
+import re
 import types
 import typer.testing
 import weblogin
@@ -3850,19 +3851,6 @@ class FakeStayawhileSession:
       "ugkthid": "u1alice",
     }
 
-  def list_queues(self):
-    self.calls.append(("list_queues",))
-    return [{
-      "name": "Queue",
-      "open": True,
-    }]
-
-  def list_my_queues(self):
-    self.calls.append(("list_my_queues",))
-    return [{
-      "name": "Queue",
-    }]
-
   def lock_queue(self, queue):
     self.calls.append(("lock_queue", queue))
 
@@ -3915,10 +3903,6 @@ class FakeStayawhileSession:
       "slot_time": "2026-03-01T10:00:00Z",
       "entry_type": "help",
     }
-
-  def list_assistants(self, queue):
-    self.calls.append(("list_assistants", queue))
-    return [{"username": "abcde"}]
 
   def list_checked_in(self, queue):
     self.calls.append(("list_checked_in", queue))
@@ -4023,16 +4007,6 @@ class FakeStayawhileSession:
       "queue_length": 3,
       "help_amount": 1,
       "present_amount": 2,
-    }]
-
-  def get_my_help_history(self):
-    self.calls.append(("get_my_help_history",))
-    return [{
-      "queue": "Queue",
-      "started_at": "2026-03-01T10:00:00Z",
-      "ended_at": "2026-03-01T10:10:00Z",
-      "duration_secs": 600,
-      "helper": "Ada Lovelace",
     }]
 
   def get_ta_checkins(self, queue, username, from_time=None, until=None):
@@ -4272,33 +4246,48 @@ def test_cli_lists_bookings_with_ugkthid(monkeypatch):
     ["janl4", "Jan Li", "u1abc123", "2026-03-01 10:00", "help"],
   ]
 
+@
 
-def test_cli_lists_public_queues(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+The commands that only read go through a real session on recorded responses
+(\cref{sec:recorded-responses}) instead of [[FakeStayawhileSession]].
+That fake answered with what we believed each method returns, and it was
+wrong for the queue listings: the real methods returned the service's
+wrapper object, and [[queues ls]] and [[queues mine]] printed the whole list
+as one table cell, while the tests against the fake passed.
+We still replace [[get_session]], which would build a session from the
+developer's configuration and KTH login, by the recorded session; everything
+below it, from the method to the HTTP request, is the real code.
+The same tests run against the live service with [[make -C tests live]], so
+the assertions check the shape of the table and test named booleans, which
+print no one's data when they fail.
+<<test functions>>=
+@pytest.mark.vcr
+def test_cli_lists_public_queues(monkeypatch, recorded_session):
+  monkeypatch.setattr(kthutils.stayawhile, "get_session",
+                      lambda: recorded_session)
 
   result = runner.invoke(kthutils.stayawhile.cli, ["queues", "ls"])
 
   assert result.exit_code == 0
-  assert fake.calls == [("list_queues",)]
-  assert parse_csv_output(result.stdout) == [
-    ["name", "open"],
-    ["Queue", "true"],
-  ]
+  header, *rows = parse_csv_output(result.stdout)
+  assert "name" in header and "locked" in header
+  names = [row[header.index("name")] for row in rows]
+  assert len(names) > 1 and RECORDED_QUEUE in names
 
 
-def test_cli_lists_teacher_queues(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+@pytest.mark.vcr
+def test_cli_lists_teacher_queues(monkeypatch, recorded_session):
+  monkeypatch.setattr(kthutils.stayawhile, "get_session",
+                      lambda: recorded_session)
 
   result = runner.invoke(kthutils.stayawhile.cli, ["queues", "mine"])
 
   assert result.exit_code == 0
-  assert fake.calls == [("list_my_queues",)]
-  assert parse_csv_output(result.stdout) == [
-    ["name"],
-    ["Queue"],
-  ]
+  header, *rows = parse_csv_output(result.stdout)
+  assert "name" in header
+  names = [row[header.index("name")] for row in rows]
+  assert RECORDED_QUEUE in names
+  assert len(names) == len(set(names))
 
 
 def test_cli_locks_and_unlocks_queues(monkeypatch):
@@ -4492,18 +4481,21 @@ def test_cli_reads_my_booking_with_ugkthid(monkeypatch):
   ]
 
 
-def test_cli_lists_assistants(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+@pytest.mark.vcr
+def test_cli_lists_assistants(monkeypatch, recorded_session):
+  monkeypatch.setattr(kthutils.stayawhile, "get_session",
+                      lambda: recorded_session)
 
-  result = runner.invoke(kthutils.stayawhile.cli, ["assistants", "ls", "Queue"])
+  result = runner.invoke(kthutils.stayawhile.cli,
+                         ["assistants", "ls", RECORDED_QUEUE])
 
   assert result.exit_code == 0
-  assert fake.calls == [("list_assistants", "Queue")]
-  assert parse_csv_output(result.stdout) == [
-    ["username"],
-    ["abcde"],
-  ]
+  header, *rows = parse_csv_output(result.stdout)
+  assert header == ["username"]
+  any_rows = len(rows) > 0
+  one_nonempty_username_per_row = all(len(row) == 1 and row[0]
+                                      for row in rows)
+  assert any_rows and one_nonempty_username_per_row
 
 
 def test_cli_adds_and_removes_assistants_silently(monkeypatch):
@@ -4856,27 +4848,30 @@ def test_cli_reads_interaction_log(monkeypatch):
   ]]
 
 
-def test_cli_reads_help_history(monkeypatch):
-  fake = FakeStayawhileSession()
-  monkeypatch.setattr(kthutils.stayawhile, "get_session", lambda: fake)
+@pytest.mark.vcr
+def test_cli_reads_help_history(monkeypatch, recorded_session):
+  monkeypatch.setattr(kthutils.stayawhile, "get_session",
+                      lambda: recorded_session)
 
   result = runner.invoke(kthutils.stayawhile.cli, ["history", "mine"])
 
   assert result.exit_code == 0
-  assert fake.calls == [("get_my_help_history",)]
-  assert parse_csv_output(result.stdout) == [[
-    "queue",
-    "started_at",
-    "ended_at",
-    "duration_secs",
-    "helper",
-  ], [
-    "Queue",
-    "2026-03-01 10:00",
-    "2026-03-01 10:10",
-    "10m",
-    "Ada Lovelace",
-  ]]
+  header, *rows = parse_csv_output(result.stdout)
+  assert header == [
+    "queue", "started_at", "ended_at", "duration_secs", "helper",
+  ]
+  timestamp = re.compile(r"(\d{4}-\d{2}-\d{2} )?\d{2}:\d{2}")
+  duration = re.compile(r"(\d+h)?( ?\d+m)?( ?\d+s)?")
+  complete_rows = all(len(row) == len(header) for row in rows)
+  started_formatted = all(timestamp.fullmatch(row[1]) for row in rows)
+  ended_formatted_or_empty = all(not row[2] or timestamp.fullmatch(row[2])
+                                 for row in rows)
+  durations_formatted = all(row[3] and duration.fullmatch(row[3])
+                            for row in rows if row[2])
+  any_rows = len(rows) > 0
+  assert any_rows and complete_rows
+  assert started_formatted and ended_formatted_or_empty
+  assert durations_formatted
 
 
 def test_cli_reads_queue_log_without_ugkthid(monkeypatch):

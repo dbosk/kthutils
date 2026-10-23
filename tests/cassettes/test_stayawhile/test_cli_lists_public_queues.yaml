@@ -1,0 +1,309 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - python-requests/2.32.4
+    method: GET
+    uri: https://queue.eecs.kth.se/api/queues
+  response:
+    body:
+      string: '{"queues": [{"hiding": true, "id": 46, "info": "[redacted free text]",
+        "locked": true, "motd": "", "name": "SF1547", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 174, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "IX1500", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 146, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "prgemk-B", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 100, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "DD2423", "show_helper_to_assistants": false}, {"hiding": false, "id": 186,
+        "info": "[redacted free text]", "locked": true, "motd": "", "name": "IL2212
+        Embedded Software", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 63, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "DD2325", "show_helper_to_assistants": false}, {"hiding": false, "id": 109,
+        "info": "[redacted free text]", "locked": true, "motd": "", "name": "DD2419",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 86, "info": "[redacted
+        free text]", "locked": false, "motd": "", "name": "DM1595", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 171, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "DD2452", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 4, "info": "[redacted free text]", "locked": false, "motd": "",
+        "name": "Prge", "show_helper_to_assistants": false}, {"hiding": false, "id":
+        139, "info": "[redacted free text]", "locked": true, "motd": "", "name": "ID1021",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 89, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "SF2561", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 23, "info": "[redacted free text]", "locked":
+        false, "motd": "", "name": "DD1385", "show_helper_to_assistants": false},
+        {"hiding": false, "id": 52, "info": "", "locked": true, "motd": "", "name":
+        "SF1694", "show_helper_to_assistants": false}, {"hiding": false, "id": 14,
+        "info": "[redacted free text]", "locked": false, "motd": "", "name": "Allmanhandledning",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 110, "info":
+        "[redacted free text]", "locked": true, "motd": "", "name": "DM1588", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 83, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "SF2565", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 138, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "Elektroteknik", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 190, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "EL1010", "show_helper_to_assistants": false}, {"hiding": true,
+        "id": 111, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "DD2356", "show_helper_to_assistants": false}, {"hiding": true, "id": 64,
+        "info": "[redacted free text]", "locked": true, "motd": "", "name": "SF1668",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 39, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "Dtek", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 10, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "Cprog", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 155, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "CB2442", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 150, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "DD2413", "show_helper_to_assistants": false}, {"hiding": false, "id": 183,
+        "info": "[redacted free text]", "locked": true, "motd": "", "name": "EmbodiedAI",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 1, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "Tilda", "show_helper_to_assistants":
+        false}, {"hiding": true, "id": 119, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "SF1916", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 177, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "Prgh (TINTE)", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 121, "info": "", "locked": true, "motd": "", "name": "MF2030",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 71, "info": "[redacted
+        free text]", "locked": false, "motd": "", "name": "Prgm", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 21, "info": "", "locked": true, "motd": "",
+        "name": "SF1546", "show_helper_to_assistants": false}, {"hiding": false, "id":
+        114, "info": "[redacted free text]", "locked": true, "motd": "", "name": "DD2380",
+        "show_helper_to_assistants": false}, {"hiding": true, "id": 43, "info": "",
+        "locked": true, "motd": "", "name": "Comp", "show_helper_to_assistants": false},
+        {"hiding": true, "id": 11, "info": "", "locked": false, "motd": "", "name":
+        "Test Queue Please Ignore", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 3, "info": "[redacted free text]", "locked": true, "motd": "",
+        "name": "Prgo", "show_helper_to_assistants": false}, {"hiding": false, "id":
+        153, "info": "[redacted free text]", "locked": true, "motd": "", "name": "Semant",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 29, "info": "[redacted
+        free text]", "locked": false, "motd": "", "name": "ADK", "show_helper_to_assistants":
+        true}, {"hiding": false, "id": 105, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "MF2103", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 134, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "EP1200", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 161, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "DD1328", "show_helper_to_assistants": false}, {"hiding": false, "id": 96,
+        "info": "[redacted free text]", "locked": true, "motd": "", "name": "DT2140",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 33, "info": "[redacted
+        free text]", "locked": false, "motd": "", "name": "SF1522", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 55, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "IR", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 192, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "AG1421", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 170, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "EL2820", "show_helper_to_assistants": false}, {"hiding": false, "id": 19,
+        "info": "", "locked": true, "motd": "", "name": "Intnet", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 88, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "ID1018", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 187, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "IS1200", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 185, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "IL2206 Embedded Systems", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 182, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "SF1923", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 17, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "Prgmed", "show_helper_to_assistants": false}, {"hiding": false, "id": 116,
+        "info": "[redacted free text]", "locked": true, "motd": "", "name": "SF1552",
+        "show_helper_to_assistants": false}, {"hiding": true, "id": 154, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "SF1512", "show_helper_to_assistants":
+        false}, {"hiding": true, "id": 48, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "SF1518", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 189, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "DD2585", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 66, "info": "", "locked": true, "motd": "", "name": "DD2480", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 108, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "SF1550", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 151, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "AG1314 Group 2", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 58, "info": "", "locked": true, "motd": "", "name": "DT1130",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 61, "info": "",
+        "locked": true, "motd": "", "name": "PoPL", "show_helper_to_assistants": false},
+        {"hiding": false, "id": 30, "info": "[redacted free text]", "locked": true,
+        "motd": "", "name": "Logik", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 132, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "SD2920", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 28, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "Gruprog", "show_helper_to_assistants": false}, {"hiding": false, "id": 104,
+        "info": "[redacted free text]", "locked": true, "motd": "", "name": "DM1579+DM2579",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 118, "info":
+        "[redacted free text]", "locked": true, "motd": "", "name": "SF1914", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 137, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "AG2412", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 148, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "prgemk-D", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 115, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "KH1251", "show_helper_to_assistants": false}, {"hiding": false, "id": 168,
+        "info": "[redacted free text]", "locked": true, "motd": "", "name": "SF1551",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 53, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "SF2520", "show_helper_to_assistants":
+        false}, {"hiding": true, "id": 87, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "DD1331", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 15, "info": "[redacted free text]", "locked": true, "motd": "",
+        "name": "Dasak", "show_helper_to_assistants": false}, {"hiding": false, "id":
+        98, "info": "[redacted free text]", "locked": true, "motd": "", "name": "SI1121+SI1122",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 50, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "SF1544", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 36, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "Tilpro", "show_helper_to_assistants": true}, {"hiding":
+        false, "id": 113, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "IV1350", "show_helper_to_assistants": false}, {"hiding": true,
+        "id": 44, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "Sofrel", "show_helper_to_assistants": false}, {"hiding": false, "id": 122,
+        "info": "[redacted free text]", "locked": true, "motd": "", "name": "SF1930",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 62, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "Irob", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 22, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "Algokomp", "show_helper_to_assistants": false},
+        {"hiding": false, "id": 181, "info": "[redacted free text]", "locked": true,
+        "motd": "", "name": "SF1935", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 131, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "SD2910", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 167, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "AF2024", "show_helper_to_assistants": false}, {"hiding": false, "id": 27,
+        "info": "[redacted free text]", "locked": true, "motd": "", "name": "Labbveckan",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 99, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "IS1300", "show_helper_to_assistants":
+        false}, {"hiding": true, "id": 102, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "DT2151", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 60, "info": "", "locked": true, "motd": "", "name": "Grudat",
+        "show_helper_to_assistants": false}, {"hiding": true, "id": 107, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "DT2300", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 173, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "Restlabbar", "show_helper_to_assistants": false},
+        {"hiding": false, "id": 179, "info": "[redacted free text]", "locked": true,
+        "motd": "", "name": "EL2810", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 117, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "MF2095", "show_helper_to_assistants": false}, {"hiding": true,
+        "id": 54, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "SF1682", "show_helper_to_assistants": false}, {"hiding": true, "id": 82,
+        "info": "[redacted free text]", "locked": true, "motd": "", "name": "KD1080",
+        "show_helper_to_assistants": false}, {"hiding": true, "id": 75, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "Qmisk", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 128, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "DD2440", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 135, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "SF1525", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 125, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "DD1319", "show_helper_to_assistants": false}, {"hiding": false, "id": 26,
+        "info": "[redacted free text]", "locked": true, "motd": "", "name": "Automat",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 7, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "Prgi", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 103, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "SF1918", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 124, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "SF1693", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 158, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "prgemk-G", "show_helper_to_assistants": false}, {"hiding": false, "id": 123,
+        "info": "", "locked": true, "motd": "", "name": "IV1351", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 38, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "Sprakt", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 169, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "SF2527", "show_helper_to_assistants": false}, {"hiding": true,
+        "id": 13, "info": "", "locked": true, "motd": "", "name": "Grupdat", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 127, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "BB2255", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 156, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "DD1420", "show_helper_to_assistants": false}, {"hiding": true,
+        "id": 16, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "SF1516", "show_helper_to_assistants": false}, {"hiding": false, "id": 85,
+        "info": "[redacted free text]", "locked": true, "motd": "", "name": "SF1514",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 42, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "iprogd", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 6, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "Dbas", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 165, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "tilda (alba)", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 126, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "DD2528", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 120, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "SD2900", "show_helper_to_assistants": false}, {"hiding": false, "id": 49,
+        "info": "", "locked": true, "motd": "", "name": "SF1523", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 180, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "DA1700", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 157, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "prgemk-F", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 145, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "prgemk-A", "show_helper_to_assistants": false}, {"hiding": false, "id": 72,
+        "info": "[redacted free text]", "locked": true, "motd": "", "name": "DD2488",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 41, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "SF1672", "show_helper_to_assistants":
+        false}, {"hiding": true, "id": 68, "info": "", "locked": true, "motd": "",
+        "name": "DD2482", "show_helper_to_assistants": false}, {"hiding": false, "id":
+        69, "info": "[redacted free text]", "locked": true, "motd": "", "name": "DD2460",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 90, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "SK1115", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 172, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "DD2412", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 97, "info": "[redacted free text]", "locked": true, "motd": "",
+        "name": "AL2608 LCA", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 152, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "AG1314 Group 3", "show_helper_to_assistants": false}, {"hiding": false, "id":
+        5, "info": "", "locked": true, "motd": "", "name": "Progp", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 178, "info": "", "locked": true, "motd": "",
+        "name": "FID3214", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 76, "info": "", "locked": true, "motd": "", "name": "DD2520", "show_helper_to_assistants":
+        true}, {"hiding": false, "id": 106, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "SF2568", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 188, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "DD2610", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 149, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "prgemk-E", "show_helper_to_assistants": false}, {"hiding": false, "id": 159,
+        "info": "[redacted free text]", "locked": true, "motd": "", "name": "prgemk-H",
+        "show_helper_to_assistants": false}, {"hiding": true, "id": 40, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "SF1524", "show_helper_to_assistants":
+        false}, {"hiding": true, "id": 77, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "DD2525", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 95, "info": "[redacted free text]", "locked": false, "motd":
+        "", "name": "DD1333", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 176, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "prgemk", "show_helper_to_assistants": false}, {"hiding": false, "id": 184,
+        "info": "[redacted free text]", "locked": true, "motd": "", "name": "AF2011",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 136, "info":
+        "[redacted free text]", "locked": true, "motd": "", "name": "AG1314 Group
+        1", "show_helper_to_assistants": false}, {"hiding": true, "id": 112, "info":
+        "[redacted free text]", "locked": true, "motd": "", "name": "DH2323", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 2, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "INDA", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 101, "info": "[redacted free text]", "locked": true, "motd":
+        "", "name": "MF2007", "show_helper_to_assistants": false}, {"hiding": false,
+        "id": 160, "info": "[redacted free text]", "locked": true, "motd": "", "name":
+        "DD2485", "show_helper_to_assistants": false}, {"hiding": false, "id": 32,
+        "info": "", "locked": true, "motd": "", "name": "SF1545", "show_helper_to_assistants":
+        false}, {"hiding": false, "id": 147, "info": "[redacted free text]", "locked":
+        true, "motd": "", "name": "prgemk-C", "show_helper_to_assistants": false},
+        {"hiding": false, "id": 84, "info": "[redacted free text]", "locked": false,
+        "motd": "", "name": "DD1301", "show_helper_to_assistants": false}, {"hiding":
+        false, "id": 175, "info": "", "locked": true, "motd": "", "name": "ID2214",
+        "show_helper_to_assistants": false}, {"hiding": false, "id": 166, "info":
+        "[redacted free text]", "locked": true, "motd": "", "name": "tilda (stene)",
+        "show_helper_to_assistants": false}, {"hiding": true, "id": 35, "info": "[redacted
+        free text]", "locked": true, "motd": "", "name": "DD1324", "show_helper_to_assistants":
+        false}]}'
+    headers:
+      Accept-Ranges:
+      - bytes
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '21417'
+      Content-Type:
+      - application/json
+      Date:
+      - Fri, 23 Oct 2026 09:43:46 GMT
+      Server:
+      - nginx/1.18.0 (Ubuntu)
+      permissions-policy:
+      - interest-cohort=()
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+    status:
+      code: 200
+      message: OK
+version: 1
