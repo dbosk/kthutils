@@ -1256,13 +1256,13 @@ def normalize_booking(booking):
 
 <<test functions>>=
 def test_normalize_booking_uses_upload_names():
-  booking = {"id": 7, "provider_id": "u1abc123", "username": "janl4",
-             "realname": "Jan Li", "slot_time": "2026-10-05T11:15:00Z",
+  booking = {"id": 7, "provider_id": "u1abc123", "username": "tolvan",
+             "realname": "Tolvan Tolvansson", "slot_time": "2026-10-05T11:15:00Z",
              "help": False}
 
   assert kthutils.stayawhile.normalize_booking(booking) == {
-    "id": 7, "ugkthid": "u1abc123", "username": "janl4",
-    "realname": "Jan Li", "slot_time": "2026-10-05T11:15:00Z",
+    "id": 7, "ugkthid": "u1abc123", "username": "tolvan",
+    "realname": "Tolvan Tolvansson", "slot_time": "2026-10-05T11:15:00Z",
     "entry_type": "present",
   }
   assert kthutils.stayawhile.normalize_booking(
@@ -1418,7 +1418,7 @@ Canvas authentication, and its output is a stable, documented table, so the
 shell pipe is all the integration we need.
 That output looks like this (tab-separated):
 \begin{verbatim}
-Redovisning  2026-10-05 13:15  2026-10-05 13:30  Jan Li (janl4@kth.se)
+Redovisning  2026-10-05 13:15  2026-10-05 13:30  Tolvan Tolvansson (tolvan@kth.se)
 Redovisning  2026-10-05 14:15  2026-10-05 14:30  4 free slots
 \end{verbatim}
 Each booked student gets a row of their own, with the participant written as
@@ -1442,7 +1442,7 @@ CANVASLMS_FREE_SLOTS = re.compile(r"^\d+ free slots?$")
 import re
 @
 
-Canvas login ids at KTH are e-mail addresses such as [[janl4@kth.se]],
+Canvas login ids at KTH are e-mail addresses such as [[tolvan@kth.se]],
 while Stay A While accepts a plain username (or a [[u1...]] id) in the
 [[ugkthid]] field and resolves it against its user table and LDAP.
 We therefore strip the [[@kth.se]] domain.
@@ -1459,7 +1459,7 @@ A start time we cannot parse raises [[ValueError]]: a booking at the wrong
 time is worse than no booking, so we stop rather than skip it.
 <<helper functions>>=
 def canvaslms_login_to_username(login):
-  """Return the KTH username for a Canvas `login`, such as `janl4@kth.se`."""
+  """Return the KTH username for a Canvas `login`, such as `tolvan@kth.se`."""
   if login.endswith(KTH_LOGIN_DOMAIN):
     return login[:-len(KTH_LOGIN_DOMAIN)]
   return login
@@ -1520,11 +1520,11 @@ equal the printed ones; the zone conversion itself is tested together with
 <<test functions>>=
 def test_parse_canvaslms_bookings(caplog):
   lines = [
-    "Redovisning\t2026-10-05 13:15\t2026-10-05 13:30\tJan Li (janl4@kth.se)",
+    "Redovisning\t2026-10-05 13:15\t2026-10-05 13:30\tTolvan Tolvansson (tolvan@kth.se)",
     "Redovisning\t2026-10-05 14:00\t2026-10-05 14:15\t2 free slots",
     "Redovisning\t2026-10-05 14:15\t2026-10-05 14:30\t1 free slot",
     "Redovisning\t2026-10-05 14:30\t2026-10-05 14:45"
-      "\tAnna (Nisse) Berg (aberg@kth.se)\tcourse_1\tprgi26",
+      "\tAnna (Nisse) Tian Tiansson (tian@kth.se)\tcourse_1\tprgi26",
     "Redovisning\t2026-10-05 14:45\t2026-10-05 15:00"
       "\tExternal Student (ext@example.com)",
     "",
@@ -1534,8 +1534,8 @@ def test_parse_canvaslms_bookings(caplog):
   bookings = kthutils.stayawhile.parse_canvaslms_bookings(lines)
 
   assert bookings == [
-    {"ugkthid": "janl4", "slot_time": "2026-10-05T13:15:00Z"},
-    {"ugkthid": "aberg", "slot_time": "2026-10-05T14:30:00Z"},
+    {"ugkthid": "tolvan", "slot_time": "2026-10-05T13:15:00Z"},
+    {"ugkthid": "tian", "slot_time": "2026-10-05T14:30:00Z"},
     {"ugkthid": "ext@example.com", "slot_time": "2026-10-05T14:45:00Z"},
   ]
   assert "garbage" in caplog.text
@@ -1545,19 +1545,19 @@ def test_parse_canvaslms_bookings(caplog):
 def test_parse_canvaslms_bookings_rejects_bad_time():
   with pytest.raises(ValueError):
     kthutils.stayawhile.parse_canvaslms_bookings(
-        ["Redovisning\tsoon\tlater\tJan Li (janl4@kth.se)"])
+        ["Redovisning\tsoon\tlater\tTolvan Tolvansson (tolvan@kth.se)"])
 
 
 def test_load_bookings_reads_canvaslms_file(tmp_path):
   bookings_file = tmp_path / "bookings.tsv"
   bookings_file.write_text(
       "Redovisning\t2026-10-05 13:15\t2026-10-05 13:30"
-      "\tJan Li (janl4@kth.se)\n")
+      "\tTolvan Tolvansson (tolvan@kth.se)\n")
 
   bookings = kthutils.stayawhile.load_bookings(str(bookings_file),
                                                "canvaslms")
 
-  assert [booking["ugkthid"] for booking in bookings] == ["janl4"]
+  assert [booking["ugkthid"] for booking in bookings] == ["tolvan"]
 @
 
 
@@ -3881,8 +3881,8 @@ class FakeStayawhileSession:
     self.calls.append(("list_bookings", queue))
     return [{
       "ugkthid": "u1abc123",
-      "username": "janl4",
-      "realname": "Jan Li",
+      "username": "tolvan",
+      "realname": "Tolvan Tolvansson",
       "slot_time": "2026-03-01T10:00:00Z",
       "entry_type": "help",
     }]
@@ -4229,7 +4229,7 @@ def test_cli_lists_bookings_without_ugkthid(monkeypatch):
   assert result.exit_code == 0
   assert parse_csv_output(result.stdout) == [
     ["username", "realname", "slot_time", "entry_type"],
-    ["janl4", "Jan Li", "2026-03-01 10:00", "help"],
+    ["tolvan", "Tolvan Tolvansson", "2026-03-01 10:00", "help"],
   ]
 
 
@@ -4243,7 +4243,7 @@ def test_cli_lists_bookings_with_ugkthid(monkeypatch):
   assert result.exit_code == 0
   assert parse_csv_output(result.stdout) == [
     ["username", "realname", "ugkthid", "slot_time", "entry_type"],
-    ["janl4", "Jan Li", "u1abc123", "2026-03-01 10:00", "help"],
+    ["tolvan", "Tolvan Tolvansson", "u1abc123", "2026-03-01 10:00", "help"],
   ]
 
 @
@@ -4344,9 +4344,9 @@ def test_cli_upserts_bookings(monkeypatch, tmp_path):
 
 
 CANVASLMS_BOOKINGS = (
-  "Redovisning\t2026-10-05 13:15\t2026-10-05 13:30\tJan Li (janl4@kth.se)\n"
+  "Redovisning\t2026-10-05 13:15\t2026-10-05 13:30\tTolvan Tolvansson (tolvan@kth.se)\n"
   "Redovisning\t2026-10-05 14:00\t2026-10-05 14:15\t2 free slots\n"
-  "Redovisning\t2026-10-07 13:15\t2026-10-07 13:30\tOlle B (ob@kth.se)\n"
+  "Redovisning\t2026-10-07 13:15\t2026-10-07 13:30\tElvan Elvansson (elvan@kth.se)\n"
 )
 
 
@@ -4363,7 +4363,7 @@ def test_cli_upserts_canvaslms_bookings_from_stdin(monkeypatch):
   assert len(fake.calls) == 1
   name, queue, bookings = fake.calls[0]
   assert (name, queue) == ("upsert_bookings", "Queue")
-  assert [booking["ugkthid"] for booking in bookings] == ["janl4", "ob"]
+  assert [booking["ugkthid"] for booking in bookings] == ["tolvan", "elvan"]
   assert all("entry_type" not in booking for booking in bookings)
 @
 

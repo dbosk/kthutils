@@ -7,3 +7,10 @@
 # no longer reports this word anywhere; the pseudonymizer still replaces it
 # in every name field.
 Tilda
+
+# Synthetic KTH addresses in the test data and examples of the .nw files:
+# fictive people (jdoe, the Tolvan family, anna, bob) and role placeholders.
+# Real-looking ones were replaced by these; add a new one only if it is made up.
+re:^(jdoe|tolvan|tian|elvan|anna|bob|test|a|username|student|second|grader|first)@(ug\.)?kth\.se$
+# The author's own public address, in iprange.nw's example.
+dbosk@kth.se
