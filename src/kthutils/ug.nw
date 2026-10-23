@@ -64,6 +64,7 @@ The session's constructor loads the stored KTH credentials, so the fixture
 skips the tests when there are none, instead of aborting the collection of
 the module as a session built at import did.
 <<[[test_ug.py]]>>=
+import kthutils.credentials
 import kthutils.ug
 import os
 import pytest
@@ -167,7 +168,10 @@ We can test the function as follows.
 <<test functions>>=
 def test_list_editable_groups(ug):
   groups = ug.list_editable_groups()
-  assert groups
+  nonempty_list = isinstance(groups, list) and len(groups) > 0
+  all_identified = all("kthid" in group and "name" in group
+                       for group in groups)
+  assert nonempty_list and all_identified
 @
 
 Each JSON object in the resulting list has the following format.
@@ -297,15 +301,24 @@ print(json.dumps(user, indent=2))
 print(r"\end{minted}")
 \end{pycode}
 
-We test this method as follows.
+We test this method with the caller's own username, taken from the stored
+credentials, so that the test holds no one's name and works for any
+maintainer.
+The lookup must give exactly that user, and [[usernames_to_kthids]], which
+the group-member methods below rely on, must give the same KTH ID.
+(The filter also accepts an e-mail alias, but neither the caller's
+[[username@kth.se]], [[username@ug.kth.se]] nor the [[email]] of the
+record matches it, so we have no alias to test with.)
 <<test functions>>=
-def test_find_user_by_username():
-  data = ug.find_user_by_username("dbosk")
-  assert data[0]["username"] == "dbosk"
-  assert data[0]["givenName"] == "Daniel"
-  data = ug.find_user_by_username("alba")
-  assert data[0]["username"] == "alba"
-  assert data[0]["givenName"] == "Alexander"
+def test_find_user_by_username(ug):
+  username, _ = kthutils.credentials.get_credentials()
+  username = username.split("@")[0]
+
+  users = ug.find_user_by_username(username)
+  exactly_the_caller = [user["username"] for user in users] == [username]
+  assert exactly_the_caller
+  same_kthid = ug.usernames_to_kthids([username]) == [users[0]["kthid"]]
+  assert same_kthid
 @
 
 This makes a simple CLI command.

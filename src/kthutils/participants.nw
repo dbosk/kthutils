@@ -198,16 +198,23 @@ except Exception as err:
 \end{pycode}
 
 To detect if the format of the returned data changes, we can add a test for it.
+Besides the keys, we check that the reported total agrees with the list of
+participants, which holds on live data whatever the round contains.
+The data are real students' records, so the assertions compare sets of key
+names and booleans: a failed [[assert "participants" in data]] would print
+the whole of [[data]].
 <<test functions>>=
 def test_get_all_data(ps):
   data = ps.get_all_data("DD1310", "HT2023")
-  assert "totalNumberOfParticipants" in data
-  assert "courseRounds" in data
-  assert "participants" in data
-  assert "funkaCountersCombinations" in data
-  assert "funkaFlag" in data
-  assert "ugdata" in data
-  assert "numberOfCourseRoundChanged" in data
+  missing_keys = {
+    "totalNumberOfParticipants", "courseRounds", "participants",
+    "funkaCountersCombinations", "funkaFlag", "ugdata",
+    "numberOfCourseRoundChanged",
+  } - set(data)
+  assert not missing_keys
+  total_matches = (data["totalNumberOfParticipants"]
+                   == len(data["participants"]))
+  assert total_matches
 @
 
 \section{The data format}\label{DataFormat}
@@ -378,19 +385,21 @@ programme_opt = typer.Option(help="Print the programme code "
 
 Now, since we rely on this format of the data, we can add a test for it.
 Same as above, this way we can detect if the format of the data changes.
+We require the keys of every participant, not only the first, and an empty
+round fails with a clear assertion rather than an [[IndexError]].
+The assertion tests a boolean, so a failure prints no participant's data.
 <<test functions>>=
 def test_participants_data(ps):
   data = ps.get_all_data("DD1310", "HT2023")
-  assert "participants" in data
-  participant = data["participants"][0]
-  assert "courseRound" in participant
-  assert "courseRoundsCode" in participant
-  assert "personnumer" in participant
-  assert "firstName" in participant
-  assert "lastName" in participant
-  assert "email" in participant
-  assert "programCode" in participant
-  assert "funkaCode" in participant
+  participants = data["participants"]
+  assert len(participants) > 0
+  expected_keys = {
+    "courseRound", "courseRoundsCode", "personnumer", "firstName",
+    "lastName", "email", "programCode", "funkaCode",
+  }
+  every_participant_has_keys = all(expected_keys <= set(participant)
+                                   for participant in participants)
+  assert every_participant_has_keys
 @
 
 

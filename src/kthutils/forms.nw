@@ -326,13 +326,16 @@ def get_csv_by_url(self, url: str) -> List[List[str]]:
 We want to test this method as well.
 We'll use the same form as before, this is the form for Restlabb 2023/2024.
 The first column is \enquote{Svarsdatum} and the second is \enquote{Kurs}.
-We do this test twice to catch any generators not converted to lists.
+The method promises a list: a generator would be exhausted after one pass,
+which is the bug the [[list]] call guards against.
+Repeating an assertion on the same result cannot detect that, so we check
+the type itself.
 <<test functions>>=
 @pytest.mark.live
 @pytest.mark.kth_live
 def test_get_csv_by_url(forms):
   csvdata = forms.get_csv_by_url(restlabb_url)
-  assert "Svarsdatum" in csvdata[0] and "Kurs" in csvdata[0]
+  assert isinstance(csvdata, list)
   assert "Svarsdatum" in csvdata[0] and "Kurs" in csvdata[0]
 @
 
@@ -436,6 +439,10 @@ We can then get the URL for the form from the configuration and use the
 @
 
 Let's test this.
+The live tests read real form answers, so they first store each check in a
+variable ([[holds]]) and then assert it: pytest prints the operands of a
+failed [[assert]], which here would be the whole export, students' answers
+included.
 <<test functions>>=
 @pytest.mark.live
 @pytest.mark.kth_live
@@ -445,8 +452,10 @@ def test_cli_export_command():
     "export", "restlabb"
   ])
   assert result.exit_code == 0
-  assert "Svarsdatum" in result.stdout
-  assert "Bosk" in result.stdout
+  holds = "Svarsdatum" in result.stdout
+  assert holds
+  holds = "Bosk" in result.stdout
+  assert holds
 <<add restlabb form>>=
 result = runner.invoke(forms_cli, [
   "add", "restlabb", restlabb_url
@@ -507,13 +516,15 @@ def test_export_delimiter():
     "export", "restlabb", "--delimiter", ","
   ])
   assert result.exit_code == 0
-  assert "Svarsdatum,Studentens namn" in result.stdout
+  holds = "Svarsdatum,Studentens namn" in result.stdout
+  assert holds
 
   result = runner.invoke(forms_cli, [
     "export", "restlabb"
   ])
   assert result.exit_code == 0
-  assert "Svarsdatum\tStudentens namn" in result.stdout
+  holds = "Svarsdatum\tStudentens namn" in result.stdout
+  assert holds
 @
 
 \section{Turning a form into a generator}
@@ -625,15 +636,19 @@ result = runner.invoke(forms_cli, [
   "next", "restlabb"
 ])
 assert result.exit_code == 0
-assert "Svarsdatum" in result.stdout
-assert "Bosk" in result.stdout
+holds = "Svarsdatum" in result.stdout
+assert holds
+holds = "Bosk" in result.stdout
+assert holds
 
 result = runner.invoke(forms_cli, [
   "next", "restlabb"
 ])
 assert result.exit_code == 0
-assert "Svarsdatum" not in result.stdout
-assert "Bosk" not in result.stdout
+holds = "Svarsdatum" not in result.stdout
+assert holds
+holds = "Bosk" not in result.stdout
+assert holds
 @
 
 We do similarly for the next function.
@@ -641,18 +656,22 @@ We do similarly for the next function.
 csvdata = kthutils.forms.next("restlabb")
 assert "Svarsdatum" in csvdata[0]
 csvdata = kthutils.forms.next("restlabb")
-assert not csvdata
+holds = not csvdata
+assert holds
 @
 
 But now we also want to try this with the test form.
 We want to see that running next on one form doesn't affect the other.
 <<test the next function>>=
 csvdata = kthutils.forms.next("test")
-assert "Name" in csvdata[0] and "Daniel" in csvdata[1]
+holds = "Name" in csvdata[0] and "Daniel" in csvdata[1]
+assert holds
 csvdata = kthutils.forms.next("restlabb")
-assert not csvdata
+holds = not csvdata
+assert holds
 csvdata = kthutils.forms.next("test")
-assert not csvdata
+holds = not csvdata
+assert holds
 @
 
 
