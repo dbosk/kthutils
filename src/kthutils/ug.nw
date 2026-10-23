@@ -58,19 +58,24 @@ Without that slash, we get a 404 instead of what we expect.
 \section{Tests}
 
 We provide tests for the class.
-We create a [[ug]] object and will add test functions to [[<<test functions>>]] 
-as we add methods to [[<<UG methods>>]].
+The tests get a [[ug]] object from a fixture and are added to
+[[<<test functions>>]] as we add methods to [[<<UG methods>>]].
+The session's constructor loads the stored KTH credentials, so the fixture
+skips the tests when there are none, instead of aborting the collection of
+the module as a session built at import did.
 <<[[test_ug.py]]>>=
 import kthutils.ug
 import os
 import pytest
 
-ug = kthutils.ug.UGsession()
-
 # Every test here drives a real UGsession against the KTH UG API, so the
-# whole module is a live test. Mark it so the default `-m "not live"` run
-# stays hermetic; run it with the `live`/`kth_live` Make targets.
+# whole module is a live test: run it with the `live`/`kth_live` Make
+# targets.
 pytestmark = [pytest.mark.live, pytest.mark.kth_live]
+
+@pytest.fixture(scope="module")
+def ug(kth_session):
+  return kth_session(kthutils.ug.UGsession)
 
 <<test functions>>
 @
@@ -158,7 +163,7 @@ def list_editable_groups(self):
 
 We can test the function as follows.
 <<test functions>>=
-def test_list_editable_groups():
+def test_list_editable_groups(ug):
   groups = ug.list_editable_groups()
   assert groups
 @

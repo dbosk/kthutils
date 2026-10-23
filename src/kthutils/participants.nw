@@ -51,20 +51,24 @@ The base URL seems to be the following.
 \section{Tests}
 
 We provide tests for the class.
-We create a [[ps]] object and will add test functions to [[<<test functions>>]] 
-as we add methods to [[<<PS methods>>]].
+The tests get a [[ps]] object from a fixture and are added to
+[[<<test functions>>]] as we add methods to [[<<PS methods>>]].
+The session's constructor loads the stored KTH credentials, so the fixture
+skips the tests when there are none, instead of aborting the collection of
+the module as a session built at import did.
 <<[[test_participants.py]]>>=
 from kthutils.participants import *
 import os
 import pytest
 
-ps = ParticipantsSession()
-
 # Every test here drives a real ParticipantsSession against the KTH course
-# participants API, so the whole module is a live test. Mark it so the
-# default `-m "not live"` run stays hermetic; run it with the `live`/
-# `kth_live` Make targets.
+# participants API, so the whole module is a live test: run it with the
+# `live`/`kth_live` Make targets.
 pytestmark = [pytest.mark.live, pytest.mark.kth_live]
+
+@pytest.fixture(scope="module")
+def ps(kth_session):
+  return kth_session(ParticipantsSession)
 
 <<test functions>>
 @
@@ -195,7 +199,7 @@ except Exception as err:
 
 To detect if the format of the returned data changes, we can add a test for it.
 <<test functions>>=
-def test_get_all_data():
+def test_get_all_data(ps):
   data = ps.get_all_data("DD1310", "HT2023")
   assert "totalNumberOfParticipants" in data
   assert "courseRounds" in data
@@ -375,7 +379,7 @@ programme_opt = typer.Option(help="Print the programme code "
 Now, since we rely on this format of the data, we can add a test for it.
 Same as above, this way we can detect if the format of the data changes.
 <<test functions>>=
-def test_participants_data():
+def test_participants_data(ps):
   data = ps.get_all_data("DD1310", "HT2023")
   assert "participants" in data
   participant = data["participants"][0]

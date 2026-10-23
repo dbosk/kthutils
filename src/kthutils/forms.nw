@@ -227,11 +227,15 @@ class FormsSession:
   <<Forms methods>>
 @
 
-Now we can create a session to use for testing.
+The live tests need a session.
+The constructor already loads the stored KTH credentials, so we build it in a
+fixture rather than at import: without credentials, [[kth_session]] (from
+[[tests/conftest.py]]) skips the tests that need the session, while the
+offline tests in this module still run.
 <<test setup>>=
-forms = kthutils.forms.FormsSession()
-<<test imports>>=
-import os
+@pytest.fixture(scope="module")
+def forms(kth_session):
+  return kth_session(kthutils.forms.FormsSession)
 @
 
 
@@ -295,7 +299,7 @@ We can test this with a known form.
 <<test functions>>=
 @pytest.mark.live
 @pytest.mark.kth_live
-def test_get_data_by_url():
+def test_get_data_by_url(forms):
   data, content_type = forms.get_data_by_url(restlabb_url)
   assert content_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
   assert data.startswith(b"PK")
@@ -326,7 +330,7 @@ We do this test twice to catch any generators not converted to lists.
 <<test functions>>=
 @pytest.mark.live
 @pytest.mark.kth_live
-def test_get_csv_by_url():
+def test_get_csv_by_url(forms):
   csvdata = forms.get_csv_by_url(restlabb_url)
   assert "Svarsdatum" in csvdata[0] and "Kurs" in csvdata[0]
   assert "Svarsdatum" in csvdata[0] and "Kurs" in csvdata[0]
