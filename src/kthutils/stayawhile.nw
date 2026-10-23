@@ -812,10 +812,15 @@ def get_user(self):
 
 [[/api/queues]] is public and should work without triggering a browser login at
 all, so we pass [[use_auth=False]].
+The service wraps the list in an object, [[{"queues": [...]}]], as it does for
+the caller's own queues below.
+We return the list itself, which is what callers iterate over and what the
+CLI prints as a table; passed on wrapped, the whole list ended up as a single
+table cell.
 <<[[StayawhileSession]] methods>>=
 def list_queues(self):
   """Return all public queues."""
-  return self._request("GET", "/api/queues", use_auth=False)
+  return self._request("GET", "/api/queues", use_auth=False)["queues"]
 @
 
 \subsection{Teacher-facing metadata and presence}
@@ -838,7 +843,8 @@ The lock endpoint uses [[POST]] to lock and [[DELETE]] to unlock.
 <<[[StayawhileSession]] methods>>=
 def list_my_queues(self):
   """Return queues where the caller is a teacher."""
-  return self._request("GET", "/api/queues/mine", use_api_key=True)
+  return self._request("GET", "/api/queues/mine",
+                       use_api_key=True)["queues"]
 
 
 def list_teachers(self, queue):
@@ -898,8 +904,8 @@ def test_identity_queue_and_presence_requests():
       "ugkthid": "u1alice",
       "teacher_in": ["Queue"],
     }),
-    FakeResponse(json_data=[{"name": "Queue"}]),
-    FakeResponse(json_data=[{"name": "Queue"}]),
+    FakeResponse(json_data={"queues": [{"name": "Queue"}]}),
+    FakeResponse(json_data={"queues": [{"name": "Queue"}]}),
     FakeResponse(json_data=[{"username": "teacher1"}]),
     FakeResponse(json_data=[{"username": "teacher1"}]),
     FakeResponse(json_data={"checked_in": True}),
@@ -941,6 +947,26 @@ def test_identity_queue_and_presence_requests():
   assert fake_http.requests[5]["url"].endswith("/checkin")
   assert fake_http.requests[6]["method"] == "DELETE"
   assert fake_http.requests[6]["url"].endswith("/checkin")
+@
+
+The recorded responses (\cref{sec:recorded-responses}) show what the queue
+listings look like on the real service.
+Both methods should return the list of queues, and every queue the caller
+teaches in is also a public queue.
+<<test functions>>=
+@pytest.mark.vcr
+def test_queue_listings_return_the_queues(recorded_session):
+  public = recorded_session.list_queues()
+  mine = recorded_session.list_my_queues()
+
+  both_lists = isinstance(public, list) and isinstance(mine, list)
+  assert both_lists
+  all_named = all("name" in queue for queue in public + mine)
+  assert all_named
+  my_names = {queue["name"] for queue in mine}
+  teaches_recorded_queue = RECORDED_QUEUE in my_names
+  mine_are_public = my_names <= {queue["name"] for queue in public}
+  assert teaches_recorded_queue and mine_are_public
 
 
 def test_queue_lock_requests():

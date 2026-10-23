@@ -1,0 +1,9 @@
+# Values that the privacy scan of recorded cassettes may let through.
+# Each entry is exact (any case) or a `re:` regex; keep a reason with it.
+#
+# "Tilda" is a Stay A While queue (the course Tillämpad datalogi) that the
+# queue listings name.  The scan matches every name the pseudonymizer
+# replaced, and a person's name can equal a queue name.  The cost: the scan
+# no longer reports this word anywhere; the pseudonymizer still replaces it
+# in every name field.
+Tilda
