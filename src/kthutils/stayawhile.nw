@@ -1282,16 +1282,25 @@ def test_clear_bookings_can_return_deleted_count():
 
   assert sa.clear_bookings("Queue") == {"deleted": 2}
 
+@
 
-def test_token_endpoint_requires_api_key(monkeypatch):
+A token endpoint without a configured key must fail with the helpful error
+from [[get_api_key]] before any request is sent.
+The test relies on the isolation fixtures in [[tests/conftest.py]]: the
+environment lacks [[STAYAWHILE_API_KEY]] and the configuration is empty, so
+the real lookup finds no key.
+It once replaced [[get_api_key]] by a stub instead, after the session had
+been created; but the constructor had already looked up the developer's own
+key, the stub was never reached, and the test failed on every machine with a
+key configured.
+<<test functions>>=
+def test_token_endpoint_requires_api_key():
   fake_http = FakeHTTPSession()
   sa = kthutils.stayawhile.StayawhileSession(session=fake_http)
 
-  monkeypatch.setattr(kthutils.stayawhile, "get_api_key",
-                      lambda: (_ for _ in ()).throw(ValueError("missing token")))
-
-  with pytest.raises(ValueError, match="missing token"):
+  with pytest.raises(ValueError, match="Stay A While API key"):
     sa.list_bookings("Queue")
+  assert fake_http.requests == []
 @
 
 We can also verify that the JSON loader accepts files.
