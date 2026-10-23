@@ -188,7 +188,7 @@ def test_get_added_forms():
   config.set(f"{added_forms}.restlabb", "https://...")
   assert "restlabb" in kthutils.forms.get_added_forms()
   assert "restlabb" in kthutils.forms.get_added_forms("rest")
-  assert "nonexisting" not in kthutils.forms.get_added_forms()
+  assert "restlabb" not in kthutils.forms.get_added_forms("lab")
 @
 
 Now, let's add a CLI command for listing the forms.
@@ -1447,7 +1447,7 @@ def test_get_added_rewriters():
   # Test prefix filtering
   assert "restlabb" in kthutils.forms.get_added_rewriters("rest")
   assert "test_rewriter" in kthutils.forms.get_added_rewriters("test")
-  assert "nonexisting" not in kthutils.forms.get_added_rewriters()
+  assert "restlabb" not in kthutils.forms.get_added_rewriters("lab")
 @
 
 We also want to test the [[rewriter rewrite]] command.
