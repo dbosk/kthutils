@@ -68,6 +68,7 @@ import json
 import pytest
 import types
 import typer.testing
+import weblogin
 import kthutils.stayawhile
 
 runner = typer.testing.CliRunner(mix_stderr=False)
@@ -514,6 +515,46 @@ class FakeUGlogin:
             and self.username == other.username
             and self.password == other.password
             and self.login_trigger_url == other.login_trigger_url)
+@
+
+\subsection{Recorded responses}\label{sec:recorded-responses}
+
+The fakes above answer with bodies that we wrote by hand, and such a body
+only encodes what we \emph{believe} the service returns.
+When the service differs, the code and its tests agree with each other and
+both are wrong.
+For the read endpoints we therefore also replay responses recorded from the
+real service.
+They live as cassettes in [[tests/cassettes/test_stayawhile]], written by
+[[pytest-recording]] with every person in them replaced by a keyed pseudonym
+([[tests/vcr_support.py]]).
+A test marked [[vcr]] replays its cassette offline by default.
+With [[make -C tests live]] the same test runs against the real service and
+the run reports whether the structure of the responses has drifted from the
+recording.
+Since one test body must pass in both modes, these tests assert properties
+that hold on any day's data, not exact values.
+
+The recorded session is a real [[StayawhileSession]]: only the network
+traffic is replayed.
+It authenticates with the API key, which [[service_token]] takes from
+[[STAYAWHILE_API_KEY]] when talking to the service and replaces by a dummy in
+replay, since cassettes contain no credentials.
+The queue is one that the maintainer teaches in, so that the token endpoints
+answer.
+<<test helpers>>=
+RECORDED_QUEUE = "Prgi"
+
+
+@pytest.fixture
+def recorded_session(service_token):
+  return kthutils.stayawhile.StayawhileSession(
+      api_key=service_token,
+      session=weblogin.AutologinSession([]))
+
+
+def parse_timestamp(text):
+  return datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
 @
 
 <<test functions>>=
@@ -1303,6 +1344,26 @@ def test_token_endpoint_requires_api_key():
   assert fake_http.requests == []
 @
 
+Against the recorded responses, every booking identifies its student by UG
+KTH ID, carries a slot time in ISO format, which the rest of the module
+parses, and is either a presentation or a help booking.
+<<test functions>>=
+@pytest.mark.vcr
+def test_list_bookings_recorded(recorded_session):
+  bookings = recorded_session.list_bookings(RECORDED_QUEUE)
+
+  is_list = isinstance(bookings, list)
+  assert is_list
+  students_identified = all(booking["ugkthid"] for booking in bookings)
+  slot_times_parse = all(parse_timestamp(booking["slot_time"])
+                         for booking in bookings)
+  known_entry_types = all(booking["entry_type"] in {"present", "help"}
+                          for booking in bookings)
+  ids_unique = len({booking["id"] for booking in bookings}) == len(bookings)
+  assert students_identified and slot_times_parse
+  assert known_entry_types and ids_unique
+@
+
 We can also verify that the JSON loader accepts files.
 <<test functions>>=
 def test_load_json_input(tmp_path):
@@ -1600,6 +1661,20 @@ def test_assistant_requests():
   assert fake_http.requests[0]["url"].endswith("/assistants")
   assert fake_http.requests[1]["json"] == {"username": "abcde"}
   assert fake_http.requests[2]["url"].endswith("/assistants/abcde")
+@
+
+On the recorded responses, each assistant is listed once, by a non-empty
+username, which is what [[stayawhile assistants rm]] takes.
+<<test functions>>=
+@pytest.mark.vcr
+def test_list_assistants_recorded(recorded_session):
+  assistants = recorded_session.list_assistants(RECORDED_QUEUE)
+
+  usernames = [assistant["username"] for assistant in assistants]
+  any_assistants = len(usernames) > 0
+  every_username_given = all(usernames)
+  usernames_unique = len(usernames) == len(set(usernames))
+  assert any_assistants and every_username_given and usernames_unique
 @
 
 
@@ -2330,6 +2405,27 @@ def test_log_requests_and_filters():
     "from": "2026-01-01",
     "until": "2026-03-27",
   }
+@
+
+The recorded help history holds consistent intervals: a finished help
+session never ends before it starts, and its [[duration_secs]] agrees with
+its timestamps to within a second.
+<<test functions>>=
+@pytest.mark.vcr
+def test_help_history_recorded(recorded_session):
+  history = recorded_session.get_my_help_history()
+
+  is_list = isinstance(history, list)
+  help_flags_are_booleans = all(isinstance(entry["help"], bool)
+                                for entry in history)
+  assert is_list and help_flags_are_booleans
+  finished = [entry for entry in history if entry["ended_at"]]
+  for entry in finished:
+    started = parse_timestamp(entry["started_at"])
+    ended = parse_timestamp(entry["ended_at"])
+    assert ended >= started
+    assert abs((ended - started).total_seconds()
+               - entry["duration_secs"]) <= 1
 @
 
 
